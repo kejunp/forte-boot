@@ -1,7 +1,13 @@
 pub enum TokType {
     // Types
-    Int,
-    Float,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
     Bool,
     String,
     Char,
@@ -16,7 +22,6 @@ pub enum TokType {
     Struct,
     Impl,
     Import,
-    Asm,
     Print,
     Enum,
 
