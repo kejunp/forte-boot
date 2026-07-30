@@ -9,6 +9,10 @@ pub struct Lexer {
     // Automatic semicolon insertion state.
     last_can_end:  bool,
     bracket_depth: usize,
+
+    // Generic argument list state.
+    generic_depth: usize,
+    last_was_name: bool,
 }
 
 /// Whether a token can legally end a statement, making it a candidate for a
@@ -31,7 +35,35 @@ fn can_end_statement(t: &TokType) -> bool {
             | TokType::RParen
             | TokType::RBracket
             | TokType::RCurlyBracket
+            // An open range is a complete expression: `let rest = 1..`. `..=`
+            // is not — it always needs an upper bound — so it keeps looking.
+            | TokType::DotDot
             // A type name can end a field or parameter declaration.
+            | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
+            | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
+            | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
+    )
+}
+
+/// Tokens that can legally appear inside a `<...>` type argument list.
+///
+/// `<` is ambiguous — `Vec<i32>` opens a generic, `a < b` is a comparison — and
+/// a lexer cannot tell them apart. So the lexer optimistically opens a generic
+/// context after a name and abandons it the moment something turns up that no
+/// type argument could contain. Only `>>` splitting and semicolon insertion
+/// depend on the guess, so a wrong one stays cheap.
+fn fits_in_generics(t: &TokType) -> bool {
+    matches!(
+        t,
+        TokType::Identifier(_)
+            | TokType::Comma
+            // Trait bounds, e.g. `<T: Show>`.
+            | TokType::Colon
+            // Nested arguments and array types, e.g. `<Map<str, i32[]>>`.
+            | TokType::LessThan
+            | TokType::GreaterThan
+            | TokType::LBracket
+            | TokType::RBracket
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
             | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
@@ -45,9 +77,11 @@ fn starts_continuation(c: char) -> bool {
 }
 
 /// Keywords that continue the previous statement, e.g. the `else` in
-/// `}` / newline / `else {`.
+/// `}` / newline / `else {`. No statement begins with one of these, so a line
+/// that starts with one is always a continuation — including a cast split
+/// across lines, `let n = x` / newline / `as i64`.
 fn continues_statement(word: &str) -> bool {
-    matches!(word, "else" | "elif")
+    matches!(word, "else" | "elif" | "as" | "in")
 }
 
 /// Base prefixes accepted after a leading `0`, e.g. `0xFF`, `0b1010`.
@@ -84,7 +118,8 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "let" => TokType::Let,
         "var" => TokType::Var,
         "struct" => TokType::Struct,
-        "class" => TokType::Class,
+        "trait" => TokType::Trait,
+        "impl" => TokType::Impl,
         "public" => TokType::Public,
         "private" => TokType::Private,
         "import" => TokType::Import,
@@ -96,10 +131,14 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "else" => TokType::Else,
         "while" => TokType::While,
         "for" => TokType::For,
+        "in" => TokType::In,
         "return" => TokType::Return,
         "break" => TokType::Break,
         "continue" => TokType::Continue,
         "match" => TokType::Match,
+
+        // Type operators
+        "as" => TokType::As,
 
         // Literals
         "true" => TokType::True,
@@ -122,6 +161,9 @@ impl Lexer {
 
             last_can_end:  false,
             bracket_depth: 0,
+
+            generic_depth: 0,
+            last_was_name: false,
         }
     }
 
@@ -170,7 +212,22 @@ impl Lexer {
         }
 
         let tok = self.scan_token();
-        self.last_can_end = can_end_statement(&tok.toktype);
+
+        // A `>` only closes a generic if one was open; that also makes it the
+        // end of a type, and so a place a statement can end: `let v: Vec<i32>`.
+        let closed_generic = self.generic_depth > 0 && tok.toktype == TokType::GreaterThan;
+        match &tok.toktype {
+            // Only a name can be generic, which rules out `1 < 2` and `) < x`.
+            TokType::LessThan if self.last_was_name => self.generic_depth += 1,
+            TokType::GreaterThan => {
+                self.generic_depth = self.generic_depth.saturating_sub(1);
+            }
+            t if self.generic_depth > 0 && !fits_in_generics(t) => self.generic_depth = 0,
+            _ => {}
+        }
+        self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
+
+        self.last_can_end = can_end_statement(&tok.toktype) || closed_generic;
         match tok.toktype {
             TokType::LParen | TokType::LBracket => self.bracket_depth += 1,
             TokType::RParen | TokType::RBracket => {
@@ -286,7 +343,11 @@ impl Lexer {
                 }
             }
             '>' => {
-                if self.eat('>') {
+                // Inside a type argument list every `>` closes one level, so the
+                // `>>` ending `Map<str, List<i32>>` is two closers, not a shift.
+                if self.generic_depth > 0 {
+                    TokType::GreaterThan
+                } else if self.eat('>') {
                     if self.eat('=') { TokType::RShiftEquals } else { TokType::RShift }
                 } else if self.eat('=') {
                     TokType::GreaterOrEqual
@@ -318,7 +379,13 @@ impl Lexer {
             '}' => TokType::RCurlyBracket,
             ':' => TokType::Colon,
             ',' => TokType::Comma,
-            '.' => TokType::Dot,
+            '.' => {
+                if self.eat('.') {
+                    if self.eat('=') { TokType::DotDotEquals } else { TokType::DotDot }
+                } else {
+                    TokType::Dot
+                }
+            }
             ';' => TokType::Semicolon,
             '#' => TokType::HashTag,
 
@@ -497,10 +564,11 @@ impl Lexer {
             }
         }
 
-        // Reject junk glued to the literal: `1..2`, `1.2.3`, `12abc`.
+        // Reject junk glued to the literal: `1.2.3`, `12abc`. A second '.' can
+        // only appear here once `is_float` is set, so this catches a repeated
+        // decimal point without touching `1..2`, where the dots are a range.
         if let Some(c) = self.peek() {
-            let bad_dot = c == '.'
-                && matches!(self.peek_at(1), Some(d) if d == '.' || d.is_ascii_digit());
+            let bad_dot = c == '.' && matches!(self.peek_at(1), Some(d) if d.is_ascii_digit());
             if bad_dot || c.is_alphabetic() || c == '_' {
                 self.consume_literal_tail();
                 return Tok {
@@ -539,6 +607,9 @@ impl Lexer {
             if c.is_digit(radix) {
                 digits.push(c);
                 self.advance();
+            } else if c == '.' && self.peek_at(1) == Some('.') {
+                // `0x10..0x20` — the dots are a range, not part of the literal.
+                break;
             } else if c.is_alphanumeric() || c == '_' || c == '.' {
                 // A digit outside this base, or a decimal point: consume it so the
                 // error covers the whole malformed literal.
@@ -601,8 +672,12 @@ impl Lexer {
     }
 
     /// Swallow the rest of a malformed literal so the next token starts clean.
+    /// Stops at `..` so one bad literal doesn't eat the range operator behind it.
     fn consume_literal_tail(&mut self) {
         while let Some(c) = self.peek() {
+            if c == '.' && self.peek_at(1) == Some('.') {
+                break;
+            }
             if c.is_alphanumeric() || c == '_' || c == '.' {
                 self.advance();
             } else {

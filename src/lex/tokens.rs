@@ -19,7 +19,8 @@ pub enum TokType {
     Let,
     Var,
     Struct,
-    Class,
+    Trait,
+    Impl,
     Public,
     Private,
     Import,
@@ -31,6 +32,7 @@ pub enum TokType {
     Else,
     While,
     For,
+    In,
     Return,
     Break,
     Continue,
@@ -70,6 +72,13 @@ pub enum TokType {
     And,
     Or,
     Bang,
+
+    // Type operators
+    As,
+
+    // Range operators
+    DotDot,
+    DotDotEquals,
 
     // Assignment
     Equals,
