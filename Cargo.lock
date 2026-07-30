@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "forte_c"
+name = "fortec"
 version = "0.1.0"

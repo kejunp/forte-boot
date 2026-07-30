@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokType {
     // Types
     I8,
@@ -9,20 +10,19 @@ pub enum TokType {
     U32,
     U64,
     Bool,
-    String,
     Char,
+    Str,
     Void,
-    List,
-    Dict,
 
     // Declarations
-    Func,
+    Fn,
     Let,
     Var,
     Struct,
-    Impl,
+    Class,
+    Public,
+    Private,
     Import,
-    Print,
     Enum,
 
     // Control flow
@@ -36,10 +36,6 @@ pub enum TokType {
     Continue,
     Match,
 
-    // Block delimiters
-    Start,
-    End,
-
     // Literals
     True,
     False,
@@ -48,7 +44,7 @@ pub enum TokType {
 
     // Literal values
     Identifier(String),
-    Number(i64),
+    IntLiteral(i64),
     FloatLiteral(f64),
     StringLiteral(String),
     CharLiteral(char),
@@ -59,6 +55,8 @@ pub enum TokType {
     Star,
     Slash,
     Percent,
+    LShift,
+    RShift,
 
     // Comparison operators
     EqualsEquals,
@@ -79,24 +77,31 @@ pub enum TokType {
     MinusEquals,
     StarEquals,
     SlashEquals,
+    AndEquals,
+    OrEquals,
+    LShiftEquals,
+    RShiftEquals,
 
     // Delimiters
     LParen,
     RParen,
     LBracket,
     RBracket,
+    LCurlyBracket,
+    RCurlyBracket,
     Colon,
     Comma,
     Dot,
-    Arrow,
     Semicolon,
     FatArrow,
+    HashTag,
 
     // Special
     EOF,
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tok {
     pub line:    usize,
     pub col:     usize,

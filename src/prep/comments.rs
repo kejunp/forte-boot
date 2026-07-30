@@ -15,20 +15,25 @@ fn handle_line_comment(chars: &[char], i: &mut usize, output: &mut String) {
 }
 
 fn handle_block_comment(chars: &[char], i: &mut usize, output: &mut String) {
-    // Already checked by caller — we know it's a block comment
+    // Already checked by caller — we know it's a block comment.
+    // The delimiters are blanked like any other comment character so the
+    // output stays the same length as the input, column for column.
+    output.push_str("  ");
     *i += 2;
-    while *i + 1 < chars.len() && !(chars[*i] == '*' && chars[*i + 1] == '/') {
+    while *i < chars.len() {
+        if *i + 1 < chars.len() && chars[*i] == '*' && chars[*i + 1] == '/' {
+            output.push_str("  ");
+            *i += 2;
+            return;
+        }
+        // Unterminated comments fall out of the loop at end of input, blanking
+        // every character on the way — including a trailing newline.
         if chars[*i] == '\n' {
             output.push('\n');
         } else {
             output.push(' ');
         }
         *i += 1;
-    }
-    if *i + 1 < chars.len() {
-        *i += 2;
-    } else {
-        *i = chars.len();
     }
 }
 
