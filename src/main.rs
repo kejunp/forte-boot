@@ -406,6 +406,31 @@ fn strip_preserves_length_and_lines() {
         );
     }
 }
+/// Peeking must leave the scanner exactly where it was: a peek before every
+/// `next_token` has to yield the same stream as no peeks at all — line and
+/// column included — even where lexing depends on scanner state, as semicolon
+/// insertion and `>>` splitting do.
+#[test]
+fn peek_does_not_consume() {
+    let sources = [
+        "let x = 25\nlet y = x + 1\n",
+        "let m: Map<str, List<i32>> = empty()\n",
+        "let n = bits >> 2\n",
+        "for i in 0..10 {}\n",
+    ];
+    for src in sources {
+        let mut lexer = Lexer::new(src);
+        for expected in lex_types(src) {
+            let peeked = lexer.peek();
+            assert_eq!(peeked, lexer.peek(), "second peek differed in {:?}", src);
+            assert_eq!(peeked, lexer.next_token(), "peek differed from next in {:?}", src);
+            assert_eq!(peeked.toktype, expected);
+        }
+        assert_eq!(lexer.peek().toktype, TokType::EOF);
+        assert_eq!(lexer.next_token().toktype, TokType::EOF);
+    }
+}
+
 /// Every open form: from, to, to-inclusive, and full.
 #[test]
 fn lexes_open_ranges() {

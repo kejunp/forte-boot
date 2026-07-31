@@ -15,6 +15,21 @@ pub struct Lexer {
     last_was_name: bool,
 }
 
+/// Everything `next_token` mutates, so that a lookahead can be rolled back.
+/// The input itself never changes, so it stays out of the snapshot.
+#[derive(Clone, Copy)]
+struct State {
+    index: usize,
+    line:  usize,
+    col:   usize,
+
+    last_can_end:  bool,
+    bracket_depth: usize,
+
+    generic_depth: usize,
+    last_was_name: bool,
+}
+
 /// Whether a token can legally end a statement, making it a candidate for a
 /// semicolon to be inserted after it at a newline.
 fn can_end_statement(t: &TokType) -> bool {
@@ -167,16 +182,16 @@ impl Lexer {
         }
     }
 
-    fn peek(&self) -> Option<char> {
+    fn peek_char(&self) -> Option<char> {
         self.input.get(self.index).copied()
     }
 
-    fn peek_at(&self, offset: usize) -> Option<char> {
+    fn peek_char_at(&self, offset: usize) -> Option<char> {
         self.input.get(self.index + offset).copied()
     }
 
     fn advance(&mut self) -> Option<char> {
-        let ch = self.peek();
+        let ch = self.peek_char();
         if let Some(c) = ch {
             self.index += 1;
             if c == '\n' {
@@ -189,6 +204,47 @@ impl Lexer {
         ch
     }
 
+    fn save(&self) -> State {
+        State {
+            index: self.index,
+            line:  self.line,
+            col:   self.col,
+
+            last_can_end:  self.last_can_end,
+            bracket_depth: self.bracket_depth,
+
+            generic_depth: self.generic_depth,
+            last_was_name: self.last_was_name,
+        }
+    }
+
+    fn restore(&mut self, s: State) {
+        self.index = s.index;
+        self.line = s.line;
+        self.col = s.col;
+
+        self.last_can_end = s.last_can_end;
+        self.bracket_depth = s.bracket_depth;
+
+        self.generic_depth = s.generic_depth;
+        self.last_was_name = s.last_was_name;
+    }
+
+    /// Returns the token `next_token` would return, without consuming it.
+    ///
+    /// Lexing is context-sensitive — semicolon insertion and `>>` splitting
+    /// both depend on state the scanner updates as it goes — so the token is
+    /// produced by running the real scanner and rewinding it afterwards, not by
+    /// a separate lookahead path that could drift out of step. Takes `&mut
+    /// self` for that reason; peeking is otherwise free of side effects, and
+    /// repeated peeks return the same token.
+    pub fn peek(&mut self) -> Tok {
+        let saved = self.save();
+        let tok = self.next_token();
+        self.restore(saved);
+        tok
+    }
+
     pub fn next_token(&mut self) -> Tok {
         // Position just past the previous token — where an inserted semicolon
         // belongs, at the end of that line rather than the start of the next.
@@ -199,7 +255,7 @@ impl Lexer {
 
         // `->` splices the following line onto this one, cancelling any pending
         // insertion: `let x = y ->` / newline / `+ 2` is one statement.
-        while self.peek() == Some('-') && self.peek_at(1) == Some('>') {
+        while self.peek_char() == Some('-') && self.peek_char_at(1) == Some('>') {
             self.advance();
             self.advance();
             self.skip_whitespace();
@@ -249,7 +305,7 @@ impl Lexer {
             return false;
         }
 
-        match self.peek() {
+        match self.peek_char() {
             // End of input, with a statement left open.
             None => true,
             Some(_) if !crossed_newline => false,
@@ -278,7 +334,7 @@ impl Lexer {
         let line = self.line;
         let col = self.col;
 
-        let c = match self.peek() {
+        let c = match self.peek_char() {
             Some(c) => c,
             None => return Tok { toktype: TokType::EOF, line, col },
         };
@@ -300,7 +356,7 @@ impl Lexer {
 
     /// Consumes `expected` if it is next, reporting whether it did.
     fn eat(&mut self, expected: char) -> bool {
-        if self.peek() == Some(expected) {
+        if self.peek_char() == Some(expected) {
             self.advance();
             true
         } else {
@@ -398,7 +454,7 @@ impl Lexer {
     /// Skips whitespace, reporting whether any of it was a line break.
     fn skip_whitespace(&mut self) -> bool {
         let mut crossed_newline = false;
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.peek_char() {
             if c.is_whitespace() {
                 if c == '\n' {
                     crossed_newline = true;
@@ -450,9 +506,9 @@ impl Lexer {
             }
         };
 
-        if self.peek() != Some('\'') {
+        if self.peek_char() != Some('\'') {
             // Skip to the closing quote so one bad literal doesn't cascade.
-            while let Some(c) = self.peek() {
+            while let Some(c) = self.peek_char() {
                 if c == '\n' {
                     break;
                 }
@@ -489,7 +545,7 @@ impl Lexer {
             Some('x') => {
                 let mut hex = String::new();
                 for _ in 0..2 {
-                    match self.peek() {
+                    match self.peek_char() {
                         Some(c) if c.is_ascii_hexdigit() => {
                             hex.push(c);
                             self.advance();
@@ -507,7 +563,7 @@ impl Lexer {
                 }
                 let mut hex = String::new();
                 loop {
-                    match self.peek() {
+                    match self.peek_char() {
                         Some('}') => {
                             self.advance();
                             break;
@@ -538,9 +594,9 @@ impl Lexer {
         let col = self.col;
 
         // Prefixed integer literal: `0` followed by a base marker.
-        if self.peek() == Some('0') {
-            if let Some(radix) = self.peek_at(1).and_then(radix_of) {
-                let prefix = self.peek_at(1).unwrap();
+        if self.peek_char() == Some('0') {
+            if let Some(radix) = self.peek_char_at(1).and_then(radix_of) {
+                let prefix = self.peek_char_at(1).unwrap();
                 self.advance(); // '0'
                 self.advance(); // base marker
                 return self.read_radix_int(radix, prefix, line, col);
@@ -549,11 +605,11 @@ impl Lexer {
 
         let mut is_float = false;
         let mut num_str = String::new();
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.peek_char() {
             if c.is_ascii_digit() {
                 num_str.push(c);
                 self.advance();
-            } else if c == '.' && !is_float && matches!(self.peek_at(1), Some(d) if d.is_ascii_digit()) {
+            } else if c == '.' && !is_float && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit()) {
                 // Only the first '.' with a digit behind it belongs to the number;
                 // `1.foo` stays an int followed by a Dot.
                 is_float = true;
@@ -567,8 +623,8 @@ impl Lexer {
         // Reject junk glued to the literal: `1.2.3`, `12abc`. A second '.' can
         // only appear here once `is_float` is set, so this catches a repeated
         // decimal point without touching `1..2`, where the dots are a range.
-        if let Some(c) = self.peek() {
-            let bad_dot = c == '.' && matches!(self.peek_at(1), Some(d) if d.is_ascii_digit());
+        if let Some(c) = self.peek_char() {
+            let bad_dot = c == '.' && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit());
             if bad_dot || c.is_alphabetic() || c == '_' {
                 self.consume_literal_tail();
                 return Tok {
@@ -603,11 +659,11 @@ impl Lexer {
     fn read_radix_int(&mut self, radix: u32, prefix: char, line: usize, col: usize) -> Tok {
         let mut digits = String::new();
         let mut bad = false;
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.peek_char() {
             if c.is_digit(radix) {
                 digits.push(c);
                 self.advance();
-            } else if c == '.' && self.peek_at(1) == Some('.') {
+            } else if c == '.' && self.peek_char_at(1) == Some('.') {
                 // `0x10..0x20` — the dots are a range, not part of the literal.
                 break;
             } else if c.is_alphanumeric() || c == '_' || c == '.' {
@@ -650,7 +706,7 @@ impl Lexer {
         let line = self.line;
         let col = self.col;
         let mut word = String::new();
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.peek_char() {
             if c.is_alphanumeric() || c == '_' {
                 word.push(c);
                 self.advance();
@@ -674,8 +730,8 @@ impl Lexer {
     /// Swallow the rest of a malformed literal so the next token starts clean.
     /// Stops at `..` so one bad literal doesn't eat the range operator behind it.
     fn consume_literal_tail(&mut self) {
-        while let Some(c) = self.peek() {
-            if c == '.' && self.peek_at(1) == Some('.') {
+        while let Some(c) = self.peek_char() {
+            if c == '.' && self.peek_char_at(1) == Some('.') {
                 break;
             }
             if c.is_alphanumeric() || c == '_' || c == '.' {
