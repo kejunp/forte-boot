@@ -67,13 +67,36 @@ fn main() {
 
     dump("for i in 0..10 {}\nfor j in 0..=n {}\n");
 
-    // A struct body separates fields with commas, so that is what a newline
-    // inserts — and nothing is inserted before the closing brace.
-    dump("struct P {\n    x: i32\n    y: i32\n}\n");
+    // A struct body holds entries, and their commas are the writer's: a newline
+    // inside one inserts nothing at all.
+    dump("struct P {\n    x: i32,\n    y: i32,\n}\n");
 
-    // The two kinds of body nest: the arm's block ends without a separator,
-    // the arm itself with a comma.
-    dump("match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n");
+    // A struct literal is entries too, and its `}` closes a value, so the
+    // `.norm()` below still continues the line.
+    dump("let p = Point {\n    x: 1,\n    y: 2,\n}\n.norm()\n");
+
+    // The two kinds of body nest: inside the arm's block a newline ends a
+    // statement, while the comma ending the arm itself is written.
+    dump("match x {\n    1 => {\n        f()\n        g()\n    },\n    2 => h()\n}\n");
+
+    // `[]` is an array, `{}` with colons a map, `{}` without a set, and `#`
+    // glued to either makes it hashed.
+    dump("let a = [1, 2, 3]\nlet m = {1: 2, 3: 4}\nlet s = {1, 2, 3}\nlet h = #{1: 2}\n");
+
+    // The empty map is `{}` and the empty set `{,}`; a one-element set needs no
+    // trailing comma. All of them close a value, so the chain continues.
+    dump("let m = {}\nlet s = {,}\nlet one = {x}\n.len()\n");
+
+    // The same braces hold statements where a statement could stand, and the
+    // separators come back with them.
+    dump("let v = {\n    f()\n    g()\n}\n{\n    h()\n    k()\n}\n");
+
+    // `::` reaches into a type, `.` into a value or a module.
+    dump("let c = shapes.Color::Red\n");
+
+    // A `}` ends the line it sits on, so the `-1` is a statement of its own —
+    // and `->` is how to say it was not.
+    dump("match x {\n    1 => a\n}\n-1\n");
 
     dump_mangle("my_var_name");
     dump_mangle("already_ok");
@@ -133,10 +156,11 @@ fn lexes_trait_and_cast_keywords() {
     );
 }
 
-/// A struct, enum or match body separates entries with commas, so that is what
-/// a newline inside one inserts.
+/// A struct, enum or match body holds entries, and the commas between them are
+/// the writer's. A newline inside one inserts nothing, exactly as inside a
+/// `(...)`; the `;` of a statement is the only separator the lexer synthesises.
 #[test]
-fn inserts_commas_in_comma_bodies() {
+fn entry_bodies_insert_nothing() {
     assert_eq!(
         lex_types("struct P {\n    x: i32\n    y: i32\n}\n"),
         vec![
@@ -146,12 +170,12 @@ fn inserts_commas_in_comma_bodies() {
             TokType::Identifier("x".to_string()),
             TokType::Colon,
             TokType::I32,
-            TokType::Comma,
+            // Nothing here: the comma the writer left out stays left out.
             TokType::Identifier("y".to_string()),
             TokType::Colon,
             TokType::I32,
-            // No separator before `}`: the brace closes the last field itself.
             TokType::RCurlyBracket,
+            // Outside the body again, where a newline does end a statement.
             TokType::Semicolon,
         ]
     );
@@ -162,7 +186,6 @@ fn inserts_commas_in_comma_bodies() {
             TokType::Identifier("E".to_string()),
             TokType::LCurlyBracket,
             TokType::Identifier("A".to_string()),
-            TokType::Comma,
             TokType::Identifier("B".to_string()),
             TokType::LParen,
             TokType::I32,
@@ -171,7 +194,7 @@ fn inserts_commas_in_comma_bodies() {
             TokType::Semicolon,
         ]
     );
-    // A written comma already ends the entry, so nothing is inserted after it.
+    // Written out, the commas are simply the tokens they always were.
     assert_eq!(
         lex_types("struct P {\n    x: i32,\n    y: i32,\n}\n"),
         vec![
@@ -193,11 +216,12 @@ fn inserts_commas_in_comma_bodies() {
 }
 
 /// The body of a match arm is a block of statements, so the two kinds of body
-/// nest: the arm's `}` is followed by a comma, the statement inside it is not.
+/// nest: inside the arm's block a newline ends a statement, while in the match
+/// body around it a newline does nothing and the arm's comma is written.
 #[test]
 fn brace_kinds_nest() {
     assert_eq!(
-        lex_types("match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n"),
+        lex_types("match x {\n    1 => {\n        f()\n        g()\n    },\n    2 => h()\n}\n"),
         vec![
             TokType::Match,
             TokType::Identifier("x".to_string()),
@@ -208,13 +232,18 @@ fn brace_kinds_nest() {
             TokType::Identifier("f".to_string()),
             TokType::LParen,
             TokType::RParen,
-            // Statement body: nothing before the `}` that closes it.
+            // A statement body, so this newline inserts a semicolon...
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // ...and nothing before the `}` that closes it.
             TokType::RCurlyBracket,
-            // Back in the match body, so the arm is closed by a comma.
+            // Back in the match body: the comma ending the arm is written.
             TokType::Comma,
             TokType::IntLiteral(2),
             TokType::FatArrow,
-            TokType::Identifier("g".to_string()),
+            TokType::Identifier("h".to_string()),
             TokType::LParen,
             TokType::RParen,
             TokType::RCurlyBracket,
@@ -603,9 +632,17 @@ fn peek_does_not_consume() {
         "let m: Map<str, List<i32>> = empty()\n",
         "let n = bits >> 2\n",
         "for i in 0..10 {}\n",
-        // Brace kinds are scanner state too, so they must roll back as well.
+        // Brace kinds are scanner state too, so they must roll back as well —
+        // including a pending header, and a literal's brace inside one.
         "struct P {\n    x: i32\n    y: i32\n}\n",
         "match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n",
+        "let p = Point {\n    x: 1\n    y: 2\n}\n",
+        "if (Cfg { on: true }).on {\n    f()\n}\n",
+        // A collection literal's brace is decided by a lookahead, which is the
+        // scanner run and rewound — so a peek around one nests two of them.
+        "let m = {\n    1: {\n        f()\n        g()\n    },\n}\n",
+        "let s = #{1, 2}\nlet b = {\n    f()\n    g()\n}\n",
+        "for x in {1, 2} {\n    f(x)\n    g(x)\n}\n",
     ];
     for src in sources {
         let mut lexer = Lexer::new(src);
@@ -618,6 +655,781 @@ fn peek_does_not_consume() {
         assert_eq!(lexer.peek().toktype, TokType::EOF);
         assert_eq!(lexer.next_token().toktype, TokType::EOF);
     }
+}
+
+/// if, while, for and match are expressions, so the separator rules have to
+/// leave a control-flow form usable as a value: no semicolon before the `else`
+/// that continues it, none before the `}` that makes it a block's trailing
+/// expression, and one after it when the next line starts a new statement.
+#[test]
+fn control_flow_lexes_as_an_expression() {
+    // Bound to a name: `else` continues the line, and the closing `}` ends the
+    // statement because a real one follows.
+    assert_eq!(
+        lex_types("let x = if c {\n    1\n} else {\n    2\n}\nlet y = x\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::If,
+            TokType::Identifier("c".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            // Nothing before the `}`, so the `1` is the block's value.
+            TokType::RCurlyBracket,
+            TokType::Else,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("y".to_string()),
+            TokType::Equals,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // As the trailing expression of a function body: the match `}` is followed
+    // by the body's `}`, so it takes no separator at all.
+    assert_eq!(
+        lex_types("fn f(): i32 {\n    match x {\n        1 => 2,\n        _ => 3,\n    }\n}\n"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::I32,
+            TokType::LCurlyBracket,
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::IntLiteral(2),
+            TokType::Comma,
+            TokType::Identifier("_".to_string()),
+            TokType::FatArrow,
+            TokType::IntLiteral(3),
+            TokType::Comma,
+            // Two closers in a row, and no separator before either.
+            TokType::RCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Used for its effect, the same form is an expression statement, and the
+    // newline after its `}` supplies the semicolon.
+    assert_eq!(
+        lex_types("while c {\n    f()\n}\ng()\n"),
+        vec![
+            TokType::While,
+            TokType::Identifier("c".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A `break` may carry the loop's value, but only on its own line: `break` can
+/// end a statement, so a newline after it inserts the semicolon and whatever
+/// follows is a statement of its own — the same treatment `return` gets.
+#[test]
+fn break_carries_a_value_on_its_own_line() {
+    assert_eq!(
+        lex_types("while true {\n    break 1\n}\n"),
+        vec![
+            TokType::While,
+            TokType::True,
+            TokType::LCurlyBracket,
+            TokType::Break,
+            TokType::IntLiteral(1),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("break\nf()\n"),
+        vec![
+            TokType::Break,
+            // Inserted: the `f()` below is not the break's value.
+            TokType::Semicolon,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `::` reaches into a type, `:` annotates one, and `.` reaches into a value or
+/// a module. All three can meet in one line.
+#[test]
+fn lexes_path_separator() {
+    assert_eq!(
+        lex_types("let c: Color = Color::Red"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("c".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Color".to_string()),
+            TokType::Equals,
+            TokType::Identifier("Color".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Red".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // Through a module, into the type, then into the value it produces.
+    assert_eq!(
+        lex_types("shapes.Color::Red.name"),
+        vec![
+            TokType::Identifier("shapes".to_string()),
+            TokType::Dot,
+            TokType::Identifier("Color".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Red".to_string()),
+            TokType::Dot,
+            TokType::Identifier("name".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // A trait bound is still one colon, and `<T: Show>` still closes cleanly.
+    assert_eq!(
+        lex_types("fn f<T: Show>()"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("T".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Show".to_string()),
+            TokType::GreaterThan,
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A `{` opens one of three things, and the lexer has to know which: a header's
+/// body, a struct literal, or a block. A header claims the first `{` at its own
+/// bracket depth — which is sound because the grammar bans a struct literal from
+/// the top level of a header — and a `{` straight after a type name anywhere
+/// else is a literal.
+#[test]
+fn struct_literal_is_not_a_block() {
+    // A literal is a value, so nothing is inserted inside it: the commas
+    // between its fields are the writer's, exactly as in a call's arguments.
+    assert_eq!(
+        lex_types("let p = Point {\n    x: 1,\n    y: 2,\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("p".to_string()),
+            TokType::Equals,
+            TokType::Identifier("Point".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            // Outside the literal again, so the statement ends as usual.
+            TokType::Semicolon,
+        ]
+    );
+    // Leave one out and it stays out — no separator appears between `1` and `y`.
+    assert_eq!(
+        lex_types("Point {\n    x: 1\n    y: 2\n}"),
+        vec![
+            TokType::Identifier("Point".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A block inside a field's value is a body again, so its statements do get
+    // separators — the suppression is the innermost brace's, not the outermost.
+    assert_eq!(
+        lex_types("Point {\n    x: if c {\n        f()\n        g()\n    } else { 2 },\n}"),
+        vec![
+            TokType::Identifier("Point".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::If,
+            TokType::Identifier("c".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // Inserted: inside the block, a newline still ends a statement.
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Else,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // And its `}` closes a value, so a chained call on the next line still
+    // continues the line — no `->` needed.
+    assert_eq!(
+        lex_types("let n = Point { x: 1 }\n    .norm()\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::Identifier("Point".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            TokType::RCurlyBracket,
+            TokType::Dot,
+            TokType::Identifier("norm".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // The hard case: a condition that is a bare name looks exactly like the
+    // head of a struct literal. The `if` owns the brace, so it is a block.
+    assert_eq!(
+        lex_types("if ready {\n    f()\n    g()\n}\n"),
+        vec![
+            TokType::If,
+            TokType::Identifier("ready".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // A statement body, so this is a semicolon and not a comma.
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A header only owns a `{` at its own bracket depth, so a literal nested in
+    // one is still a literal.
+    assert_eq!(
+        lex_types("if (Cfg { on: true }).on {\n    f()\n}\n"),
+        vec![
+            TokType::If,
+            TokType::LParen,
+            TokType::Identifier("Cfg".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("on".to_string()),
+            TokType::Colon,
+            TokType::True,
+            TokType::RCurlyBracket,
+            TokType::RParen,
+            TokType::Dot,
+            TokType::Identifier("on".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A signature with no body gets no separator before the `}` of the trait
+    // around it, so its header has to be closed by that `}` — or it would still
+    // be waiting when the literal below turned up, and swallow its brace.
+    assert_eq!(
+        lex_types("trait S {\n    fn show(this): str\n}\nlet p = Point {\n    x: 1\n    y: 2\n}\n"),
+        vec![
+            TokType::Trait,
+            TokType::Identifier("S".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Fn,
+            TokType::Identifier("show".to_string()),
+            TokType::LParen,
+            TokType::This,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Str,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("p".to_string()),
+            TokType::Equals,
+            TokType::Identifier("Point".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            // Still a literal, so still no separator between the fields. Had
+            // the stale header swallowed this brace, it would be a block and a
+            // `;` would appear here.
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A *block's* `}` at the end of a line ends the statement, even when the next
+/// line opens with an operator that could have continued it. Any other closer
+/// still lets one through, so a method chain hanging off `)` keeps working.
+#[test]
+fn close_brace_ends_the_line() {
+    assert_eq!(
+        lex_types("match x {\n    1 => a\n}\n-1\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::Identifier("a".to_string()),
+            TokType::RCurlyBracket,
+            // The match is a statement; the `-1` below is its own.
+            TokType::Semicolon,
+            TokType::Minus,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // `->` splices them back together for the case that wanted an operand.
+    assert_eq!(
+        lex_types("match x {\n    1 => a\n} ->\n-1\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::Identifier("a".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Minus,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // A `)` is not a `}`: a chained call still hangs off the line above.
+    assert_eq!(
+        lex_types("f()\n.g()\n"),
+        vec![
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Dot,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // Keywords still continue: `else` after the `}` of a branch, `as` after a
+    // block being cast.
+    assert_eq!(
+        lex_types("if c {\n    1\n}\nelse {\n    2\n}\n"),
+        vec![
+            TokType::If,
+            TokType::Identifier("c".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::RCurlyBracket,
+            TokType::Else,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // And a leading comma still separates entries rather than being separated
+    // from: `,` punctuates, it does not operate.
+    assert_eq!(
+        lex_types("match x {\n    1 => { a }\n    , 2 => b\n}\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::LCurlyBracket,
+            TokType::Identifier("a".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::FatArrow,
+            TokType::Identifier("b".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `[...]` is an array, `{...}` with colons a map, `{...}` without a set, and a
+/// glued `#` makes either one hashed. All of them are values: their entries are
+/// separated by written commas, and their `}` closes a value rather than a
+/// statement.
+#[test]
+fn lexes_collection_literals() {
+    assert_eq!(
+        lex_types("let a = [1, 2]\nlet s = {1, 2}\nlet m = {1: 2}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("a".to_string()),
+            TokType::Equals,
+            TokType::LBracket,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::RBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("s".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Entries, so a newline inside one inserts nothing — as in a struct literal
+    // — and the `}` closes a value, so the chain below still continues the line.
+    assert_eq!(
+        lex_types("let m = {\n    \"a\": 1,\n    \"b\": 2,\n}\n.len()\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::StringLiteral("a".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::StringLiteral("b".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Dot,
+            TokType::Identifier("len".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // A `#` glued to the brace says hashed, and settles the kind on its own —
+    // `#{}` needs no lookahead to be a literal.
+    assert_eq!(
+        lex_types("let h = #{}\n.len()\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("h".to_string()),
+            TokType::Equals,
+            TokType::HashTag,
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Dot,
+            TokType::Identifier("len".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // A block nested in an entry is a statement body again.
+    assert_eq!(
+        lex_types("let m = {\n    1: {\n        f()\n        g()\n    },\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Colon,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // Inserted: the value's brace holds statements.
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `{}` and `{ x }` hold neither separator, so the position decides: a value is
+/// wanted after an `=`, and a block is what stands at the start of a statement.
+#[test]
+fn empty_and_singleton_braces_follow_the_position() {
+    // After an `=`, `{}` is the empty map and `{ x }` a set of one: both close a
+    // value, so the chain on the next line continues it.
+    for src in ["let m = {}\n.len()\n", "let s = {x}\n.len()\n"] {
+        let toks = lex_types(src);
+        assert_eq!(
+            toks.last(),
+            Some(&TokType::Semicolon),
+            "expected one trailing separator in {:?}",
+            src
+        );
+        assert_eq!(
+            toks.iter().filter(|t| **t == TokType::Semicolon).count(),
+            1,
+            "a literal's `}}` must not end the line in {:?}",
+            src
+        );
+    }
+    // The empty set, and the empty map said out loud — the spelling that works
+    // in a position where a bare `{}` would be a block.
+    assert_eq!(
+        lex_types("let s = {,}\n.len()\n")
+            .iter()
+            .filter(|t| **t == TokType::Semicolon)
+            .count(),
+        1
+    );
+    assert_eq!(
+        lex_types("let m = {:}\n.len()\n")
+            .iter()
+            .filter(|t| **t == TokType::Semicolon)
+            .count(),
+        1
+    );
+    // At the start of a statement the same braces are a block, so the newlines
+    // inside them end statements.
+    assert_eq!(
+        lex_types("{\n    f()\n    g()\n}\n"),
+        vec![
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A struct literal may not stand at the top level of a header, which is what
+/// lets a header claim the `{` in front of it. A collection literal may, so a
+/// header gives up a brace that can only be one — and keeps waiting for the
+/// body, which is the next brace at its own depth.
+#[test]
+fn header_gives_up_a_literal_brace() {
+    assert_eq!(
+        lex_types("for x in {1, 2} {\n    f(x)\n    g(x)\n}\n"),
+        vec![
+            TokType::For,
+            TokType::Identifier("x".to_string()),
+            TokType::In,
+            // The iterable, not the body: nothing is inserted between its
+            // elements, and the comma between them is written.
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            // The body, still claimed by the `for`, and a statement body.
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A `#` says as much on its own, and nesting does not confuse the header:
+    // the body is the next brace at the header's *brace* depth, not just its
+    // bracket depth.
+    assert_eq!(
+        lex_types("for x in #{{1, 2}, {3}} {\n    f(x)\n    g(x)\n}\n"),
+        vec![
+            TokType::For,
+            TokType::Identifier("x".to_string()),
+            TokType::In,
+            TokType::HashTag,
+            TokType::LCurlyBracket,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Comma,
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(3),
+            TokType::RCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            // Reached the body, so the newline ends a statement again.
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A match body holds entries, whose commas look exactly like a set's, so a
+    // match keeps its brace whatever is inside it.
+    assert_eq!(
+        lex_types("match x {\n    1 => a,\n    2 => b,\n}\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::Identifier("a".to_string()),
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::FatArrow,
+            TokType::Identifier("b".to_string()),
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // And a condition that is a bare name still gives the `if` its body, since
+    // a body of statements is what `{ f() ... }` looks like.
+    assert_eq!(
+        lex_types("if ready {\n    f()\n    g()\n}\n"),
+        vec![
+            TokType::If,
+            TokType::Identifier("ready".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A `;` or a keyword that only a statement can start with settles a brace as a
+/// block, wherever it stands.
+#[test]
+fn statements_still_make_a_block() {
+    assert_eq!(
+        lex_types("let x = {\n    let a = 1\n    a\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Let,
+            TokType::Identifier("a".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            // A statement body: the `let` inside decided it.
+            TokType::Semicolon,
+            TokType::Identifier("a".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // The separator the writer put in says as much: `{ f(); g() }` is a block
+    // even in a position that wants a value.
+    assert_eq!(
+        lex_types("let x = {\n    f();\n    g()\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Only the brace's own level counts: this comma is the call's.
+    assert_eq!(
+        lex_types("let x = {\n    f(a, b)\n    g()\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Identifier("a".to_string()),
+            TokType::Comma,
+            TokType::Identifier("b".to_string()),
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
 }
 
 /// Every open form: from, to, to-inclusive, and full.

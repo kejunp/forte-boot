@@ -7,17 +7,28 @@ pub struct Lexer {
     col:   usize,
 
     // Automatic separator insertion state.
-    last_can_end:  bool,
-    bracket_depth: usize,
+    last_can_end:      bool,
+    last_closed_block: bool,
+    bracket_depth:     usize,
 
     // Brace context. See `push_brace`.
     brace_depth:        usize,
-    comma_braces:       u64,
-    pending_comma_body: bool,
+    entry_braces:       u64,
+    value_braces:       u64,
+    pending_entry_body: bool,
+    pending_header:     bool,
+    header_depth:       usize,
+    header_brace_depth: usize,
+
+    // What stood in front of the current token, for deciding a `{`.
+    hash_prefix:    bool,
+    prev_ends_stmt: bool,
+    prev_was_brace: bool,
 
     // Generic argument list state.
-    generic_depth: usize,
-    last_was_name: bool,
+    generic_depth:     usize,
+    last_was_name:     bool,
+    last_was_type_end: bool,
 }
 
 /// Everything `next_token` mutates, so that a lookahead can be rolled back.
@@ -28,15 +39,36 @@ struct State {
     line:  usize,
     col:   usize,
 
-    last_can_end:  bool,
-    bracket_depth: usize,
+    last_can_end:      bool,
+    last_closed_block: bool,
+    bracket_depth:     usize,
 
     brace_depth:        usize,
-    comma_braces:       u64,
-    pending_comma_body: bool,
+    entry_braces:       u64,
+    value_braces:       u64,
+    pending_entry_body: bool,
+    pending_header:     bool,
+    header_depth:       usize,
+    header_brace_depth: usize,
 
-    generic_depth: usize,
-    last_was_name: bool,
+    hash_prefix:    bool,
+    prev_ends_stmt: bool,
+    prev_was_brace: bool,
+
+    generic_depth:     usize,
+    last_was_name:     bool,
+    last_was_type_end: bool,
+}
+
+/// What a look inside a `{` says about the kind of body it opens. See
+/// `scan_brace_body`.
+enum BraceScan {
+    /// A `,` or `:` turned up between its entries: a map or a set.
+    Collection,
+    /// A `;` or a keyword no expression can start with: statements.
+    Block,
+    /// Neither — `{}` or `{ x }`, which read equally well as both.
+    Undecided,
 }
 
 /// Whether a token can legally end a statement, making it a candidate for a
@@ -100,6 +132,88 @@ fn fits_in_generics(t: &TokType) -> bool {
 /// statement, so no semicolon is inserted before them.
 fn starts_continuation(c: char) -> bool {
     matches!(c, '.' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '&' | '|' | ',' | ':')
+}
+
+/// The ones that still continue a line ending in the `}` of a *block*.
+///
+/// `if`, `while`, `for` and `match` are expressions, so a block's `}` can close
+/// either a statement or an operand, and an operator on the next line is
+/// ambiguous between them:
+///
+/// ```text
+/// match x { ... }
+/// -1
+/// ```
+///
+/// A statement is overwhelmingly the common case, so a block's `}` at the end of
+/// a line ends it and the `-1` stands alone. `->` splices the two lines back
+/// together for the rare case that wanted an operand. What survives here is
+/// punctuation that separates rather than operates — a leading `,` in an entry
+/// body, a `:` — which no expression could have continued anyway.
+///
+/// A literal's `}` — a struct's, a map's, a set's — closes a value, not a
+/// statement, so none of this applies to it and a chained `.norm()` on the next
+/// line still continues the line. `push_brace` is what tells the two apart.
+fn continues_after_brace(c: char) -> bool {
+    matches!(c, ',' | ':')
+}
+
+/// Keywords whose header runs up to the `{` that opens their body.
+///
+/// The header is what makes a `{` decidable. Inside one, the first `{` at the
+/// bracket *and* brace depth the keyword was seen at opens the body, and almost
+/// nothing else can be there — which is what the grammar buys by banning a
+/// struct literal from the top level of a header (section 5.1). Outside one, a
+/// `{` straight after a type name is a struct literal.
+///
+/// The exception a collection literal makes to that is in `push_brace`: it may
+/// stand at the top level of a header, so a body of statements gives up a brace
+/// that can only be a literal.
+///
+/// `else` is here with an empty header: the `{` after it is its body, since
+/// nothing can stand between the two.
+fn heads_a_body(t: &TokType) -> bool {
+    matches!(
+        t,
+        TokType::If
+            | TokType::Elif
+            | TokType::Else
+            | TokType::While
+            | TokType::For
+            | TokType::Match
+            | TokType::Fn
+            | TokType::Struct
+            | TokType::Enum
+            | TokType::Trait
+            | TokType::Impl
+    )
+}
+
+/// Keywords that can only begin a statement, so a `{` holding one holds
+/// statements. Inside a brace they can only appear at its top level, and only
+/// before the first `;` if they appear at all — which is exactly as far as
+/// `scan_brace_body` looks.
+///
+/// The control-flow keywords are deliberately absent: `if`, `while`, `for` and
+/// `match` are expressions, so one of them may just as well be an element of a
+/// set as the start of a statement.
+fn starts_statement(t: &TokType) -> bool {
+    matches!(
+        t,
+        TokType::Let
+            | TokType::Var
+            | TokType::Return
+            | TokType::Break
+            | TokType::Continue
+            | TokType::Fn
+            | TokType::Struct
+            | TokType::Enum
+            | TokType::Trait
+            | TokType::Impl
+            | TokType::Import
+            | TokType::Public
+            | TokType::Private
+    )
 }
 
 /// Keywords that continue the previous statement, e.g. the `else` in
@@ -187,15 +301,26 @@ impl Lexer {
             line:  1,
             col:   1,
 
-            last_can_end:  false,
-            bracket_depth: 0,
+            last_can_end:      false,
+            last_closed_block: false,
+            bracket_depth:     0,
 
             brace_depth:        0,
-            comma_braces:       0,
-            pending_comma_body: false,
+            entry_braces:       0,
+            value_braces:       0,
+            pending_entry_body: false,
+            pending_header:     false,
+            header_depth:       0,
+            header_brace_depth: 0,
 
-            generic_depth: 0,
-            last_was_name: false,
+            hash_prefix:    false,
+            // Nothing precedes the first token, and a statement may start there.
+            prev_ends_stmt: true,
+            prev_was_brace: false,
+
+            generic_depth:     0,
+            last_was_name:     false,
+            last_was_type_end: false,
         }
     }
 
@@ -227,15 +352,25 @@ impl Lexer {
             line:  self.line,
             col:   self.col,
 
-            last_can_end:  self.last_can_end,
-            bracket_depth: self.bracket_depth,
+            last_can_end:      self.last_can_end,
+            last_closed_block: self.last_closed_block,
+            bracket_depth:     self.bracket_depth,
 
             brace_depth:        self.brace_depth,
-            comma_braces:       self.comma_braces,
-            pending_comma_body: self.pending_comma_body,
+            entry_braces:       self.entry_braces,
+            value_braces:       self.value_braces,
+            pending_entry_body: self.pending_entry_body,
+            pending_header:     self.pending_header,
+            header_depth:       self.header_depth,
+            header_brace_depth: self.header_brace_depth,
 
-            generic_depth: self.generic_depth,
-            last_was_name: self.last_was_name,
+            hash_prefix:    self.hash_prefix,
+            prev_ends_stmt: self.prev_ends_stmt,
+            prev_was_brace: self.prev_was_brace,
+
+            generic_depth:     self.generic_depth,
+            last_was_name:     self.last_was_name,
+            last_was_type_end: self.last_was_type_end,
         }
     }
 
@@ -245,14 +380,24 @@ impl Lexer {
         self.col = s.col;
 
         self.last_can_end = s.last_can_end;
+        self.last_closed_block = s.last_closed_block;
         self.bracket_depth = s.bracket_depth;
 
         self.brace_depth = s.brace_depth;
-        self.comma_braces = s.comma_braces;
-        self.pending_comma_body = s.pending_comma_body;
+        self.entry_braces = s.entry_braces;
+        self.value_braces = s.value_braces;
+        self.pending_entry_body = s.pending_entry_body;
+        self.pending_header = s.pending_header;
+        self.header_depth = s.header_depth;
+        self.header_brace_depth = s.header_brace_depth;
+
+        self.hash_prefix = s.hash_prefix;
+        self.prev_ends_stmt = s.prev_ends_stmt;
+        self.prev_was_brace = s.prev_was_brace;
 
         self.generic_depth = s.generic_depth;
         self.last_was_name = s.last_was_name;
+        self.last_was_type_end = s.last_was_type_end;
     }
 
     /// Returns the token `next_token` would return, without consuming it.
@@ -289,15 +434,24 @@ impl Lexer {
 
         if self.wants_separator(crossed_newline) {
             self.last_can_end = false;
-            // A struct, enum or match body separates its entries with commas;
-            // everywhere else a newline ends a statement.
-            let toktype = if self.in_comma_body() {
-                TokType::Comma
-            } else {
-                TokType::Semicolon
-            };
-            return Tok { toktype, line, col };
+            self.last_closed_block = false;
+            self.last_was_type_end = false;
+            self.hash_prefix = false;
+            // An inserted separator ends the statement as a written one does, so
+            // a `{` after it opens a block.
+            self.prev_ends_stmt = true;
+            self.prev_was_brace = false;
+            // The statement is over, so nothing it opened is still pending.
+            self.pending_header = false;
+            self.pending_entry_body = false;
+            return Tok { toktype: TokType::Semicolon, line, col };
         }
+
+        // What stands in front of this token, which is what decides a `{`.
+        // Captured before the scan overwrites it.
+        let after_type_name = self.last_was_type_end;
+        let after_hash = self.hash_prefix;
+        let value_only = !self.prev_ends_stmt && !(self.prev_was_brace && !self.in_entry_body());
 
         let tok = self.scan_token();
 
@@ -314,47 +468,216 @@ impl Lexer {
             _ => {}
         }
         self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
+        // A name, or the `>` closing its type arguments: `Point {`, `Vec<i32> {`.
+        self.last_was_type_end = self.last_was_name || closed_generic;
 
         self.last_can_end = can_end_statement(&tok.toktype) || closed_generic;
-        match tok.toktype {
+        self.last_closed_block = false;
+        // A `#` marks the brace behind it as a hash map or hash set, but only
+        // when glued to it — `#{`, as `#[` opens an attribute.
+        self.hash_prefix = tok.toktype == TokType::HashTag && self.peek_char() == Some('{');
+        self.prev_ends_stmt = matches!(tok.toktype, TokType::Semicolon | TokType::FatArrow);
+        self.prev_was_brace =
+            matches!(tok.toktype, TokType::LCurlyBracket | TokType::RCurlyBracket);
+        match &tok.toktype {
             TokType::LParen | TokType::LBracket => self.bracket_depth += 1,
             TokType::RParen | TokType::RBracket => {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
             }
-            TokType::LCurlyBracket => self.push_brace(),
-            TokType::RCurlyBracket => self.brace_depth = self.brace_depth.saturating_sub(1),
-            // Only these three head a body whose entries are comma-separated.
-            // The flag survives the rest of the header — a name, generic
-            // parameters, a scrutinee expression — until its `{` claims it.
-            TokType::Struct | TokType::Enum | TokType::Match => self.pending_comma_body = true,
+            TokType::LCurlyBracket => self.push_brace(after_type_name, after_hash, value_only),
+            TokType::RCurlyBracket => {
+                // Only a block's `}` ends the line it sits on; the `}` of a
+                // literal — a struct's, a map's, a set's — closes a value that
+                // an operator may continue.
+                self.last_closed_block = !self.in_value_body();
+                self.brace_depth = self.brace_depth.saturating_sub(1);
+                // Whatever header was open cannot still be: a signature with no
+                // body, `fn show(this): str`, gets no separator before the `}`
+                // of the trait around it, and its header must not outlive it.
+                self.pending_header = false;
+            }
+            // A written separator ends the statement, as an inserted one does.
+            TokType::Semicolon | TokType::Comma => {
+                self.pending_header = false;
+                self.pending_entry_body = false;
+            }
+            // The flags survive the rest of the header — a name, generic
+            // parameters, a scrutinee expression — until its `{` claims them.
+            t if heads_a_body(t) => {
+                self.pending_header = true;
+                self.header_depth = self.bracket_depth;
+                self.header_brace_depth = self.brace_depth;
+                // Of those, only these three hold comma-separated entries.
+                if matches!(t, TokType::Struct | TokType::Enum | TokType::Match) {
+                    self.pending_entry_body = true;
+                }
+            }
             _ => {}
         }
         tok
     }
 
-    /// Records what kind of body a `{` opens: bit `n` of `comma_braces` is set
-    /// when the brace at depth `n` holds comma-separated entries rather than
-    /// statements. A bitmask keeps the snapshot `Copy`, so a `peek` costs no
-    /// allocation; past 64 levels of nesting the kind is no longer tracked and
-    /// a body reverts to statements, which no real source reaches.
-    fn push_brace(&mut self) {
+    /// Records what kind of body a `{` opens. There are four:
+    ///
+    ///   - the body of a header — the first `{` at the bracket depth an `if`,
+    ///     `fn`, `match` or other body-heading keyword was seen at. Nothing
+    ///     else can be there, because the grammar keeps a struct literal out of
+    ///     the top level of a header;
+    ///   - a struct literal, when no header claims the brace and a type name
+    ///     ends immediately before it: `Point {`, `Vec<i32> {`;
+    ///   - a map or set literal — `{1: 2}`, `{1, 2}`, and anything after a
+    ///     glued `#`. See `opens_collection`;
+    ///   - a block otherwise.
+    ///
+    /// Bit `n` of `entry_braces` is set when the brace at depth `n` holds
+    /// comma-separated entries rather than statements — a struct, enum or match
+    /// body, and every literal. Nothing is inserted inside one of those: the
+    /// commas are written. Bit `n` of `value_braces` narrows that to the
+    /// literals, whose `}` closes a value and so ends no line by itself either.
+    ///
+    /// A bitmask keeps the snapshot `Copy`, so a `peek` costs no allocation;
+    /// past 64 levels of nesting the kind is no longer tracked and a body
+    /// reverts to statements, which no real source reaches.
+    fn push_brace(&mut self, after_type_name: bool, after_hash: bool, value_only: bool) {
+        let at_header = self.pending_header
+            && self.bracket_depth == self.header_depth
+            && self.brace_depth == self.header_brace_depth;
+        let literal = !at_header && after_type_name;
+
+        // A collection literal *can* stand at the top level of a header —
+        // `for x in {1, 2, 3} {` — where a struct literal cannot, so a header
+        // gives up a brace that can only be a literal: one with a `,` or `:` at
+        // its top level, or a `#` glued in front. A body of statements never
+        // has those. A struct, enum or match body does, so those three keep
+        // their brace whatever is inside it.
+        let collection = !literal
+            && (after_hash
+                || if at_header {
+                    !self.pending_entry_body
+                        && matches!(self.scan_brace_body(), BraceScan::Collection)
+                } else {
+                    self.opens_collection(value_only)
+                });
+
+        let heads_body = at_header && !collection;
+        let entries = literal || collection || (heads_body && self.pending_entry_body);
+
         if self.brace_depth < 64 {
             let bit = 1u64 << self.brace_depth;
-            if self.pending_comma_body {
-                self.comma_braces |= bit;
+            if entries {
+                self.entry_braces |= bit;
             } else {
-                self.comma_braces &= !bit;
+                self.entry_braces &= !bit;
+            }
+            if literal || collection {
+                self.value_braces |= bit;
+            } else {
+                self.value_braces &= !bit;
             }
         }
         self.brace_depth += 1;
-        self.pending_comma_body = false;
+        // A `{` deeper than the header's — `match f({ ... }) {` — is not the
+        // body, so the header keeps waiting for the one that is.
+        if heads_body {
+            self.pending_header = false;
+            self.pending_entry_body = false;
+        }
+    }
+
+    /// Whether a `{` that no header and no type name claimed opens a map or a
+    /// set rather than a block.
+    ///
+    /// Nothing in front of the brace can say: a literal and a block stand in
+    /// the same places. So the lexer looks *inside* instead, and what it finds
+    /// usually settles it — statements are separated by `;` and entries by
+    /// `,`, and neither separator is legal in the other's body.
+    ///
+    /// `{}` and `{ x }` contain neither, and there `value_only` decides: where
+    /// only a value can stand — after `=`, `(`, `,`, `return`, an operator — it
+    /// is a literal, so `{}` is the empty map and `{ x }` a set of one, with no
+    /// trailing comma asked for. Where a statement could stand instead — at the
+    /// start of one, after a `=>`, inside another block — it is a block, since
+    /// that is what braces are there.
+    ///
+    /// The cost is that a block used as a value has to hold a statement
+    /// boundary — a `;`, a line break, or a keyword only a statement starts
+    /// with — which every block worth writing does, since a block of one
+    /// expression is that expression. `{ f() }` after an `=` is the set of one
+    /// that it looks like. The empty map can still be said in either position
+    /// by writing the `:` out, `{:}`, as the empty set is `{,}`.
+    fn opens_collection(&mut self, value_only: bool) -> bool {
+        match self.scan_brace_body() {
+            BraceScan::Collection => true,
+            BraceScan::Block => false,
+            BraceScan::Undecided => value_only,
+        }
+    }
+
+    /// Reads ahead over the body of the `{` just scanned, stopping at the first
+    /// token that tells the two kinds apart, and rewinds.
+    ///
+    /// Only the brace's own level counts: the `,` of `{ f(a, b) }` is the call's
+    /// and the `:` of `{ Point { x: 1 } }` is the literal's, so both are skipped
+    /// and the brace is left `Undecided`.
+    ///
+    /// A line break that would end a statement counts as a `;`, since that is
+    /// what it is about to become. It has to: a block written in this language
+    /// need contain no separator at all, and `{ f()` / newline / `g() }` is two
+    /// statements however it is punctuated. Between entries a newline means
+    /// nothing, and the `,` or `:` of a real literal is met before any newline
+    /// that could be read this way.
+    ///
+    /// The scan runs to the end of the body in the worst case, which makes
+    /// nested literals quadratic in principle. In practice it stops at the
+    /// first separator, a token or two in.
+    fn scan_brace_body(&mut self) -> BraceScan {
+        let saved = self.save();
+        let mut depth = 0usize;
+        let mut prev_can_end = false;
+        let verdict = loop {
+            // `scan_token` reads from where it stands; only `next_token` skips
+            // ahead, and this look is taken without it.
+            let crossed_newline = self.skip_whitespace();
+            if depth == 0 && crossed_newline && prev_can_end && self.breaks_statement(false) {
+                break BraceScan::Block;
+            }
+            let tok = self.scan_token();
+            prev_can_end = can_end_statement(&tok.toktype);
+            match tok.toktype {
+                TokType::LParen | TokType::LBracket | TokType::LCurlyBracket => depth += 1,
+                TokType::RParen | TokType::RBracket => depth = depth.saturating_sub(1),
+                // The `}` closing the body itself: nothing decided it.
+                TokType::RCurlyBracket => {
+                    if depth == 0 {
+                        break BraceScan::Undecided;
+                    }
+                    depth -= 1;
+                }
+                TokType::Comma | TokType::Colon if depth == 0 => break BraceScan::Collection,
+                TokType::Semicolon if depth == 0 => break BraceScan::Block,
+                ref t if depth == 0 && starts_statement(t) => break BraceScan::Block,
+                // Unterminated, or malformed past the point of guessing.
+                TokType::EOF | TokType::Error(_) => break BraceScan::Undecided,
+                _ => {}
+            }
+        };
+        self.restore(saved);
+        verdict
     }
 
     /// Whether the innermost open brace holds comma-separated entries.
-    fn in_comma_body(&self) -> bool {
+    fn in_entry_body(&self) -> bool {
         self.brace_depth > 0
             && self.brace_depth <= 64
-            && self.comma_braces & (1u64 << (self.brace_depth - 1)) != 0
+            && self.entry_braces & (1u64 << (self.brace_depth - 1)) != 0
+    }
+
+    /// Whether the innermost open brace closes a value — a struct, map or set
+    /// literal's — rather than a statement.
+    fn in_value_body(&self) -> bool {
+        self.brace_depth > 0
+            && self.brace_depth <= 64
+            && self.value_braces & (1u64 << (self.brace_depth - 1)) != 0
     }
 
     /// Decides whether to synthesize a separator at the current position.
@@ -367,18 +690,43 @@ impl Lexer {
         if self.bracket_depth > 0 {
             return false;
         }
+        // Entries are the writer's to separate. The fields of a struct, the
+        // variants of an enum, the arms of a match and the fields of a struct
+        // literal all take a written `,`, so a newline inside one of those
+        // braces inserts nothing — as inside `(...)`, and for the same reason.
+        // Only a statement body gets a separator, which is why this asks about
+        // the innermost brace: a block nested in an entry is a body again.
+        if self.in_entry_body() {
+            return false;
+        }
 
         match self.peek_char() {
             // End of input, with a statement left open.
             None => true,
             Some(_) if !crossed_newline => false,
+            _ => self.breaks_statement(self.last_closed_block),
+        }
+    }
+
+    /// Whether what stands at the current position starts a statement rather
+    /// than continuing the one before it. Asked at a line break, of the line
+    /// below it; end of input is left to the caller.
+    ///
+    /// `closed_block` says whether the token just read was the `}` of a block,
+    /// which narrows what may still continue the line.
+    fn breaks_statement(&self, closed_block: bool) -> bool {
+        match self.peek_char() {
+            None => false,
             // A `}` closes the body by itself, so the entry or statement in
             // front of it needs no separator. That is what lets the last field
             // of a struct go without a trailing comma, and the last statement
             // of a block without a semicolon.
             Some('}') => false,
-            Some(c) if starts_continuation(c) => false,
+            // Keyword continuations come first, so `else` still follows the `}`
+            // of an if branch and `as` still follows a block it casts.
             Some(c) if c.is_alphabetic() || c == '_' => !continues_statement(&self.peek_word()),
+            Some(c) if closed_block => !continues_after_brace(c),
+            Some(c) if starts_continuation(c) => false,
             Some(_) => true,
         }
     }
@@ -501,7 +849,8 @@ impl Lexer {
             ']' => TokType::RBracket,
             '{' => TokType::LCurlyBracket,
             '}' => TokType::RCurlyBracket,
-            ':' => TokType::Colon,
+            // `::` reaches into a type — `Color::Red` — where `:` annotates one.
+            ':' => if self.eat(':') { TokType::ColonColon } else { TokType::Colon },
             ',' => TokType::Comma,
             '.' => {
                 if self.eat('.') {

@@ -101,6 +101,7 @@ pub enum TokType {
     LCurlyBracket,
     RCurlyBracket,
     Colon,
+    ColonColon,
     Comma,
     Dot,
     Semicolon,
