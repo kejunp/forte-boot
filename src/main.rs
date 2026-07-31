@@ -98,6 +98,10 @@ fn main() {
     // and `->` is how to say it was not.
     dump("match x {\n    1 => a\n}\n-1\n");
 
+    // A lone `_` is the wildcard: the match-all pattern, and the name of a
+    // binding whose value is deliberately unused. `_foo` is still a name.
+    dump("match x {\n    1 => a,\n    _ => b,\n}\nlet _ = f()\nfor _ in 0..3 {}\nlet _foo = 1\n");
+
     dump_mangle("my_var_name");
     dump_mangle("already_ok");
 }
@@ -643,6 +647,8 @@ fn peek_does_not_consume() {
         "let m = {\n    1: {\n        f()\n        g()\n    },\n}\n",
         "let s = #{1, 2}\nlet b = {\n    f()\n    g()\n}\n",
         "for x in {1, 2} {\n    f(x)\n    g(x)\n}\n",
+        "match x {\n    1 => a,\n    _ => b,\n}\n",
+        "let _ = f()\nfor _ in 0..3 {}\n",
     ];
     for src in sources {
         let mut lexer = Lexer::new(src);
@@ -708,7 +714,7 @@ fn control_flow_lexes_as_an_expression() {
             TokType::FatArrow,
             TokType::IntLiteral(2),
             TokType::Comma,
-            TokType::Identifier("_".to_string()),
+            TokType::Underscore,
             TokType::FatArrow,
             TokType::IntLiteral(3),
             TokType::Comma,
@@ -1438,7 +1444,7 @@ fn lexes_open_ranges() {
     let range_only = |src| {
         let mut toks = lex_types(src);
         toks.pop(); // trailing inserted semicolon
-        toks.drain(..3); // `let _ =`
+        toks.drain(..3); // the `let ... =` in front
         toks
     };
     assert_eq!(range_only("let a = 1.."), vec![TokType::IntLiteral(1), TokType::DotDot]);
@@ -1460,4 +1466,156 @@ fn lexes_open_ranges() {
             TokType::Semicolon,
         ]
     );
+}
+
+/// A lone `_` is its own token: the match-all pattern, and the name of a
+/// binding whose value is deliberately unused.
+#[test]
+fn lexes_wildcard() {
+    // The wildcard arm of a match.
+    assert_eq!(
+        lex_types("match x {\n    1 => a,\n    _ => b,\n}\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::Identifier("a".to_string()),
+            TokType::Comma,
+            TokType::Underscore,
+            TokType::FatArrow,
+            TokType::Identifier("b".to_string()),
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A discarded binding, an unused parameter, and an unused loop variable —
+    // every place a name can be bound.
+    assert_eq!(
+        lex_types("let _ = f()"),
+        vec![
+            TokType::Let,
+            TokType::Underscore,
+            TokType::Equals,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("fn f(_: i32) {}"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Underscore,
+            TokType::Colon,
+            TokType::I32,
+            TokType::RParen,
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("for _ in 0..3 {}"),
+        vec![
+            TokType::For,
+            TokType::Underscore,
+            TokType::In,
+            TokType::IntLiteral(0),
+            TokType::DotDot,
+            TokType::IntLiteral(3),
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Repeated in one pattern, which a name could not be: a `_` binds nothing.
+    assert_eq!(
+        lex_types("Pair::Of(_, _)"),
+        vec![
+            TokType::Identifier("Pair".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Of".to_string()),
+            TokType::LParen,
+            TokType::Underscore,
+            TokType::Comma,
+            TokType::Underscore,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// Reserved as a whole word only. An underscore that starts a longer word is
+/// just a character of that word, exactly as it was before.
+#[test]
+fn wildcard_is_a_whole_word_only() {
+    for word in ["_x", "__", "_1", "_foo_bar", "x_"] {
+        assert_eq!(
+            lex_types(word),
+            vec![TokType::Identifier(word.to_string()), TokType::Semicolon],
+            "{:?} should still lex as an identifier",
+            word
+        );
+    }
+}
+
+/// A `_` names a binding, so it closes a declaration as a name does — but it
+/// names no *type*, so it opens no generic context and heads no struct literal.
+#[test]
+fn wildcard_behaves_like_a_name_but_not_a_type() {
+    // `let _` is as complete as `let x`, so the newline ends it.
+    assert_eq!(
+        lex_types("let _\nlet y = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Underscore,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("y".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // `in` still continues the line after one, so a `for` header may break.
+    assert_eq!(
+        lex_types("for _\n    in xs {}"),
+        vec![
+            TokType::For,
+            TokType::Underscore,
+            TokType::In,
+            TokType::Identifier("xs".to_string()),
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // No generic context opens after it, so the `>>` below is a real shift.
+    assert_eq!(
+        lex_types("_ < 1 && b >> c"),
+        vec![
+            TokType::Underscore,
+            TokType::LessThan,
+            TokType::IntLiteral(1),
+            TokType::And,
+            TokType::Identifier("b".to_string()),
+            TokType::RShift,
+            TokType::Identifier("c".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// The wildcard is not a digit separator: a `_` glued to a number is still the
+/// malformed literal it always was.
+#[test]
+fn wildcard_does_not_separate_digits() {
+    assert!(matches!(lex_types("1_000")[0], TokType::Error(_)));
+    assert!(matches!(lex_types("0xFF_FF")[0], TokType::Error(_)));
 }

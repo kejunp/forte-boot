@@ -46,6 +46,11 @@ pub enum TokType {
     This,
     Null,
 
+    // The wildcard: a pattern that matches anything, and the name of a binding
+    // whose value is deliberately unused. A lone `_` only — `_foo` and `__` are
+    // ordinary identifiers.
+    Underscore,
+
     // Literal values
     Identifier(String),
     IntLiteral(i64),

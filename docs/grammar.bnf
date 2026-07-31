@@ -136,10 +136,24 @@ trait.
 <param_seq>             ::= <param>
                           | <param_seq> "," <param>
 
+A parameter, a variable and a for's loop variable are all bindings, and any of
+them may be written "_" to say the value is deliberately unused. A "_" binds
+nothing, so nothing can refer to it and two of them never collide: "fn f(_:
+i32, _: str)" is legal where two parameters of one name are not.
+
+"_" is a token of its own, not an <IDENTIFIER>, and only as a whole word:
+"_foo" and "__" are ordinary identifiers that happen to be spelled with
+underscores, and bind as one. Nor is it an expression — it may not stand on
+the right of anything, so a value is discarded by binding it, "let _ = f()",
+and not by assigning to it: "_ = f()" is not an assignment.
+
+<binding_name>          ::= <IDENTIFIER>
+                          | "_"
+
 <param>                 ::= <param_name> <type_annotation_opt>
 
 <param_name>            ::= "this"
-                          | <IDENTIFIER>
+                          | <binding_name>
 
 <type_annotation_opt>   ::= <empty>
                           | ":" <type>
@@ -211,7 +225,7 @@ A variant is named through its enum with "::" — "Color::Red",
 
 <impl_member>           ::= <attribute_list> <visibility_opt> <fn_decl>
 
-<var_decl>              ::= <var_intro> <IDENTIFIER> <type_annotation_opt>
+<var_decl>              ::= <var_intro> <binding_name> <type_annotation_opt>
                             <initializer_opt> ";"
 
 <var_intro>             ::= "let"
@@ -589,7 +603,7 @@ anywhere in a header: nothing in them says literal, so the body claims them.
 
 <while_expr>            ::= "while" <header_expr> <block>
 
-<for_expr>              ::= "for" <IDENTIFIER> "in" <header_expr> <block>
+<for_expr>              ::= "for" <binding_name> "in" <header_expr> <block>
 
 <match_expr>            ::= "match" <header_expr>
                             "{" <match_arm_list_opt> "}"
@@ -619,7 +633,9 @@ A block is an expression, so "=> { ... }" is covered by this too.
                           | <variant_pattern>
                           | <IDENTIFIER>
 
-"_" is the wildcard; a bare <IDENTIFIER> is a binding.
+"_" is the wildcard; a bare <IDENTIFIER> is a binding. The two differ only in
+that the wildcard binds nothing, which is why it may be repeated in one
+pattern — "Pair::Of(_, _)" — where a name may not.
 
 <literal_pattern>       ::= <literal>
                           | "-" <literal>
@@ -657,7 +673,9 @@ description instead of by a rule:
 
 <IDENTIFIER>            ::= <ident_start> <ident_continue_list>
 
-An <IDENTIFIER> is any such word that is not a <keyword>.
+An <IDENTIFIER> is any such word that is not a <keyword>. "_" is one of those
+keywords, so a lone underscore is the wildcard token and never an identifier;
+"_x" and "__" are longer words, so they are identifiers like any other.
 
 <ident_continue_list>   ::= <empty>
                           | <ident_continue_list> <ident_continue>
@@ -744,7 +762,7 @@ A <CHAR_LITERAL> holds exactly one character.
                           | "else"   | "while" | "for"      | "in"
                           | "return" | "break" | "continue" | "match"
                           | "as"     | "true"  | "false"    | "this"
-                          | "null"
+                          | "null"   | "_"
 
 A block comment does not nest.
 
@@ -767,9 +785,11 @@ at all.
 A ";" may always be written by hand, and a "," always must be. The lexer
 inserts a ";" at a newline when all of the following hold:
 
-  a. The previous token can end a statement: an identifier, a literal,
+  a. The previous token can end a statement: an identifier, "_", a literal,
      "this", "null", "return", "break", "continue", ")", "]", "}", "..", a
-     primitive type name, or the ">" closing a generic argument list.
+     primitive type name, or the ">" closing a generic argument list. A "_"
+     is there because it names a binding, so "let _" is as complete a
+     declaration as "let x".
   b. No "(" or "[" is open, and the innermost open brace is not an entry
      body — a struct, enum or match body, or a struct, map or set literal. A
      block is a boundary; an argument list is not, and neither is a list of
@@ -932,6 +952,13 @@ pin them down, and no parser exists yet to confirm them.
   - <enum_variant> carries a positional payload only. A named one — "Move {
     x: i32, y: i32 }" — would need a pattern to match it and a body the
     lexer would have to tell from a struct's, and neither is provided.
+  - "_" is a pattern and a binding name, and nothing else. It is not an
+    inferred-type placeholder — "let v: Vec<_>" does not parse, and the lexer
+    abandons a generic context on it for that reason; a "let" with an
+    initializer already infers its type, so the placeholder buys only the
+    partly-annotated case. Nor is it a digit separator: "1_000_000" is the
+    malformed-literal error that junk glued to a number has always been. Both
+    are additions the token allows and neither is taken.
   - No syntax is reserved for pointers/references, closures, or generic
     constraints beyond a bound list.
 ==============================================================================

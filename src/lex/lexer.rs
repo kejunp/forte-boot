@@ -85,6 +85,9 @@ fn can_end_statement(t: &TokType) -> bool {
             | TokType::False
             | TokType::This
             | TokType::Null
+            // A wildcard names a binding, so it stands where a name stands and
+            // closes a declaration as one does: `let _`.
+            | TokType::Underscore
             | TokType::Return
             | TokType::Break
             | TokType::Continue
@@ -288,6 +291,10 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "this" => TokType::This,
         "null" => TokType::Null,
 
+        // The wildcard. Reserved as a whole word and not as a prefix, so `_foo`
+        // and `__` fall through and lex as the identifiers they are.
+        "_" => TokType::Underscore,
+
         _ => return None,
     };
     Some(tok)
@@ -467,6 +474,9 @@ impl Lexer {
             t if self.generic_depth > 0 && !fits_in_generics(t) => self.generic_depth = 0,
             _ => {}
         }
+        // A `_` is deliberately not one. It names no type, so it opens no
+        // generic context and heads no struct literal: `_ < 2` is a comparison
+        // and the `{` after a `_` is whatever it would have been on its own.
         self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
         // A name, or the `>` closing its type arguments: `Point {`, `Vec<i32> {`.
         self.last_was_type_end = self.last_was_name || closed_generic;
