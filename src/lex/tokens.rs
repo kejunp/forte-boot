@@ -9,6 +9,8 @@ pub enum TokType {
     U16,
     U32,
     U64,
+    F32,
+    F64,
     Bool,
     Char,
     Str,

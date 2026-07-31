@@ -6,9 +6,14 @@ pub struct Lexer {
     line:  usize,
     col:   usize,
 
-    // Automatic semicolon insertion state.
+    // Automatic separator insertion state.
     last_can_end:  bool,
     bracket_depth: usize,
+
+    // Brace context. See `push_brace`.
+    brace_depth:        usize,
+    comma_braces:       u64,
+    pending_comma_body: bool,
 
     // Generic argument list state.
     generic_depth: usize,
@@ -26,12 +31,16 @@ struct State {
     last_can_end:  bool,
     bracket_depth: usize,
 
+    brace_depth:        usize,
+    comma_braces:       u64,
+    pending_comma_body: bool,
+
     generic_depth: usize,
     last_was_name: bool,
 }
 
 /// Whether a token can legally end a statement, making it a candidate for a
-/// semicolon to be inserted after it at a newline.
+/// separator to be inserted after it at a newline.
 fn can_end_statement(t: &TokType) -> bool {
     matches!(
         t,
@@ -56,6 +65,7 @@ fn can_end_statement(t: &TokType) -> bool {
             // A type name can end a field or parameter declaration.
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
+            | TokType::F32 | TokType::F64
             | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
     )
 }
@@ -81,6 +91,7 @@ fn fits_in_generics(t: &TokType) -> bool {
             | TokType::RBracket
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
+            | TokType::F32 | TokType::F64
             | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
     )
 }
@@ -123,6 +134,8 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "u16" => TokType::U16,
         "u32" => TokType::U32,
         "u64" => TokType::U64,
+        "f32" => TokType::F32,
+        "f64" => TokType::F64,
         "bool" => TokType::Bool,
         "char" => TokType::Char,
         "str" => TokType::Str,
@@ -177,6 +190,10 @@ impl Lexer {
             last_can_end:  false,
             bracket_depth: 0,
 
+            brace_depth:        0,
+            comma_braces:       0,
+            pending_comma_body: false,
+
             generic_depth: 0,
             last_was_name: false,
         }
@@ -213,6 +230,10 @@ impl Lexer {
             last_can_end:  self.last_can_end,
             bracket_depth: self.bracket_depth,
 
+            brace_depth:        self.brace_depth,
+            comma_braces:       self.comma_braces,
+            pending_comma_body: self.pending_comma_body,
+
             generic_depth: self.generic_depth,
             last_was_name: self.last_was_name,
         }
@@ -225,6 +246,10 @@ impl Lexer {
 
         self.last_can_end = s.last_can_end;
         self.bracket_depth = s.bracket_depth;
+
+        self.brace_depth = s.brace_depth;
+        self.comma_braces = s.comma_braces;
+        self.pending_comma_body = s.pending_comma_body;
 
         self.generic_depth = s.generic_depth;
         self.last_was_name = s.last_was_name;
@@ -262,9 +287,16 @@ impl Lexer {
             crossed_newline = false;
         }
 
-        if self.wants_semicolon(crossed_newline) {
+        if self.wants_separator(crossed_newline) {
             self.last_can_end = false;
-            return Tok { toktype: TokType::Semicolon, line, col };
+            // A struct, enum or match body separates its entries with commas;
+            // everywhere else a newline ends a statement.
+            let toktype = if self.in_comma_body() {
+                TokType::Comma
+            } else {
+                TokType::Semicolon
+            };
+            return Tok { toktype, line, col };
         }
 
         let tok = self.scan_token();
@@ -289,13 +321,44 @@ impl Lexer {
             TokType::RParen | TokType::RBracket => {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
             }
+            TokType::LCurlyBracket => self.push_brace(),
+            TokType::RCurlyBracket => self.brace_depth = self.brace_depth.saturating_sub(1),
+            // Only these three head a body whose entries are comma-separated.
+            // The flag survives the rest of the header — a name, generic
+            // parameters, a scrutinee expression — until its `{` claims it.
+            TokType::Struct | TokType::Enum | TokType::Match => self.pending_comma_body = true,
             _ => {}
         }
         tok
     }
 
-    /// Decides whether to synthesize a semicolon at the current position.
-    fn wants_semicolon(&self, crossed_newline: bool) -> bool {
+    /// Records what kind of body a `{` opens: bit `n` of `comma_braces` is set
+    /// when the brace at depth `n` holds comma-separated entries rather than
+    /// statements. A bitmask keeps the snapshot `Copy`, so a `peek` costs no
+    /// allocation; past 64 levels of nesting the kind is no longer tracked and
+    /// a body reverts to statements, which no real source reaches.
+    fn push_brace(&mut self) {
+        if self.brace_depth < 64 {
+            let bit = 1u64 << self.brace_depth;
+            if self.pending_comma_body {
+                self.comma_braces |= bit;
+            } else {
+                self.comma_braces &= !bit;
+            }
+        }
+        self.brace_depth += 1;
+        self.pending_comma_body = false;
+    }
+
+    /// Whether the innermost open brace holds comma-separated entries.
+    fn in_comma_body(&self) -> bool {
+        self.brace_depth > 0
+            && self.brace_depth <= 64
+            && self.comma_braces & (1u64 << (self.brace_depth - 1)) != 0
+    }
+
+    /// Decides whether to synthesize a separator at the current position.
+    fn wants_separator(&self, crossed_newline: bool) -> bool {
         if !self.last_can_end {
             return false;
         }
@@ -309,6 +372,11 @@ impl Lexer {
             // End of input, with a statement left open.
             None => true,
             Some(_) if !crossed_newline => false,
+            // A `}` closes the body by itself, so the entry or statement in
+            // front of it needs no separator. That is what lets the last field
+            // of a struct go without a trailing comma, and the last statement
+            // of a block without a semicolon.
+            Some('}') => false,
             Some(c) if starts_continuation(c) => false,
             Some(c) if c.is_alphabetic() || c == '_' => !continues_statement(&self.peek_word()),
             Some(_) => true,

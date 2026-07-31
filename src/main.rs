@@ -67,6 +67,14 @@ fn main() {
 
     dump("for i in 0..10 {}\nfor j in 0..=n {}\n");
 
+    // A struct body separates fields with commas, so that is what a newline
+    // inserts — and nothing is inserted before the closing brace.
+    dump("struct P {\n    x: i32\n    y: i32\n}\n");
+
+    // The two kinds of body nest: the arm's block ends without a separator,
+    // the arm itself with a comma.
+    dump("match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n");
+
     dump_mangle("my_var_name");
     dump_mangle("already_ok");
 }
@@ -122,6 +130,184 @@ fn lexes_trait_and_cast_keywords() {
     assert_eq!(
         lex_types("assert"),
         vec![TokType::Identifier("assert".to_string()), TokType::Semicolon]
+    );
+}
+
+/// A struct, enum or match body separates entries with commas, so that is what
+/// a newline inside one inserts.
+#[test]
+fn inserts_commas_in_comma_bodies() {
+    assert_eq!(
+        lex_types("struct P {\n    x: i32\n    y: i32\n}\n"),
+        vec![
+            TokType::Struct,
+            TokType::Identifier("P".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Comma,
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            // No separator before `}`: the brace closes the last field itself.
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("enum E {\n    A\n    B(i32)\n}\n"),
+        vec![
+            TokType::Enum,
+            TokType::Identifier("E".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("A".to_string()),
+            TokType::Comma,
+            TokType::Identifier("B".to_string()),
+            TokType::LParen,
+            TokType::I32,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A written comma already ends the entry, so nothing is inserted after it.
+    assert_eq!(
+        lex_types("struct P {\n    x: i32,\n    y: i32,\n}\n"),
+        vec![
+            TokType::Struct,
+            TokType::Identifier("P".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Comma,
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// The body of a match arm is a block of statements, so the two kinds of body
+/// nest: the arm's `}` is followed by a comma, the statement inside it is not.
+#[test]
+fn brace_kinds_nest() {
+    assert_eq!(
+        lex_types("match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("x".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::FatArrow,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // Statement body: nothing before the `}` that closes it.
+            TokType::RCurlyBracket,
+            // Back in the match body, so the arm is closed by a comma.
+            TokType::Comma,
+            TokType::IntLiteral(2),
+            TokType::FatArrow,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A function body holds statements, even though its declaration may sit inside
+/// a trait or impl, and semicolons still end them.
+#[test]
+fn fn_body_stays_a_statement_body() {
+    assert_eq!(
+        lex_types("fn f() {\n    let x = 1\n    g(x)\n}\n"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::LCurlyBracket,
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A trait body holds signatures, which are statements too.
+    assert_eq!(
+        lex_types("trait Show {\n    fn show(this): str\n    fn id(this): i32\n}\n"),
+        vec![
+            TokType::Trait,
+            TokType::Identifier("Show".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Fn,
+            TokType::Identifier("show".to_string()),
+            TokType::LParen,
+            TokType::This,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Str,
+            TokType::Semicolon,
+            TokType::Fn,
+            TokType::Identifier("id".to_string()),
+            TokType::LParen,
+            TokType::This,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::I32,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// The float types are keywords, and like the other primitives they can end a
+/// declaration — so a newline after one inserts a semicolon.
+#[test]
+fn lexes_float_types() {
+    assert_eq!(
+        lex_types("let x: f32\nlet y: f64\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::F32,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::F64,
+            TokType::Semicolon,
+        ]
+    );
+    // And they are legal type arguments, so a generic stays open across one.
+    assert_eq!(
+        lex_types("Vec<Pair<f32>>"),
+        vec![
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("Pair".to_string()),
+            TokType::LessThan,
+            TokType::F32,
+            TokType::GreaterThan,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+        ]
     );
 }
 
@@ -417,6 +603,9 @@ fn peek_does_not_consume() {
         "let m: Map<str, List<i32>> = empty()\n",
         "let n = bits >> 2\n",
         "for i in 0..10 {}\n",
+        // Brace kinds are scanner state too, so they must roll back as well.
+        "struct P {\n    x: i32\n    y: i32\n}\n",
+        "match x {\n    1 => {\n        f()\n    }\n    2 => g()\n}\n",
     ];
     for src in sources {
         let mut lexer = Lexer::new(src);
