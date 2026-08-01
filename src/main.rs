@@ -165,6 +165,12 @@ fn main() {
     // with anything beside it. `null` is its opposite: one value, no news.
     dump("fn panic(m: str): never;\nlet x = match c {\n    1 => 5,\n    _ => panic(\"no\"),\n}\n");
 
+    // `unsafe` marks a fn whose caller has something to prove, and prefixes the
+    // statement that answers for it — a block where there is more than one, and
+    // the statement itself where there is not. Only a `{` glued to the word
+    // opens a body, so the brace below is still the literal's.
+    dump("public unsafe fn write(dst: *u8[], n: u64);\nunsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}\nunsafe free(q)\nunsafe p = P { x: 1 }\n");
+
     dump_mangle("my_var_name");
     dump_mangle("already_ok");
 }
@@ -713,6 +719,10 @@ fn peek_does_not_consume() {
         "for x in {1, 2} {\n    f(x)\n    g(x)\n}\n",
         "match x {\n    1 => a,\n    _ => b,\n}\n",
         "let _ = f()\nfor _ in 0..3 {}\n",
+        // `unsafe` decides its brace by looking at the character after it, so
+        // both readings have to survive a peek.
+        "unsafe {\n    f()\n    g()\n}\n",
+        "unsafe p = P {\n    x: 1\n    y: 2\n}\n",
     ];
     for src in sources {
         let mut lexer = Lexer::new(src);
@@ -2793,4 +2803,147 @@ fn lexes_the_never_type() {
             word
         );
     }
+}
+
+/// `unsafe` marks a fn whose caller has something to prove, and prefixes the
+/// statement that answers for it. Its two places are the only two, and it is a
+/// whole word like every other keyword.
+#[test]
+fn lexes_unsafe() {
+    // On a signature it stands after the visibility and in front of the `fn`.
+    assert_eq!(
+        lex_types("public unsafe fn write(dst: *u8[], n: u64);"),
+        vec![
+            TokType::Public,
+            TokType::Unsafe,
+            TokType::Fn,
+            TokType::Identifier("write".to_string()),
+            TokType::LParen,
+            TokType::Identifier("dst".to_string()),
+            TokType::Colon,
+            TokType::Star,
+            TokType::U8,
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::Comma,
+            TokType::Identifier("n".to_string()),
+            TokType::Colon,
+            TokType::U64,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // The one-line form: no braces, so the statement it prefixes ends the line
+    // as it would have on its own.
+    assert_eq!(
+        lex_types("unsafe free(q)\nlet x = 1\n"),
+        vec![
+            TokType::Unsafe,
+            TokType::Identifier("free".to_string()),
+            TokType::LParen,
+            TokType::Identifier("q".to_string()),
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // A `let` is a statement too, which is how a value leaves an unsafe region.
+    assert_eq!(
+        lex_types("unsafe let buf = malloc(n)\nlet b = buf\n"),
+        vec![
+            TokType::Unsafe,
+            TokType::Let,
+            TokType::Identifier("buf".to_string()),
+            TokType::Equals,
+            TokType::Identifier("malloc".to_string()),
+            TokType::LParen,
+            TokType::Identifier("n".to_string()),
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("b".to_string()),
+            TokType::Equals,
+            TokType::Identifier("buf".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    for word in ["unsafely", "unsafe_", "_unsafe"] {
+        assert_eq!(
+            lex_types(word),
+            vec![TokType::Identifier(word.to_string()), TokType::Semicolon],
+            "{:?} should still lex as an identifier",
+            word
+        );
+    }
+}
+
+/// `unsafe` heads a body only where a `{` really follows it. That is what keeps
+/// the one-line form from swallowing the brace of whatever it prefixes, and it
+/// is the whole of the difference between the two forms.
+#[test]
+fn unsafe_claims_only_a_brace_that_follows_it() {
+    // With a brace: a statement body, so the newlines inside it insert.
+    assert_eq!(
+        lex_types("unsafe {\n    f()\n    g()\n}\n"),
+        vec![
+            TokType::Unsafe,
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // A block and not a set: `{ f() ... }` holds statements.
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Without one: the brace below belongs to the literal, so its fields are
+    // entries and nothing is inserted between them. A waiting header would have
+    // made it a block and put a `;` after the `1`.
+    assert_eq!(
+        lex_types("unsafe p = P {\n    x: 1\n    y: 2\n}\n"),
+        vec![
+            TokType::Unsafe,
+            TokType::Identifier("p".to_string()),
+            TokType::Equals,
+            TokType::Identifier("P".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(1),
+            TokType::Identifier("y".to_string()),
+            TokType::Colon,
+            TokType::IntLiteral(2),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Only a statement starts with `unsafe`, so one inside a brace settles it as
+    // a block — the same thing `let` and `return` do.
+    assert_eq!(
+        lex_types("let v = {\n    unsafe f()\n    g()\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Unsafe,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
 }

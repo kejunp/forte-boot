@@ -242,6 +242,10 @@ fn heads_a_body(t: &TokType) -> bool {
             | TokType::Impl
             // Its body holds items, so it is a statement body like a fn's.
             | TokType::Namespace
+            // The one whose body is optional: `unsafe` prefixes any statement
+            // at all, and only the `{` of a block is a body. `brace_follows`
+            // is what decides, at the one place this is asked.
+            | TokType::Unsafe
     )
 }
 
@@ -271,6 +275,8 @@ fn starts_statement(t: &TokType) -> bool {
             | TokType::Namespace
             | TokType::Public
             | TokType::Private
+            // It prefixes a statement, so it is the start of one.
+            | TokType::Unsafe
             // An attribute only ever prefixes a declaration.
             | TokType::At
     )
@@ -329,6 +335,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "import" => TokType::Import,
         "enum" => TokType::Enum,
         "namespace" => TokType::Namespace,
+        "unsafe" => TokType::Unsafe,
 
         // Control flow
         "if" => TokType::If,
@@ -608,12 +615,19 @@ impl Lexer {
             // The flags survive the rest of the header — a name, generic
             // parameters, a scrutinee expression — until its `{` claims them.
             t if heads_a_body(t) => {
-                self.pending_header = true;
-                self.header_depth = self.bracket_depth;
-                self.header_brace_depth = self.brace_depth;
-                // Of those, only these three hold comma-separated entries.
-                if matches!(t, TokType::Struct | TokType::Enum | TokType::Match) {
-                    self.pending_entry_body = true;
+                // `unsafe` heads a body only where a `{` really follows it.
+                // Every other keyword here is followed by one eventually; this
+                // one may prefix any statement instead, and then the next brace
+                // belongs to that statement — the literal in `unsafe p = P {
+                // x: 1 }` — and a waiting header would swallow it.
+                if *t != TokType::Unsafe || self.brace_follows() {
+                    self.pending_header = true;
+                    self.header_depth = self.bracket_depth;
+                    self.header_brace_depth = self.brace_depth;
+                    // Of those, only these three hold comma-separated entries.
+                    if matches!(t, TokType::Struct | TokType::Enum | TokType::Match) {
+                        self.pending_entry_body = true;
+                    }
                 }
             }
             _ => {}
@@ -861,6 +875,23 @@ impl Lexer {
             Some(c) if starts_continuation(c) => false,
             Some(_) => true,
         }
+    }
+
+    /// Whether a `{` is the next thing in the input, whitespace aside.
+    ///
+    /// A newline counts as whitespace here: `unsafe` cannot end a statement, so
+    /// nothing is inserted after it and a brace on the line below is still the
+    /// body it opens. Comments are blanked to spaces before the lexer sees the
+    /// source, so none can hide between the two.
+    fn brace_follows(&self) -> bool {
+        let mut i = self.index;
+        while let Some(&c) = self.input.get(i) {
+            if !c.is_whitespace() {
+                return c == '{';
+            }
+            i += 1;
+        }
+        false
     }
 
     /// Reads the word at the current position without consuming it.

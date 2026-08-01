@@ -31,6 +31,9 @@ pub enum TokType {
     Import,
     Enum,
     Namespace,
+    // Marks a fn whose caller carries an obligation the checker cannot see,
+    // and prefixes the statement — usually a block — that discharges one.
+    Unsafe,
 
     // Control flow
     If,

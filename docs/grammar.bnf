@@ -49,12 +49,16 @@
 <import_path>           ::= IDENTIFIER
                           | <import_path> "::" IDENTIFIER
 
-<fn_decl>               ::= <const_opt> "fn" IDENTIFIER <generic_params_opt>
+<fn_decl>               ::= <const_opt> <unsafe_opt> "fn" IDENTIFIER
+                            <generic_params_opt>
                             "(" <param_list_opt> ")" <return_type_opt>
                             <where_clause_opt> <fn_body>
 
 <const_opt>             ::= <empty>
                           | "const"
+
+<unsafe_opt>            ::= <empty>
+                          | "unsafe"
 
 <fn_body>               ::= <block>
                           | ";"
@@ -229,8 +233,11 @@
 
 <statement>             ::= <var_decl>
                           | <declaration>
+                          | <unsafe_stmt>
                           | <expr_stmt>
                           | ";"
+
+<unsafe_stmt>           ::= "unsafe" <statement>
 
 <expr_stmt>             ::= <expression> ";"
 
@@ -541,7 +548,7 @@ CHAR_LITERAL            ::= "'" <char_item> "'"
                           | "for"     | "in"     | "return"   | "break"
                           | "continue"| "match"  | "as"       | "where"
                           | "move"    | "true"   | "false"    | "this"
-                          | "_"
+                          | "unsafe"  | "_"
 
 <comment>               ::= "//" <line_char_list>
                           | "/*" <any_char_list> "*/"
