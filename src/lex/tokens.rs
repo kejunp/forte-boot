@@ -128,6 +128,11 @@ pub enum TokType {
     LBracket,
     RBracket,
     LCurlyBracket,
+    // The `{` of a value: a struct literal's, a map's, a set's. A block's and a
+    // body's is `LCurlyBracket`, and telling the two apart is the lexer's to do
+    // — nothing in front of the brace says which it is, and the parser, reading
+    // one token at a time, would have to guess. See `push_brace`.
+    LCurlyValue,
     RCurlyBracket,
     Colon,
     ColonColon,

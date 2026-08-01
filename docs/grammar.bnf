@@ -1,6 +1,9 @@
 <empty>                 ::=
 
-<program>               ::= <item_list> EOF
+# EOF is the marker the table generator ends every parse on, so <program> must
+# not spell it as well: a rule that did would need the lexer to hand it over
+# twice, once to shift and once to look past.
+<program>               ::= <item_list>
 
 <item_list>             ::= <empty>
                           | <item_list> <item>
@@ -37,11 +40,14 @@
 <attr_arg_list>         ::= <attr_arg>
                           | <attr_arg_list> "," <attr_arg>
 
+# A bare name is already an <attr_item>; spelling it here as well would leave
+# `@repr(C)` with two derivations and no way to choose between them.
 <attr_arg>              ::= <literal>
-                          | IDENTIFIER
                           | <attr_item>
 
-<import_decl>           ::= "import" <import_path> <import_alias_opt> ";"
+<import_decl>           ::= <import_head> ";"
+
+<import_head>           ::= "import" <import_path> <import_alias_opt>
 
 <import_alias_opt>      ::= <empty>
                           | "as" IDENTIFIER
@@ -49,18 +55,24 @@
 <import_path>           ::= IDENTIFIER
                           | <import_path> "::" IDENTIFIER
 
-<fn_decl>               ::= <const_opt> <unsafe_opt> "fn" IDENTIFIER
-                            <generic_params_opt>
+<fn_decl>               ::= <fn_sig> <fn_body>
+
+# The modifiers are written out rather than made optional. A statement may
+# begin with `unsafe` too, and an optional `const` in front would have to be
+# reduced away before the `unsafe` after it is read — a decision that needs the
+# token after the one the parser is holding.
+<fn_sig>                ::= <fn_head>
+                          | "const" <fn_head>
+                          | "unsafe" <fn_head>
+                          | "const" "unsafe" <fn_head>
+
+<fn_head>               ::= "fn" IDENTIFIER <generic_params_opt>
                             "(" <param_list_opt> ")" <return_type_opt>
-                            <where_clause_opt> <fn_body>
+                            <where_clause_opt>
 
-<const_opt>             ::= <empty>
-                          | "const"
-
-<unsafe_opt>            ::= <empty>
-                          | "unsafe"
-
-<fn_body>               ::= <block>
+# A `}` at the end of a line ends the statement it closes, so the lexer's
+# separator follows the body of a function as it follows any other statement.
+<fn_body>               ::= <block> <semi_opt>
                           | ";"
 
 <return_type_opt>       ::= <empty>
@@ -121,7 +133,8 @@
 
 <payload>               ::= "(" <type_list> ")"
 
-<named_payload>         ::= "{" <field_decl_list_opt> "}"
+# A name stands in front of this brace, so the lexer reads it as a literal's.
+<named_payload>         ::= VALUE_LCURLY <field_decl_list_opt> "}"
 
 <type_list>             ::= <type>
                           | <type_list> "," <type>
@@ -129,16 +142,22 @@
 <discriminant>          ::= "=" <expression>
 
 <trait_decl>            ::= "trait" IDENTIFIER <generic_params_opt>
-                            "{" <trait_member_list> "}" <semi_opt>
+                            "{" <trait_member_list> <trait_tail_opt> "}" <semi_opt>
 
 <trait_member_list>     ::= <empty>
                           | <trait_member_list> <trait_member>
 
 <trait_member>          ::= <attribute_list> <fn_decl>
 
+# Nothing is inserted in front of a `}`, so the last signature in a body has no
+# separator after it: `trait S { fn show(this): str }`. That is the body's
+# business, exactly as a block's trailing expression is the block's.
+<trait_tail_opt>        ::= <empty>
+                          | <attribute_list> <fn_sig>
+
 <impl_decl>             ::= "impl" <generic_params_opt> <type> <impl_for_opt>
                             <where_clause_opt>
-                            "{" <impl_member_list> "}" <semi_opt>
+                            "{" <impl_member_list> <impl_tail_opt> "}" <semi_opt>
 
 <impl_for_opt>          ::= <empty>
                           | "for" <type>
@@ -148,11 +167,26 @@
 
 <impl_member>           ::= <attribute_list> <visibility_opt> <fn_decl>
 
-<namespace_decl>        ::= "namespace" IDENTIFIER
-                            "{" <item_list> "}" <semi_opt>
+<impl_tail_opt>         ::= <empty>
+                          | <attribute_list> <visibility_opt> <fn_sig>
 
-<var_decl>              ::= <var_intro> <binding_name> <type_annotation_opt>
-                            <initializer_opt> ";"
+<namespace_decl>        ::= "namespace" IDENTIFIER
+                            "{" <item_list> <item_tail_opt> "}" <semi_opt>
+
+# The same slot the other bodies have: a namespace holds items, and its last
+# one is in front of a `}` like any other.
+<item_tail_opt>         ::= <empty>
+                          | <import_head>
+                          | <attribute_list> <visibility_opt> <unterminated_decl>
+
+<unterminated_decl>     ::= <var_head>
+                          | <const_head>
+                          | <fn_sig>
+
+<var_decl>              ::= <var_head> ";"
+
+<var_head>              ::= <var_intro> <binding_name> <type_annotation_opt>
+                            <initializer_opt>
 
 <var_intro>             ::= "let"
                           | "var"
@@ -160,7 +194,9 @@
 <initializer_opt>       ::= <empty>
                           | "=" <expression>
 
-<const_decl>            ::= "const" IDENTIFIER ":" <type> "=" <const_expr> ";"
+<const_decl>            ::= <const_head> ";"
+
+<const_head>            ::= "const" IDENTIFIER ":" <type> "=" <const_expr>
 
 <const_expr>            ::= <expression>
 
@@ -223,30 +259,62 @@
 
 <where_pred>            ::= <type> ":" <type_bounds>
 
-<block>                 ::= "{" <statement_list> <expression_opt> "}"
+<block>                 ::= "{" <statement_list> <block_tail_opt> "}"
 
 <statement_list>        ::= <empty>
                           | <statement_list> <statement>
 
+# The lexer inserts no separator in front of a `}`, so the last thing in a body
+# has none — whatever it is. When it is an expression it is also the value the
+# block yields, which is the reading this slot has always carried; a
+# declaration there simply ends where the body does.
+<block_tail_opt>        ::= <empty>
+                          | <unterminated_stmt>
+
+<unterminated_stmt>     ::= <expression>
+                          | <var_head>
+                          | <const_head>
+                          | "unsafe" <unterminated_stmt>
+
 <expression_opt>        ::= <empty>
                           | <expression>
 
-<statement>             ::= <var_decl>
-                          | <declaration>
+# A <var_decl> is a <declaration> already, and a lone `;` would compete with
+# the <semi_opt> that follows a declaration for the same token.
+<statement>             ::= <declaration>
                           | <unsafe_stmt>
                           | <expr_stmt>
-                          | ";"
 
-<unsafe_stmt>           ::= "unsafe" <statement>
+# `unsafe` guards a statement that does something — it does not annotate a
+# declaration, which is what `unsafe fn` is and where the word belongs to the
+# signature instead.
+<unsafe_stmt>           ::= "unsafe" <expr_stmt>
+                          | "unsafe" <var_decl>
 
 <expr_stmt>             ::= <expression> ";"
 
-<expression>            ::= <assignment>
+# A block, an `if`, a `while`, a `for` and a `match` are expressions, but they
+# are whole ones rather than operands: `let x = if c { 1 } else { 2 }` and
+# `f(match c { ... })` are how they are used, and `1 + if c { ... }` is not.
+#
+# Keeping them out of <primary> is also what lets a `{` after a complete
+# expression be read as a body without looking further: `for i in 0.. {` has
+# nowhere to put a block, so the range is finished and the brace belongs to the
+# `for`. Parenthesise to say the other thing.
+<expression>            ::= <value_expr>
                           | <jump_expr>
+
+# Everything but a jump. `break` and `return` take an optional value, so a
+# brace after one is either that value or the body of whatever the expression
+# they end is inside of; nothing is lost by keeping them out of the places
+# where an expression can be followed by a body — a jump says all it has to say
+# on its own line.
+<value_expr>            ::= <assignment>
                           | <closure_expr>
+                          | <block_expr>
 
 <assignment>            ::= <range_expr>
-                          | <range_expr> <assign_op> <assignment>
+                          | <range_expr> <assign_op> <value_expr>
 
 <assign_op>             ::= "="  | "+=" | "-="  | "*=" | "/="
                           | "&=" | "|=" | "<<=" | ">>="
@@ -295,7 +363,18 @@
 <multiplicative_op>     ::= "*" | "/" | "%"
 
 <cast>                  ::= <unary>
-                          | <cast> "as" <type>
+                          | <cast> "as" <cast_type>
+
+# The type a cast names carries no type arguments of its own: `n as u64 < m`
+# compares, and there is no reading of the `<` after a cast that is a `<` and a
+# comparison at the same time. `n as (Vec<i32>)` says the other thing.
+<cast_type>             ::= <ref_op> <cast_type>
+                          | <cast_base> <array_suffix_list>
+
+<cast_base>             ::= <primitive_type>
+                          | <qualified_name>
+                          | <grouped_type>
+                          | "_"
 
 <unary>                 ::= <unary_op> <unary>
                           | <postfix>
@@ -307,9 +386,15 @@
 <postfix>               ::= <primary>
                           | <postfix> <postfix_op>
 
+# `.` reaches into a value or a module and `::` into a type or a namespace, and
+# a name can need both: `shapes.Color::Red`. Since either may follow the other,
+# neither belongs to the name — both are suffixes, and so is the brace of a
+# struct literal, which is what makes `shapes.Point { x: 1 }` sayable.
 <postfix_op>            ::= "." IDENTIFIER
+                          | "::" IDENTIFIER
                           | "(" <arg_list_opt> ")"
                           | "[" <index> "]"
+                          | <struct_literal_tail>
 
 <index>                 ::= <expression>
 
@@ -324,13 +409,11 @@
 
 <primary>               ::= <literal>
                           | "this"
-                          | <path>
-                          | <struct_literal>
+                          | IDENTIFIER
                           | <array_literal>
                           | <map_literal>
                           | <set_literal>
                           | <grouping>
-                          | <block_expr>
 
 <grouping>              ::= "(" <expression> ")"
 
@@ -339,7 +422,7 @@
                           | "continue"
 
 <closure_expr>          ::= <move_opt> "|" <closure_param_list_opt> "|"
-                            <expression>
+                            <value_expr>
 
 <move_opt>              ::= <empty>
                           | "move"
@@ -352,10 +435,10 @@
 
 <closure_param>         ::= <binding_name> <type_annotation_opt>
 
-<path>                  ::= <named_type>
-                          | <path> "::" IDENTIFIER
-
-<struct_literal>        ::= <named_type> "{" <field_init_list_opt> "}"
+# The fields, with the name they belong to in front of them — see <postfix_op>.
+# A name in an expression carries no type arguments of its own: a `<` there is
+# the comparison it looks like. A type still spells both — see <named_type>.
+<struct_literal_tail>   ::= VALUE_LCURLY <field_init_list_opt> "}"
 
 <field_init_list_opt>   ::= <empty>
                           | <field_init_list>
@@ -372,10 +455,11 @@
                           | <expression_seq>
                           | <expression_seq> ","
 
-<map_literal>           ::= <hash_opt> "{" <map_entry_list_opt> "}"
-
-<hash_opt>              ::= <empty>
-                          | "#"
+# The `#` is written out on each form rather than made optional: an optional
+# one would have to be reduced away in front of every `{` in the language,
+# before anything has been read that says the brace opens a literal at all.
+<map_literal>           ::= VALUE_LCURLY <map_entry_list_opt> "}"
+                          | "#" VALUE_LCURLY <map_entry_list_opt> "}"
 
 <map_entry_list_opt>    ::= <empty>
                           | ":"
@@ -387,7 +471,8 @@
 
 <map_entry>             ::= <expression> ":" <expression>
 
-<set_literal>           ::= <hash_opt> "{" <set_element_list> "}"
+<set_literal>           ::= VALUE_LCURLY <set_element_list> "}"
+                          | "#" VALUE_LCURLY <set_element_list> "}"
 
 <set_element_list>      ::= ","
                           | <expression_seq>
@@ -407,7 +492,11 @@
                           | <for_expr>
                           | <match_expr>
 
-<header_expr>           ::= <expression>
+# What stands between the keyword and the body. A `break`, a `return` or a
+# closure would leave the brace after it ambiguous — is it the value being
+# broken with, or the body? — and none of the three says anything worth saying
+# in a condition or a scrutinee.
+<header_expr>           ::= <assignment>
 
 <if_expr>               ::= "if" <header_expr> <block> <elif_list> <else_opt>
 
@@ -436,12 +525,14 @@
 <pattern_alternatives>  ::= <pattern>
                           | <pattern_alternatives> "|" <pattern>
 
+# A bare name is a <const_pattern> as it stands: whether `red` names a constant
+# to match or a binding to make is a question about what is in scope, which the
+# parser has no business answering and no way to.
 <pattern>               ::= "_"
                           | <literal_pattern>
                           | <range_pattern>
                           | <variant_pattern>
                           | <const_pattern>
-                          | IDENTIFIER
 
 <const_pattern>         ::= <qualified_name>
 
@@ -450,11 +541,12 @@
 
 <range_pattern>         ::= <literal_pattern> <range_op> <literal_pattern>
 
-<variant_pattern>       ::= <named_type> "::" IDENTIFIER
-                          | <named_type> "::" IDENTIFIER
-                            "(" <pattern_list_opt> ")"
-                          | <named_type> "::" IDENTIFIER
-                            "{" <field_pattern_list_opt> "}"
+# The `::` belongs to <qualified_name>, which reaches through as many segments
+# as are written; a variant is what one of them names. Spelling the last `::`
+# here as well would ask the parser to decide, at every `::` in a pattern,
+# whether the name so far is finished — with only that `::` to go on.
+<variant_pattern>       ::= <qualified_name> "(" <pattern_list_opt> ")"
+                          | <qualified_name> VALUE_LCURLY <field_pattern_list_opt> "}"
 
 <field_pattern_list_opt> ::= <empty>
                           | <field_pattern_list>

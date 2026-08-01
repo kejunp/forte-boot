@@ -547,7 +547,7 @@ impl Lexer {
         let after_hash = self.hash_prefix;
         let value_only = !self.prev_ends_stmt && !(self.prev_was_brace && !self.in_entry_body());
 
-        let tok = self.scan_token();
+        let mut tok = self.scan_token();
 
         // A `>` only closes a generic if one was open; that also makes it the
         // end of a type, and so a place a statement can end: `let v: Vec<i32>`.
@@ -590,22 +590,33 @@ impl Lexer {
         self.prev_ends_stmt = matches!(tok.toktype, TokType::Semicolon | TokType::FatArrow);
         self.prev_was_brace =
             matches!(tok.toktype, TokType::LCurlyBracket | TokType::RCurlyBracket);
+        // Set for the `{` of a struct, map or set literal, and reported to the
+        // parser as `LCurlyValue` once the rest of the state is up to date.
+        let mut opens_value = false;
         match &tok.toktype {
             TokType::LParen | TokType::LBracket => self.bracket_depth += 1,
             TokType::RParen | TokType::RBracket => {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
             }
-            TokType::LCurlyBracket => self.push_brace(after_type_name, after_hash, value_only),
+            TokType::LCurlyBracket => {
+                opens_value = self.push_brace(after_type_name, after_hash, value_only);
+            }
             TokType::RCurlyBracket => {
                 // Only a block's `}` ends the line it sits on; the `}` of a
                 // literal — a struct's, a map's, a set's — closes a value that
                 // an operator may continue.
                 self.last_closed_block = !self.in_value_body();
                 self.brace_depth = self.brace_depth.saturating_sub(1);
-                // Whatever header was open cannot still be: a signature with no
-                // body, `fn show(this): str`, gets no separator before the `}`
-                // of the trait around it, and its header must not outlive it.
-                self.pending_header = false;
+                // A `}` that closes the body a header was waiting inside of
+                // ends the wait: a signature with no body, `fn show(this):
+                // str`, gets no separator before the `}` of the trait around
+                // it, and its header must not outlive it. A `}` at the
+                // header's own depth closed something the header contains —
+                // the literal in `if (Cfg { on: true }).on {` — and the body
+                // it is waiting for is still to come.
+                if self.brace_depth < self.header_brace_depth {
+                    self.pending_header = false;
+                }
             }
             // A written separator ends the statement, as an inserted one does.
             TokType::Semicolon | TokType::Comma => {
@@ -656,6 +667,11 @@ impl Lexer {
                 _ => {}
             }
         }
+        // Everything above reads the brace as the `{` it was scanned as; only
+        // what leaves the lexer says which kind it opened.
+        if opens_value {
+            tok.toktype = TokType::LCurlyValue;
+        }
         tok
     }
 
@@ -680,7 +696,12 @@ impl Lexer {
     /// A bitmask keeps the snapshot `Copy`, so a `peek` costs no allocation;
     /// past 64 levels of nesting the kind is no longer tracked and a body
     /// reverts to statements, which no real source reaches.
-    fn push_brace(&mut self, after_type_name: bool, after_hash: bool, value_only: bool) {
+    ///
+    /// Returns whether the brace opened a value, which is what the parser is
+    /// told: a literal's `{` is `LCurlyValue` and a block's or a body's is
+    /// `LCurlyBracket`. The grammar is unambiguous given the two, and has no
+    /// way to tell them apart without.
+    fn push_brace(&mut self, after_type_name: bool, after_hash: bool, value_only: bool) -> bool {
         let at_header = self.pending_header
             && self.bracket_depth == self.header_depth
             && self.brace_depth == self.header_brace_depth;
@@ -724,6 +745,7 @@ impl Lexer {
             self.pending_header = false;
             self.pending_entry_body = false;
         }
+        literal || collection
     }
 
     /// Whether a `{` that no header and no type name claimed opens a map or a

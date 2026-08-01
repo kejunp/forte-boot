@@ -1,1 +1,4 @@
 /target
+/build
+__pycache__/
+src/parse/tables.rs
