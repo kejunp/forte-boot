@@ -14,12 +14,15 @@ pub enum TokType {
     Bool,
     Char,
     Str,
-    Void,
+    // The empty type: no values at all, so an expression of it argues with
+    // nothing beside it. `null` is its opposite — one value, no information.
+    Never,
 
     // Declarations
     Fn,
     Let,
     Var,
+    Const,
     Struct,
     Trait,
     Impl,
@@ -27,6 +30,7 @@ pub enum TokType {
     Private,
     Import,
     Enum,
+    Namespace,
 
     // Control flow
     If,
@@ -44,6 +48,9 @@ pub enum TokType {
     True,
     False,
     This,
+    // Both a literal and a type name: `null` is the one value of the type
+    // `null`, which is what a function, a block or a loop yields when it
+    // yields nothing in particular. There is no `void`.
     Null,
 
     // The wildcard: a pattern that matches anything, and the name of a binding
@@ -80,8 +87,22 @@ pub enum TokType {
     Or,
     Bang,
 
+    // A lone `|`: pattern alternation, and a closure's parameter list. Told
+    // from `||` the way `&` is told from `&&` — by whether an operand ends in
+    // front of it.
+    Pipe,
+
+    // Reference operators. `&` takes an immutable reference and `*` a mutable
+    // one, in a type and in an expression alike; `Star` above is the same token
+    // as the multiplication one, told apart by where it stands.
+    Ampersand,
+
     // Type operators
     As,
+    Where,
+
+    // Forces a closure to capture by value. See `closure_expr` in the grammar.
+    Move,
 
     // Range operators
     DotDot,
@@ -111,7 +132,10 @@ pub enum TokType {
     Dot,
     Semicolon,
     FatArrow,
+    // `#` has one use left: `#{` makes a map or set literal hashed. Attributes
+    // are `@`.
     HashTag,
+    At,
 
     // Special
     EOF,

@@ -102,6 +102,69 @@ fn main() {
     // binding whose value is deliberately unused. `_foo` is still a name.
     dump("match x {\n    1 => a,\n    _ => b,\n}\nlet _ = f()\nfor _ in 0..3 {}\nlet _foo = 1\n");
 
+    // A constant is worked out at compile time, so it needs both a type and a
+    // value. Only a statement starts with `const`, so the brace below is a
+    // block and not a map, whatever its `:` looks like.
+    dump("public const MAX: i32 = 1 << 20\nlet v = {\n    const N: i32 = 2\n    N\n}\n");
+
+    // `&` is an immutable reference and `*` a mutable one — neither a pointer,
+    // so nothing dereferences them and `a = b` writes through.
+    dump("fn swap(a: *i32, b: *i32) {\n    let t = a\n    a = b\n    b = t\n}\n");
+
+    // A reference is a type like any other, and the lexer keeps its generic
+    // context open across one, so the `>>` below still splits.
+    dump("let v: Vec<&str> = empty()\nlet m: Map<str, List<*Node>> = empty()\n");
+
+    // `&&` is the logical operator where an operand ends in front of it and two
+    // references where none does, so a reference to a reference is written as
+    // one expects.
+    dump("let rr: &&i32 = &&x\nlet ok = a && b\n");
+
+    // `T[8]` is a raw fixed-size array — a value, copied whole — and `T[]` a
+    // run of unknown length, which only a reference can hold: `&T[]` reads it
+    // and `*T[]` writes to it. A slice is a run, so it is borrowed the same way.
+    dump("let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\nlet s: &i32[] = &a\nlet w: *i32[] = *a[1..3]\n");
+
+    // An attribute is `@name` with its arguments, and a prefix of what it
+    // annotates — so no separator is inserted at the end of the list.
+    dump("@inline\n@repr(C)\npublic fn f();\n");
+
+    // An impl makes methods for a struct; anything else that wants a name in
+    // front of it goes in a namespace, reached with a `.` like a module.
+    dump("namespace limits {\n    public const MAX: i32 = 255\n}\nlet n = limits::MAX\n");
+
+    // `null` is a type and its one value, so it is what a loop nobody broke
+    // out of yields, and what a function with no return type returns.
+    dump("let found = for x in xs {\n    if p(x) { break x }\n}\nfn log(m: str): null;\n");
+
+    // `|` is a token of its own now: pattern alternation and a closure's
+    // parameters. `||` splits into two of them where no operand precedes it.
+    dump("let f = |x: i32| x * 2\nlet g = || 0\nlet ok = a || b\n");
+
+    // A signature carries `const`, its own generic parameters and a `where`
+    // clause, and bounds are joined with `+`.
+    dump("const fn square(n: i32): i32 { n * n }\nimpl<T> Stack<T> where T: Ord + Show {\n    fn len(this): i32;\n}\n");
+
+    // A constant sizes an array, and `_` is both an inferred argument and a
+    // digit separator.
+    dump("const ROWS: i32 = 8\nlet grid: i32[ROWS][ROWS]\nlet v: Vec<_> = f()\nlet big = 2_147_483_647\n");
+
+    // A closure captures by `&` where it reads and `*` where it writes; `move`
+    // takes a copy instead. The `||` after `move` is still two `|`.
+    dump("let show = || print(n)\nlet bump = || n = n + 1\nlet own = move || n + 1\n");
+
+    // Parentheses group a type, so the other reading of a reference and a
+    // suffix finally has a spelling.
+    dump("let view: &i32[]\nlet refs: (&i32)[8]\n");
+
+    // The five attributes. `@symbol` is the one the mangler makes necessary:
+    // nothing outside the language can predict `name_type_type_...`.
+    dump("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n@must_use\n@noinline\nfn parse(s: str): i32;\n");
+
+    // `never` is the empty type — no values, so an expression of it agrees
+    // with anything beside it. `null` is its opposite: one value, no news.
+    dump("fn panic(m: str): never;\nlet x = match c {\n    1 => 5,\n    _ => panic(\"no\"),\n}\n");
+
     dump_mangle("my_var_name");
     dump_mangle("already_ok");
 }
@@ -386,7 +449,8 @@ fn splits_nested_generic_close() {
 /// open, or the next `>>` would wrongly split.
 #[test]
 fn comparison_does_not_open_generics() {
-    // A literal cannot start a type argument, so the context is abandoned.
+    // A literal may appear in a type argument (an array size), so it is the
+    // `&&` that abandons the context here.
     assert_eq!(
         lex_types("a < 1 && b >> c"),
         vec![
@@ -1565,8 +1629,9 @@ fn wildcard_is_a_whole_word_only() {
     }
 }
 
-/// A `_` names a binding, so it closes a declaration as a name does — but it
-/// names no *type*, so it opens no generic context and heads no struct literal.
+/// A `_` names a binding, so it closes a declaration as a name does. It may
+/// stand *inside* a type argument list as an inferred argument, but it names no
+/// type of its own, so it opens no generic context and heads no struct literal.
 #[test]
 fn wildcard_behaves_like_a_name_but_not_a_type() {
     // `let _` is as complete as `let x`, so the newline ends it.
@@ -1612,10 +1677,1120 @@ fn wildcard_behaves_like_a_name_but_not_a_type() {
     );
 }
 
-/// The wildcard is not a digit separator: a `_` glued to a number is still the
-/// malformed literal it always was.
+/// A `_` among digits separates them and is dropped from the value.
 #[test]
-fn wildcard_does_not_separate_digits() {
-    assert!(matches!(lex_types("1_000")[0], TokType::Error(_)));
-    assert!(matches!(lex_types("0xFF_FF")[0], TokType::Error(_)));
+fn wildcard_separates_digits() {
+    assert_eq!(lex_types("1_000_000")[0], TokType::IntLiteral(1_000_000));
+    assert_eq!(lex_types("0xFF_FF")[0], TokType::IntLiteral(0xFFFF));
+    assert_eq!(lex_types("0b1010_1010")[0], TokType::IntLiteral(0b1010_1010));
+    assert_eq!(lex_types("1_0.2_5")[0], TokType::FloatLiteral(10.25));
+    // Junk that is not a separator is still the malformed literal it was.
+    assert!(matches!(lex_types("12abc")[0], TokType::Error(_)));
+    assert!(matches!(lex_types("0xFFZZ")[0], TokType::Error(_)));
+    // A leading `_` is a word, so it never reaches the number reader.
+    assert_eq!(
+        lex_types("_1000")[0],
+        TokType::Identifier("_1000".to_string())
+    );
+}
+
+/// `const` is a declaration of its own, and a keyword only as a whole word.
+#[test]
+fn lexes_const_declaration() {
+    assert_eq!(
+        lex_types("const MAX: i32 = 20;"),
+        vec![
+            TokType::Const,
+            TokType::Identifier("MAX".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Equals,
+            TokType::IntLiteral(20),
+            TokType::Semicolon,
+        ]
+    );
+    // Its `;` is inserted at a line break like any other statement's, and it
+    // takes a visibility like any other declaration.
+    assert_eq!(
+        lex_types("public const PI: f64 = 3.5\nlet r = PI\n"),
+        vec![
+            TokType::Public,
+            TokType::Const,
+            TokType::Identifier("PI".to_string()),
+            TokType::Colon,
+            TokType::F64,
+            TokType::Equals,
+            TokType::FloatLiteral(3.5),
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("r".to_string()),
+            TokType::Equals,
+            TokType::Identifier("PI".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    for word in ["constant", "consts", "const_x", "_const"] {
+        assert_eq!(
+            lex_types(word),
+            vec![TokType::Identifier(word.to_string()), TokType::Semicolon],
+            "{:?} should still lex as an identifier",
+            word
+        );
+    }
+}
+
+/// Nothing but a statement starts with `const`, so a brace holding one holds
+/// statements — the `:` of the type annotation must not make it a map.
+#[test]
+fn const_makes_a_brace_a_block() {
+    assert_eq!(
+        lex_types("let v = {\n    const N: i32 = 2\n    N\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Const,
+            TokType::Identifier("N".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Equals,
+            TokType::IntLiteral(2),
+            TokType::Semicolon,
+            TokType::Identifier("N".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A lone `&` is a token now — an immutable reference — and the longer
+/// operators still win over it.
+#[test]
+fn lexes_reference_operators() {
+    assert_eq!(
+        lex_types("let r = &x"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("r".to_string()),
+            TokType::Equals,
+            TokType::Ampersand,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("a && b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::And,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("a &= b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::AndEquals,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `&&` is the logical operator only where an operand ends in front of it.
+/// Where none does it is two prefix `&`, so a reference to a reference can be
+/// written as one expects.
+#[test]
+fn splits_a_prefix_ampersand_pair() {
+    // Nothing at all in front of it.
+    assert_eq!(
+        lex_types("&&x"),
+        vec![
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // A type, after the `:` that annotates one.
+    assert_eq!(
+        lex_types("fn f(p: &&i32);"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Identifier("p".to_string()),
+            TokType::Colon,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // Every operator position: after `=`, `(`, `,`, `return`, another `&`.
+    assert_eq!(
+        lex_types("let r = &&x"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("r".to_string()),
+            TokType::Equals,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("f(&&a, &&b)"),
+        vec![
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Identifier("a".to_string()),
+            TokType::Comma,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Identifier("b".to_string()),
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("return &&x;"),
+        vec![
+            TokType::Return,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // Taking the first `&` alone is what makes the third and later ones fall
+    // out for free.
+    assert_eq!(
+        lex_types("let r = &&&*x"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("r".to_string()),
+            TokType::Equals,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Ampersand,
+            TokType::Star,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// ...and an operand in front of it keeps it whole, wherever that operand ends.
+#[test]
+fn an_operand_keeps_the_ampersand_pair_whole() {
+    for (source, left) in [
+        ("a && b", TokType::Identifier("a".to_string())),
+        ("f() && b", TokType::RParen),
+        ("xs[0] && b", TokType::RBracket),
+        ("if c { x } && b", TokType::RCurlyBracket),
+        ("1 && b", TokType::IntLiteral(1)),
+        ("true && b", TokType::True),
+        ("this && b", TokType::This),
+    ] {
+        let toks = lex_types(source);
+        let at = toks.iter().position(|t| *t == left).unwrap();
+        assert_eq!(
+            toks[at + 1],
+            TokType::And,
+            "{:?} should keep its `&&` whole",
+            source
+        );
+    }
+    // A bound list is the one place a type ends in front of it, and the `>`
+    // closing a type argument list ends one too.
+    let bounds = lex_types("fn f<T: Show && Clone>(x: T);");
+    let show = bounds
+        .iter()
+        .position(|t| *t == TokType::Identifier("Show".to_string()))
+        .unwrap();
+    assert_eq!(bounds[show + 1], TokType::And);
+    assert_eq!(
+        lex_types("let x: Vec<i32> && y"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::I32,
+            TokType::GreaterThan,
+            TokType::And,
+            TokType::Identifier("y".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // `&=` is untouched, and so is a `&&` inside a brace the lexer looks into.
+    assert_eq!(
+        lex_types("a &= b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::AndEquals,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("let s = {a && b}"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("s".to_string()),
+            TokType::Equals,
+            TokType::LCurlyBracket,
+            TokType::Identifier("a".to_string()),
+            TokType::And,
+            TokType::Identifier("b".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `*` is prefix and infix both, and where it stands is the whole of what tells
+/// a mutable reference from a product.
+#[test]
+fn star_is_prefix_and_infix() {
+    assert_eq!(
+        lex_types("let p = a * *b"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("p".to_string()),
+            TokType::Equals,
+            TokType::Identifier("a".to_string()),
+            TokType::Star,
+            TokType::Star,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // A reference is transparent, so a write through one is an ordinary
+    // assignment — and `*=` is still the one operator.
+    assert_eq!(
+        lex_types("let m = *x\nm *= 2\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Equals,
+            TokType::Star,
+            TokType::Identifier("x".to_string()),
+            TokType::Semicolon,
+            TokType::Identifier("m".to_string()),
+            TokType::StarEquals,
+            TokType::IntLiteral(2),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A reference is a type like any other: it heads a parameter, and the lexer
+/// keeps its generic context open across one.
+#[test]
+fn lexes_reference_types() {
+    assert_eq!(
+        lex_types("fn swap(a: &Point, b: *i32);"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("swap".to_string()),
+            TokType::LParen,
+            TokType::Identifier("a".to_string()),
+            TokType::Colon,
+            TokType::Ampersand,
+            TokType::Identifier("Point".to_string()),
+            TokType::Comma,
+            TokType::Identifier("b".to_string()),
+            TokType::Colon,
+            TokType::Star,
+            TokType::I32,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // The context survives both, so the `>>` is two closers and the `>` ends
+    // the declaration.
+    assert_eq!(
+        lex_types("let m: Map<str, List<*Node>>\nlet v: Vec<&i32>\nlet w = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Map".to_string()),
+            TokType::LessThan,
+            TokType::Str,
+            TokType::Comma,
+            TokType::Identifier("List".to_string()),
+            TokType::LessThan,
+            TokType::Star,
+            TokType::Identifier("Node".to_string()),
+            TokType::GreaterThan,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("w".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // `&&` still cannot stand in a type argument, so a `<` in front of one was
+    // a comparison and the `>>` after it is a real shift.
+    assert_eq!(
+        lex_types("a < b && c >> d"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("b".to_string()),
+            TokType::And,
+            TokType::Identifier("c".to_string()),
+            TokType::RShift,
+            TokType::Identifier("d".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A fixed array and a view are ordinary types: they end a declaration at the
+/// `]` that closes them, and they stand in a type argument list like any other.
+#[test]
+fn lexes_array_and_view_types() {
+    // `T[8]` owns its eight, and the `]` closes the statement.
+    assert_eq!(
+        lex_types("let a: i32[8]\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("a".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::LBracket,
+            TokType::IntLiteral(8),
+            TokType::RBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // A run is held only behind a reference, and the ref op says which kind.
+    assert_eq!(
+        lex_types("let s: &i32[] = &a\nlet w: *i32[] = *a[1..3]\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("s".to_string()),
+            TokType::Colon,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::Equals,
+            TokType::Ampersand,
+            TokType::Identifier("a".to_string()),
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("w".to_string()),
+            TokType::Colon,
+            TokType::Star,
+            TokType::I32,
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::Equals,
+            TokType::Star,
+            TokType::Identifier("a".to_string()),
+            TokType::LBracket,
+            TokType::IntLiteral(1),
+            TokType::DotDot,
+            TokType::IntLiteral(3),
+            TokType::RBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // Only the first suffix may be `[]`, so a view of rows stacks the two.
+    assert_eq!(
+        lex_types("fn rows(m: &i32[][3]);"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("rows".to_string()),
+            TokType::LParen,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::LBracket,
+            TokType::IntLiteral(3),
+            TokType::RBracket,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // A view in a type argument keeps the generic context open, so the `>`
+    // closes it and ends the declaration.
+    assert_eq!(
+        lex_types("let m: Map<str, &i32[]>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Map".to_string()),
+            TokType::LessThan,
+            TokType::Str,
+            TokType::Comma,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `null` names a type as well as a value, so it stands in a type argument
+/// list, ends a declaration there, and `void` is an ordinary identifier again.
+#[test]
+fn null_is_a_type_and_a_literal() {
+    assert_eq!(
+        lex_types("fn log(m: str): null;"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("log".to_string()),
+            TokType::LParen,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Str,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Null,
+            TokType::Semicolon,
+        ]
+    );
+    // The same token on both sides of the `=`.
+    assert_eq!(
+        lex_types("let x: null = null"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Colon,
+            TokType::Null,
+            TokType::Equals,
+            TokType::Null,
+            TokType::Semicolon,
+        ]
+    );
+    // A type argument, so the generic context survives it and the `>` closes.
+    assert_eq!(
+        lex_types("let s: Map<str, null>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("s".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Map".to_string()),
+            TokType::LessThan,
+            TokType::Str,
+            TokType::Comma,
+            TokType::Null,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // `void` is no longer reserved.
+    assert_eq!(
+        lex_types("void"),
+        vec![TokType::Identifier("void".to_string()), TokType::Semicolon]
+    );
+}
+
+/// Every loop takes a `break` with a value, and a bare `break` still ends its
+/// own statement at a line break.
+#[test]
+fn every_loop_breaks_with_a_value() {
+    assert_eq!(
+        lex_types("let found = for x in xs {\n    if p(x) { break x }\n}\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("found".to_string()),
+            TokType::Equals,
+            TokType::For,
+            TokType::Identifier("x".to_string()),
+            TokType::In,
+            TokType::Identifier("xs".to_string()),
+            TokType::LCurlyBracket,
+            TokType::If,
+            TokType::Identifier("p".to_string()),
+            TokType::LParen,
+            TokType::Identifier("x".to_string()),
+            TokType::RParen,
+            TokType::LCurlyBracket,
+            TokType::Break,
+            TokType::Identifier("x".to_string()),
+            TokType::RCurlyBracket,
+            // Nothing between the two `}` — rule (c) inserts none before one.
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A bare `break` is complete, so the next line starts a statement.
+    assert_eq!(
+        lex_types("while c {\n    break\n}\n"),
+        vec![
+            TokType::While,
+            TokType::Identifier("c".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Break,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// A namespace body holds items, so it is a statement body: separators are
+/// inserted inside it as they are at file scope.
+#[test]
+fn lexes_namespace_declaration() {
+    assert_eq!(
+        lex_types("public namespace limits {\n    const MAX: i32 = 255\n    fn clamp(n: i32): i32;\n}\nlet n = limits::MAX\n"),
+        vec![
+            TokType::Public,
+            TokType::Namespace,
+            TokType::Identifier("limits".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Const,
+            TokType::Identifier("MAX".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::Equals,
+            TokType::IntLiteral(255),
+            TokType::Semicolon,
+            TokType::Fn,
+            TokType::Identifier("clamp".to_string()),
+            TokType::LParen,
+            TokType::Identifier("n".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::I32,
+            TokType::Semicolon,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::Identifier("limits".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("MAX".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // Only a statement starts with it, so a brace holding one holds statements.
+    assert_eq!(
+        lex_types("let v = {\n    namespace a { }\n    1\n}\n")[3],
+        TokType::LCurlyBracket
+    );
+    // Reserved as a whole word only.
+    assert_eq!(
+        lex_types("namespaces"),
+        vec![TokType::Identifier("namespaces".to_string()), TokType::Semicolon]
+    );
+}
+
+/// A qualified name reaches through a namespace with `::`, and it may do so
+/// inside a type argument list without abandoning the generic context.
+#[test]
+fn namespace_paths_use_the_scope_separator() {
+    assert_eq!(
+        lex_types("let c = shapes::Color::Red"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("c".to_string()),
+            TokType::Equals,
+            TokType::Identifier("shapes".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Color".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Red".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // The `>` still closes the list, so the newline ends the declaration.
+    assert_eq!(
+        lex_types("let m: Map<str, limits::Kind>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Map".to_string()),
+            TokType::LessThan,
+            TokType::Str,
+            TokType::Comma,
+            TokType::Identifier("limits".to_string()),
+            TokType::ColonColon,
+            TokType::Identifier("Kind".to_string()),
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// An attribute is a prefix of the declaration it annotates, so no separator is
+/// inserted at the end of one however many lines the list runs to.
+#[test]
+fn lexes_attributes() {
+    assert_eq!(
+        lex_types("@inline\n@repr(C)\npublic fn f();"),
+        vec![
+            TokType::At,
+            TokType::Identifier("inline".to_string()),
+            TokType::At,
+            TokType::Identifier("repr".to_string()),
+            TokType::LParen,
+            TokType::Identifier("C".to_string()),
+            TokType::RParen,
+            TokType::Public,
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // The statement in front of a list still ends: `@` is no continuation.
+    assert_eq!(
+        lex_types("let x = 1\n@inline\nfn f();"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+            TokType::At,
+            TokType::Identifier("inline".to_string()),
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // Only a declaration follows one, so a brace holding an attribute holds
+    // statements — not a set of one.
+    assert_eq!(
+        lex_types("let v = {\n@inline\nfn f();\n}")[3],
+        TokType::LCurlyBracket
+    );
+    assert_eq!(lex_types("let v = {\n@inline\nfn f();\n}")[4], TokType::At);
+}
+
+/// `|` is a token of its own — pattern alternation, and a closure's parameter
+/// list — split from `||` by whether an operand ends in front of it.
+#[test]
+fn splits_a_prefix_pipe_pair() {
+    assert_eq!(
+        lex_types("match n {\n    1 | 2 => small,\n    _ => big,\n}"),
+        vec![
+            TokType::Match,
+            TokType::Identifier("n".to_string()),
+            TokType::LCurlyBracket,
+            TokType::IntLiteral(1),
+            TokType::Pipe,
+            TokType::IntLiteral(2),
+            TokType::FatArrow,
+            TokType::Identifier("small".to_string()),
+            TokType::Comma,
+            TokType::Underscore,
+            TokType::FatArrow,
+            TokType::Identifier("big".to_string()),
+            TokType::Comma,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // An operand in front of it keeps the disjunction whole.
+    assert_eq!(
+        lex_types("a || b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::Or,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // None in front, so `||` is a closure that takes nothing.
+    assert_eq!(
+        lex_types("let f = || g()"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("f".to_string()),
+            TokType::Equals,
+            TokType::Pipe,
+            TokType::Pipe,
+            TokType::Identifier("g".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("xs.map(|x| x * 2)"),
+        vec![
+            TokType::Identifier("xs".to_string()),
+            TokType::Dot,
+            TokType::Identifier("map".to_string()),
+            TokType::LParen,
+            TokType::Pipe,
+            TokType::Identifier("x".to_string()),
+            TokType::Pipe,
+            TokType::Identifier("x".to_string()),
+            TokType::Star,
+            TokType::IntLiteral(2),
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // `|=` is untouched.
+    assert_eq!(
+        lex_types("a |= b")[1],
+        TokType::OrEquals
+    );
+}
+
+/// A signature may carry `const`, its own generic parameters and a `where`
+/// clause, and the clause may start on a line of its own.
+#[test]
+fn lexes_const_fn_impl_generics_and_where() {
+    assert_eq!(
+        lex_types("const fn square(n: i32): i32 { n * n }"),
+        vec![
+            TokType::Const,
+            TokType::Fn,
+            TokType::Identifier("square".to_string()),
+            TokType::LParen,
+            TokType::Identifier("n".to_string()),
+            TokType::Colon,
+            TokType::I32,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::I32,
+            TokType::LCurlyBracket,
+            TokType::Identifier("n".to_string()),
+            TokType::Star,
+            TokType::Identifier("n".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // `impl<T>` opens a generic context, so the `>>` of `Stack<Vec<T>>` splits.
+    assert_eq!(
+        lex_types("impl<T> Stack<Vec<T>> {}"),
+        vec![
+            TokType::Impl,
+            TokType::LessThan,
+            TokType::Identifier("T".to_string()),
+            TokType::GreaterThan,
+            TokType::Identifier("Stack".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("T".to_string()),
+            TokType::GreaterThan,
+            TokType::GreaterThan,
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // `where` continues the line above it, and `+` joins two bounds.
+    assert_eq!(
+        lex_types("fn sort<T>(xs: *T[])\n    where T: Ord + Show {\n    f()\n}"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("sort".to_string()),
+            TokType::LessThan,
+            TokType::Identifier("T".to_string()),
+            TokType::GreaterThan,
+            TokType::LParen,
+            TokType::Identifier("xs".to_string()),
+            TokType::Colon,
+            TokType::Star,
+            TokType::Identifier("T".to_string()),
+            TokType::LBracket,
+            TokType::RBracket,
+            TokType::RParen,
+            TokType::Where,
+            TokType::Identifier("T".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Ord".to_string()),
+            TokType::Plus,
+            TokType::Identifier("Show".to_string()),
+            TokType::LCurlyBracket,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            // Nothing before the `}`, so `f()` is the block's trailing value.
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // An inferred type argument no longer abandons the generic context.
+    assert_eq!(
+        lex_types("let v: Vec<_>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Underscore,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `move` marks a closure that captures by value, and the `||` after it still
+/// splits into two `|`, since a keyword ends no operand.
+#[test]
+fn lexes_move_closures() {
+    assert_eq!(
+        lex_types("let own = move || n + 1"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("own".to_string()),
+            TokType::Equals,
+            TokType::Move,
+            TokType::Pipe,
+            TokType::Pipe,
+            TokType::Identifier("n".to_string()),
+            TokType::Plus,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("let f = move |x: i32| x")[3],
+        TokType::Move
+    );
+    // A whole word only.
+    assert_eq!(
+        lex_types("moves"),
+        vec![TokType::Identifier("moves".to_string()), TokType::Semicolon]
+    );
+}
+
+/// Parentheses group a type, which is what gives an array of references a
+/// spelling. They may stand in a type argument without abandoning the context.
+#[test]
+fn lexes_grouped_types() {
+    assert_eq!(
+        lex_types("let xs: (&i32)[8]\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("xs".to_string()),
+            TokType::Colon,
+            TokType::LParen,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::RParen,
+            TokType::LBracket,
+            TokType::IntLiteral(8),
+            TokType::RBracket,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("let v: Vec<(&i32)[8]>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::LParen,
+            TokType::Ampersand,
+            TokType::I32,
+            TokType::RParen,
+            TokType::LBracket,
+            TokType::IntLiteral(8),
+            TokType::RBracket,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// Each of the five attributes lexes, arguments and all, and none of them ends
+/// the statement its declaration begins.
+#[test]
+fn lexes_the_five_attributes() {
+    assert_eq!(
+        lex_types("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;"),
+        vec![
+            TokType::At,
+            TokType::Identifier("symbol".to_string()),
+            TokType::LParen,
+            TokType::StringLiteral("malloc".to_string()),
+            TokType::RParen,
+            TokType::Fn,
+            TokType::Identifier("malloc".to_string()),
+            TokType::LParen,
+            TokType::Identifier("n".to_string()),
+            TokType::Colon,
+            TokType::U64,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Star,
+            TokType::U8,
+            TokType::Semicolon,
+        ]
+    );
+    // `@noinline` is a word of its own: `never` names the empty type now, so
+    // `@inline(never)` would put a keyword where an IDENTIFIER belongs.
+    assert_eq!(
+        lex_types("@must_use\n@noinline\n@test\nfn f();"),
+        vec![
+            TokType::At,
+            TokType::Identifier("must_use".to_string()),
+            TokType::At,
+            TokType::Identifier("noinline".to_string()),
+            TokType::At,
+            TokType::Identifier("test".to_string()),
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    // `must_use` is a word with a `_` in it, not the wildcard and a name.
+    assert_eq!(
+        lex_types("@deprecated(\"use clamp\")\nlet x = 1\n"),
+        vec![
+            TokType::At,
+            TokType::Identifier("deprecated".to_string()),
+            TokType::LParen,
+            TokType::StringLiteral("use clamp".to_string()),
+            TokType::RParen,
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+/// `never` is a type name like any other: it ends a declaration, stands in a
+/// type argument, and is a whole word only.
+#[test]
+fn lexes_the_never_type() {
+    assert_eq!(
+        lex_types("fn panic(m: str): never;"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("panic".to_string()),
+            TokType::LParen,
+            TokType::Identifier("m".to_string()),
+            TokType::Colon,
+            TokType::Str,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Never,
+            TokType::Semicolon,
+        ]
+    );
+    // It ends a type, so the newline after it inserts a separator.
+    assert_eq!(
+        lex_types("fn stop(): never\nlet n = 1\n"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("stop".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::Never,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("let v: Vec<never>\nlet n = 1\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("v".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Never,
+            TokType::GreaterThan,
+            TokType::Semicolon,
+            TokType::Let,
+            TokType::Identifier("n".to_string()),
+            TokType::Equals,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    for word in ["nevermore", "never_", "_never"] {
+        assert_eq!(
+            lex_types(word),
+            vec![TokType::Identifier(word.to_string()), TokType::Semicolon],
+            "{:?} should still lex as an identifier",
+            word
+        );
+    }
 }

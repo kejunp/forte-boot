@@ -1,62 +1,12 @@
-==============================================================================
-fortec grammar
-------------------------------------------------------------------------------
-Pure BNF:
-
-    <name>      nonterminal         ::=     definition
-    |           alternation         "..."   terminal
-    <empty>     the empty string    '...'   terminal
-
-BNF has no optional, repetition or grouping brackets, so every one of those
-is written out as its own rule: an optional X becomes a nonterminal with an
-<empty> alternative, and a repetition becomes a left-recursive list. The
-convention here is that <x_opt> is "X or nothing", <x_list> is "one or more
-X separated by commas" unless its rule says otherwise, and <x_seq> is a bare
-juxtaposed sequence. <empty> derives nothing:
-
 <empty>                 ::=
 
-BNF also has no comment syntax. The prose between the rules is commentary,
-not grammar; only lines containing "::=" are productions.
-
-Nonterminals named in capitals — <IDENTIFIER>, <INT_LITERAL> and the rest —
-are the token kinds the lexer produces. They are defined in section 6 for
-reference; the parser sees them as atoms. <EOF> is the end of the input.
-
-This grammar describes the *token* stream, not the character stream. Two
-passes run before it:
-
-  1. The preprocessor (src/prep/comments.rs) blanks comments to spaces,
-     preserving line and column.
-  2. The lexer (src/lex/lexer.rs) produces tokens and *inserts semicolons*
-     at line breaks that end a statement, and nothing at all before a "}"
-     (see section 7).
-
-Only the ";" is ever synthesised, and only in a statement body. A "," is
-always written: the entries of a struct, an enum, a match and of every
-literal — a struct's, a map's, a set's — are separated by hand, and a newline
-among them means nothing. A written ";" and an inserted one are the same
-token to the parser, and the grammar below does not distinguish them.
-Newlines are otherwise invisible.
-==============================================================================
-
-
-==============================================================================
-1. Compilation unit
-==============================================================================
-
-<program>               ::= <item_list> <EOF>
+<program>               ::= <item_list> EOF
 
 <item_list>             ::= <empty>
                           | <item_list> <item>
 
 <item>                  ::= <import_decl>
                           | <attribute_list> <visibility_opt> <declaration>
-
-A declaration is private to its file until "public" exports it. "private" is
-therefore only the default written down: it is accepted wherever "public" is
-— a file-scope item, a struct field, an impl member — and changes nothing
-there. It exists to be said out loud, not to do anything.
 
 <visibility_opt>        ::= <empty>
                           | <visibility>
@@ -69,25 +19,17 @@ there. It exists to be said out loud, not to do anything.
                           | <enum_decl>
                           | <trait_decl>
                           | <impl_decl>
+                          | <namespace_decl>
                           | <var_decl>
-
-A <var_decl> at file scope is a constant/global.
-
-The lexer has two uses for "#", told apart by the character after it and by
-nothing else: "#[" opens an attribute, and "#{" makes a map or set literal
-hashed (section 5). Both are glued on — a space between them is an error the
-parser reports, not a lexical one.
+                          | <const_decl>
 
 <attribute_list>        ::= <empty>
                           | <attribute_list> <attribute>
 
-<attribute>             ::= "#" "[" <attr_item_list> "]"
+<attribute>             ::= "@" <attr_item>
 
-<attr_item_list>        ::= <attr_item>
-                          | <attr_item_list> "," <attr_item>
-
-<attr_item>             ::= <IDENTIFIER>
-                          | <IDENTIFIER> "(" <attr_arg_list_opt> ")"
+<attr_item>             ::= IDENTIFIER
+                          | IDENTIFIER "(" <attr_arg_list_opt> ")"
 
 <attr_arg_list_opt>     ::= <empty>
                           | <attr_arg_list>
@@ -96,30 +38,23 @@ parser reports, not a lexical one.
                           | <attr_arg_list> "," <attr_arg>
 
 <attr_arg>              ::= <literal>
-                          | <IDENTIFIER>
+                          | IDENTIFIER
                           | <attr_item>
-
-
-==============================================================================
-2. Declarations
-==============================================================================
 
 <import_decl>           ::= "import" <import_path> <import_alias_opt> ";"
 
 <import_alias_opt>      ::= <empty>
-                          | "as" <IDENTIFIER>
+                          | "as" IDENTIFIER
 
-<import_path>           ::= <IDENTIFIER>
-                          | <import_path> "." <IDENTIFIER>
+<import_path>           ::= IDENTIFIER
+                          | <import_path> "::" IDENTIFIER
 
-A body is a block, and a block is an expression (section 4), so a function
-that falls off the end returns its body's value: "fn add(a: i32, b: i32): i32
-{ a + b }" needs no "return". A <fn_body> of ";" is a signature only, as in a
-trait.
-
-<fn_decl>               ::= "fn" <IDENTIFIER> <generic_params_opt>
+<fn_decl>               ::= <const_opt> "fn" IDENTIFIER <generic_params_opt>
                             "(" <param_list_opt> ")" <return_type_opt>
-                            <fn_body>
+                            <where_clause_opt> <fn_body>
+
+<const_opt>             ::= <empty>
+                          | "const"
 
 <fn_body>               ::= <block>
                           | ";"
@@ -136,18 +71,7 @@ trait.
 <param_seq>             ::= <param>
                           | <param_seq> "," <param>
 
-A parameter, a variable and a for's loop variable are all bindings, and any of
-them may be written "_" to say the value is deliberately unused. A "_" binds
-nothing, so nothing can refer to it and two of them never collide: "fn f(_:
-i32, _: str)" is legal where two parameters of one name are not.
-
-"_" is a token of its own, not an <IDENTIFIER>, and only as a whole word:
-"_foo" and "__" are ordinary identifiers that happen to be spelled with
-underscores, and bind as one. Nor is it an expression — it may not stand on
-the right of anything, so a value is discarded by binding it, "let _ = f()",
-and not by assigning to it: "_ = f()" is not an assignment.
-
-<binding_name>          ::= <IDENTIFIER>
+<binding_name>          ::= IDENTIFIER
                           | "_"
 
 <param>                 ::= <param_name> <type_annotation_opt>
@@ -158,7 +82,7 @@ and not by assigning to it: "_ = f()" is not an assignment.
 <type_annotation_opt>   ::= <empty>
                           | ":" <type>
 
-<struct_decl>           ::= "struct" <IDENTIFIER> <generic_params_opt>
+<struct_decl>           ::= "struct" IDENTIFIER <generic_params_opt>
                             "{" <field_decl_list_opt> "}" <semi_opt>
 
 <semi_opt>              ::= <empty>
@@ -171,10 +95,10 @@ and not by assigning to it: "_ = f()" is not an assignment.
 <field_decl_list>       ::= <field_decl>
                           | <field_decl_list> "," <field_decl>
 
-<field_decl>            ::= <attribute_list> <visibility_opt> <IDENTIFIER>
+<field_decl>            ::= <attribute_list> <visibility_opt> IDENTIFIER
                             ":" <type>
 
-<enum_decl>             ::= "enum" <IDENTIFIER> <generic_params_opt>
+<enum_decl>             ::= "enum" IDENTIFIER <generic_params_opt>
                             "{" <enum_variant_list_opt> "}" <semi_opt>
 
 <enum_variant_list_opt> ::= <empty>
@@ -184,29 +108,23 @@ and not by assigning to it: "_ = f()" is not an assignment.
 <enum_variant_list>     ::= <enum_variant>
                           | <enum_variant_list> "," <enum_variant>
 
-A variant is a case of a sum type: the types it carries are its payload, got
-at by destructuring it in a match (<variant_pattern>, section 5.2) and by
-nothing else. A variant with no payload may fix its discriminant instead,
-which is what makes an enum of plain constants. The two are exclusive — a
-tagged value has no room for a chosen integer.
-
-A variant is named through its enum with "::" — "Color::Red",
-"Option::Some(x)" — in an expression and in a pattern alike.
-
-<enum_variant>          ::= <attribute_list> <IDENTIFIER> <variant_tail_opt>
+<enum_variant>          ::= <attribute_list> IDENTIFIER <variant_tail_opt>
 
 <variant_tail_opt>      ::= <empty>
                           | <payload>
+                          | <named_payload>
                           | <discriminant>
 
 <payload>               ::= "(" <type_list> ")"
+
+<named_payload>         ::= "{" <field_decl_list_opt> "}"
 
 <type_list>             ::= <type>
                           | <type_list> "," <type>
 
 <discriminant>          ::= "=" <expression>
 
-<trait_decl>            ::= "trait" <IDENTIFIER> <generic_params_opt>
+<trait_decl>            ::= "trait" IDENTIFIER <generic_params_opt>
                             "{" <trait_member_list> "}" <semi_opt>
 
 <trait_member_list>     ::= <empty>
@@ -214,7 +132,8 @@ A variant is named through its enum with "::" — "Color::Red",
 
 <trait_member>          ::= <attribute_list> <fn_decl>
 
-<impl_decl>             ::= "impl" <type> <impl_for_opt>
+<impl_decl>             ::= "impl" <generic_params_opt> <type> <impl_for_opt>
+                            <where_clause_opt>
                             "{" <impl_member_list> "}" <semi_opt>
 
 <impl_for_opt>          ::= <empty>
@@ -225,6 +144,9 @@ A variant is named through its enum with "::" — "Color::Red",
 
 <impl_member>           ::= <attribute_list> <visibility_opt> <fn_decl>
 
+<namespace_decl>        ::= "namespace" IDENTIFIER
+                            "{" <item_list> "}" <semi_opt>
+
 <var_decl>              ::= <var_intro> <binding_name> <type_annotation_opt>
                             <initializer_opt> ";"
 
@@ -234,32 +156,35 @@ A variant is named through its enum with "::" — "Color::Red",
 <initializer_opt>       ::= <empty>
                           | "=" <expression>
 
-Every one of those commas is written. The lexer synthesises none of them, so
-a field, variant or arm per line needs a comma on each line; only the last
-may go without, since a "}" closes the entry in front of it by itself.
+<const_decl>            ::= "const" IDENTIFIER ":" <type> "=" <const_expr> ";"
 
+<const_expr>            ::= <expression>
 
-==============================================================================
-3. Types
-==============================================================================
+<type>                  ::= <ref_type>
+                          | <base_type> <array_suffix_list>
 
-<type>                  ::= <base_type> <array_suffix_list>
+<ref_type>              ::= <ref_op> <type>
+
+<ref_op>                ::= "&"
+                          | "*"
 
 <array_suffix_list>     ::= <empty>
                           | <array_suffix_list> <array_suffix>
 
 <array_suffix>          ::= "[" "]"
-                          | "[" <INT_LITERAL> "]"
-
-That is, "T[]" and "T[8]".
+                          | "[" <const_expr> "]"
 
 <base_type>             ::= <primitive_type>
                           | <named_type>
+                          | <grouped_type>
+                          | "_"
+
+<grouped_type>          ::= "(" <type> ")"
 
 <named_type>            ::= <qualified_name> <generic_args_opt>
 
-<qualified_name>        ::= <IDENTIFIER>
-                          | <qualified_name> "." <IDENTIFIER>
+<qualified_name>        ::= IDENTIFIER
+                          | <qualified_name> "::" IDENTIFIER
 
 <generic_args_opt>      ::= <empty>
                           | <generic_args>
@@ -267,7 +192,8 @@ That is, "T[]" and "T[8]".
 <primitive_type>        ::= "i8"   | "i16"  | "i32"  | "i64"
                           | "u8"   | "u16"  | "u32"  | "u64"
                           | "f32"  | "f64"
-                          | "bool" | "char" | "str"  | "void"
+                          | "bool" | "char" | "str"  | "null"
+                          | "never"
 
 <generic_params_opt>    ::= <empty>
                           | <generic_params>
@@ -277,33 +203,21 @@ That is, "T[]" and "T[8]".
 <generic_param_list>    ::= <generic_param>
                           | <generic_param_list> "," <generic_param>
 
-<generic_param>         ::= <IDENTIFIER>
-                          | <IDENTIFIER> ":" <type_bounds>
+<generic_param>         ::= IDENTIFIER
+                          | IDENTIFIER ":" <type_bounds>
 
 <type_bounds>           ::= <named_type>
-                          | <type_bounds> "&&" <named_type>
+                          | <type_bounds> "+" <named_type>
 
 <generic_args>          ::= "<" <type_list> ">"
 
-Note for implementers: the lexer only guesses at "<". It opens a generic
-context after an <IDENTIFIER> and abandons it on any token that cannot appear
-in a type argument list. The parser must therefore still be able to reject
-a "<" that turned out to be a comparison. Inside an open context ">>" is
-emitted as two ">" tokens, so "Map<str, List<i32>>" closes cleanly.
+<where_clause_opt>      ::= <empty>
+                          | "where" <where_pred_list>
 
+<where_pred_list>       ::= <where_pred>
+                          | <where_pred_list> "," <where_pred>
 
-==============================================================================
-4. Statements
-==============================================================================
-
-A block is an expression, and its value is the trailing expression — the one
-left without a ";". A block with no trailing expression is void.
-
-The lexer inserts nothing before a "}", so the last line of a block never
-gets a separator, and an expression written there is that trailing
-expression. Write the ";" yourself and it is a statement again, leaving the
-block void. That is the one place where a written separator and an inserted
-one differ, and only because none is inserted there.
+<where_pred>            ::= <type> ":" <type_bounds>
 
 <block>                 ::= "{" <statement_list> <expression_opt> "}"
 
@@ -314,63 +228,21 @@ one differ, and only because none is inserted there.
                           | <expression>
 
 <statement>             ::= <var_decl>
-                          | <return_stmt>
-                          | <break_stmt>
-                          | <continue_stmt>
                           | <declaration>
                           | <expr_stmt>
                           | ";"
 
-A <declaration> there is a nested fn / struct / ...; a bare ";" is the empty
-statement.
-
-The ";" ending a <var_decl>, return, break or continue may be omitted before
-a "}", as it may anywhere the writer leaves it out and no newline follows —
-read those as "; or the following }". An <expr_stmt> is the exception: the
-";" is exactly what separates a discarded value from the block's own.
-
 <expr_stmt>             ::= <expression> ";"
 
-<return_stmt>           ::= "return" <expression_opt> ";"
-
-The operand is the value of the loop the break leaves (section 5.1). Like a
-return's, it has to start on the same line: "break" can end a statement, so
-a newline after it inserts the ";" and a value left on the next line is a
-statement of its own.
-
-<break_stmt>            ::= "break" <expression_opt> ";"
-
-<continue_stmt>         ::= "continue" ";"
-
-if, while, for and match are expressions (section 5), so they reach a
-statement only through <expr_stmt>: a statement is one whose value is
-discarded. Nothing marks that position as special — the parser takes the
-longest expression it can, and a separator is what ends it. On one line,
-"match x { ... } - 1" is a subtraction; broken across two, the "}" ends the
-statement and the "- 1" starts another, by rule (e) of section 7.
-
-
-==============================================================================
-5. Expressions and patterns
-
-Lowest precedence first. Each level is written left-recursively, which is
-what makes it left-associative; <assignment> is right-recursive and so
-right-associative.
-==============================================================================
-
 <expression>            ::= <assignment>
-
-The left side of an assignment must be a place expression (name, field
-access or index) — a restriction the parser enforces, not the grammar.
+                          | <jump_expr>
+                          | <closure_expr>
 
 <assignment>            ::= <range_expr>
                           | <range_expr> <assign_op> <assignment>
 
 <assign_op>             ::= "="  | "+=" | "-="  | "*=" | "/="
                           | "&=" | "|=" | "<<=" | ">>="
-
-Non-associative, and every bound is optional: "1..10", "1..", "..10",
-"..=n", "..".
 
 <range_expr>            ::= <logical_or>
                           | <logical_or> <range_op>
@@ -423,19 +295,16 @@ Non-associative, and every bound is optional: "1..10", "1..", "..10",
 
 <unary_op>              ::= "!"
                           | "-"
+                          | <ref_op>
 
 <postfix>               ::= <primary>
                           | <postfix> <postfix_op>
 
-<postfix_op>            ::= "." <IDENTIFIER>
+<postfix_op>            ::= "." IDENTIFIER
                           | "(" <arg_list_opt> ")"
                           | "[" <index> "]"
 
-Those are, in order: a field or method access, a call, and an index or slice.
-
 <index>                 ::= <expression>
-
-A range is an expression, so a slice needs no rule of its own.
 
 <arg_list_opt>          ::= <empty>
                           | <arg_list>
@@ -458,23 +327,26 @@ A range is an expression, so a slice needs no rule of its own.
 
 <grouping>              ::= "(" <expression> ")"
 
-Three separators, each reaching into a different thing:
+<jump_expr>             ::= "return" <expression_opt>
+                          | "break" <expression_opt>
+                          | "continue"
 
-  "."   into a value or a module — a field, a method, "io.read", the
-        "shapes" of "shapes.Color". Also <postfix_op> above.
-  "::"  into a type. An enum variant is what that reaches today; an impl
-        member declared without a "this" parameter would be reached the
-        same way.
-  ":"   neither — it annotates.
+<closure_expr>          ::= <move_opt> "|" <closure_param_list_opt> "|"
+                            <expression>
 
-So "shapes.Color::Red.name" walks a module, then a type, then a value.
+<move_opt>              ::= <empty>
+                          | "move"
+
+<closure_param_list_opt> ::= <empty>
+                          | <closure_param_list>
+
+<closure_param_list>    ::= <closure_param>
+                          | <closure_param_list> "," <closure_param>
+
+<closure_param>         ::= <binding_name> <type_annotation_opt>
 
 <path>                  ::= <named_type>
-                          | <named_type> "::" <IDENTIFIER>
-
-A "{" that opens neither a body nor a block, and a place a separator is never
-synthesised (section 7, rule b). Every comma here is written, so a
-field-per-line literal needs one on each line.
+                          | <path> "::" IDENTIFIER
 
 <struct_literal>        ::= <named_type> "{" <field_init_list_opt> "}"
 
@@ -485,29 +357,13 @@ field-per-line literal needs one on each line.
 <field_init_list>       ::= <field_init>
                           | <field_init_list> "," <field_init>
 
-<field_init>            ::= <IDENTIFIER> ":" <expression>
+<field_init>            ::= IDENTIFIER ":" <expression>
 
 <array_literal>         ::= "[" <array_element_list_opt> "]"
 
 <array_element_list_opt> ::= <empty>
                           | <expression_seq>
                           | <expression_seq> ","
-
-An array is "[...]"; a "{...}" whose entries carry colons is a map and one
-whose entries do not is a set. A "#" glued to the front of either brace makes
-it hashed — "#{1: 2}" is a hash map, "#{1, 2}" a hash set — and orders nothing:
-a map or set written without it keeps its keys in order.
-
-"{}" is the empty map, as it is in Python, and "{,}" the empty set, which has
-to be said some other way because "{}" is taken. No trailing comma is required
-anywhere, so a set of one is "{x}".
-
-Those two braces are also blocks, and the lexer is what tells them apart —
-section 7. It takes a "," or a ":" at the top level of the brace as the mark of
-a literal, and a ";" or a line break that ends a statement as the mark of a
-block; where neither appears, "{}" and "{ x }" are literals where only a value
-can stand and blocks where a statement could. "{:}" is the empty map written so
-that it is decidable in either place, as "{,}" already is.
 
 <map_literal>           ::= <hash_opt> "{" <map_entry_list_opt> "}"
 
@@ -524,72 +380,25 @@ that it is decidable in either place, as "{,}" already is.
 
 <map_entry>             ::= <expression> ":" <expression>
 
-The empty set is written, never derived from <empty>: that spelling is the
-map's.
-
 <set_literal>           ::= <hash_opt> "{" <set_element_list> "}"
 
 <set_element_list>      ::= ","
                           | <expression_seq>
                           | <expression_seq> ","
 
-<literal>               ::= <INT_LITERAL>
-                          | <FLOAT_LITERAL>
-                          | <STRING_LITERAL>
-                          | <CHAR_LITERAL>
+<literal>               ::= INT_LITERAL
+                          | FLOAT_LITERAL
+                          | STRING_LITERAL
+                          | CHAR_LITERAL
                           | "true"
                           | "false"
                           | "null"
-
-
-------------------------------------------------------------------------------
-5.1 Block expressions
-
-if, while, for and match are expressions, not statements. Each is a
-<primary>, so each composes like any other: bound to a name, passed as an
-argument, returned, or left as the trailing expression of a block. What
-each evaluates to:
-
-  block       its trailing expression, or void.
-  if          the branch taken. Without an "else" some path through it
-              yields nothing, so an if used for its value needs one.
-  match       the arm taken.
-  while, for  the operand of the "break" that leaves it, or void when the
-              loop ends by itself — the condition going false, or the
-              sequence running out. A loop wanted for its value therefore
-              has to be one that only a break can leave, "while true"
-              being the form that guarantees it. See section 8.
-
-That every branch of an if, every arm of a match, and every "break" leaving
-one loop agree on a type is a rule for the checker, not one this grammar
-can state.
-
-Being a <primary>, a block expression also takes postfix operators:
-"match x { ... }.len()" parses, and so does "if c { a } else { b } + 1".
-------------------------------------------------------------------------------
 
 <block_expr>            ::= <block>
                           | <if_expr>
                           | <while_expr>
                           | <for_expr>
                           | <match_expr>
-
-The header — a condition, an iterable, a scrutinee — is an ordinary
-expression with one restriction: no struct literal at its top level, so the
-"{" that follows always opens the body. Parenthesise to get one in:
-"if (Config { on: true }).on { ... }".
-
-This is what lets the lexer tell "Point {" from "if cond {" at all, and so
-which braces hold statements and take an inserted ";"; see section 7.
-
-A map or set literal is exempt where the body it competes with holds
-statements, since that body can hold no "," or ":" at its top level and a
-literal that shows one is therefore not it: "for x in {1, 2, 3} { ... }" needs
-no parentheses. The exemption stops at the bodies that do hold entries — a
-match's above, and a struct's and enum's in section 2 — whose commas look
-exactly like a set's; a literal at the top level of one of those headers has
-to be parenthesised, as a struct literal does. So must "{}" and "{ x }"
-anywhere in a header: nothing in them says literal, so the body claims them.
 
 <header_expr>           ::= <expression>
 
@@ -615,39 +424,40 @@ anywhere in a header: nothing in them says literal, so the body claims them.
 <match_arm_list>        ::= <match_arm>
                           | <match_arm_list> "," <match_arm>
 
-A block is an expression, so "=> { ... }" is covered by this too.
-
 <match_arm>             ::= <pattern_alternatives> "=>" <expression>
 
 <pattern_alternatives>  ::= <pattern>
                           | <pattern_alternatives> "|" <pattern>
 
-
-------------------------------------------------------------------------------
-5.2 Patterns
-------------------------------------------------------------------------------
-
 <pattern>               ::= "_"
                           | <literal_pattern>
                           | <range_pattern>
                           | <variant_pattern>
-                          | <IDENTIFIER>
+                          | <const_pattern>
+                          | IDENTIFIER
 
-"_" is the wildcard; a bare <IDENTIFIER> is a binding. The two differ only in
-that the wildcard binds nothing, which is why it may be repeated in one
-pattern — "Pair::Of(_, _)" — where a name may not.
+<const_pattern>         ::= <qualified_name>
 
 <literal_pattern>       ::= <literal>
                           | "-" <literal>
 
 <range_pattern>         ::= <literal_pattern> <range_op> <literal_pattern>
 
-Written out in full, "Color::Red" — a bare "Red" is an <IDENTIFIER>, and so a
-binding that matches everything, not the variant of that name.
-
-<variant_pattern>       ::= <named_type> "::" <IDENTIFIER>
-                          | <named_type> "::" <IDENTIFIER>
+<variant_pattern>       ::= <named_type> "::" IDENTIFIER
+                          | <named_type> "::" IDENTIFIER
                             "(" <pattern_list_opt> ")"
+                          | <named_type> "::" IDENTIFIER
+                            "{" <field_pattern_list_opt> "}"
+
+<field_pattern_list_opt> ::= <empty>
+                          | <field_pattern_list>
+                          | <field_pattern_list> ","
+
+<field_pattern_list>    ::= <field_pattern>
+                          | <field_pattern_list> "," <field_pattern>
+
+<field_pattern>         ::= IDENTIFIER
+                          | IDENTIFIER ":" <pattern>
 
 <pattern_list_opt>      ::= <empty>
                           | <pattern_list>
@@ -655,27 +465,7 @@ binding that matches everything, not the variant of that name.
 <pattern_list>          ::= <pattern>
                           | <pattern_list> "," <pattern>
 
-
-==============================================================================
-6. Lexical grammar
-
-Produced by src/lex/lexer.rs. Listed for reference — the parser sees only
-the token kinds.
-
-Four character classes are too large to enumerate, so they are given by
-description instead of by a rule:
-
-  <string_char>   any character except '"' and '\'
-  <raw_char>      any character except '`'
-  <char_char>     any character except "'" and '\'
-  <letter>        any alphabetic Unicode character
-==============================================================================
-
-<IDENTIFIER>            ::= <ident_start> <ident_continue_list>
-
-An <IDENTIFIER> is any such word that is not a <keyword>. "_" is one of those
-keywords, so a lone underscore is the wildcard token and never an identifier;
-"_x" and "__" are longer words, so they are identifiers like any other.
+IDENTIFIER              ::= <ident_start> <ident_continue_list>
 
 <ident_continue_list>   ::= <empty>
                           | <ident_continue_list> <ident_continue>
@@ -687,13 +477,11 @@ keywords, so a lone underscore is the wildcard token and never an identifier;
                           | <digit>
                           | "_"
 
-<INT_LITERAL>           ::= <decimal_int>
+INT_LITERAL             ::= <decimal_int>
                           | <prefixed_int>
 
 <decimal_int>           ::= <digit>
                           | <decimal_int> <digit>
-
-A <decimal_int> must fit in an i64.
 
 <prefixed_int>          ::= "0" <base_marker> <base_digit_list>
 
@@ -706,20 +494,12 @@ A <decimal_int> must fit in an i64.
                           | "b" | "B"
                           | "d" | "D"
 
-Those are bases 16, 8, 3, 2 and 10 in turn, and a <base_digit> is a digit
-valid in the marker's base.
-
 <base_digit>            ::= <digit>
                           | <letter>
 
-The fractional part is only taken when a digit follows the ".", so "1.foo"
-is <INT_LITERAL> "." <IDENTIFIER> and "1..2" is a range.
+FLOAT_LITERAL           ::= <decimal_int> "." <decimal_int>
 
-<FLOAT_LITERAL>         ::= <decimal_int> "." <decimal_int>
-
-A "`"-delimited string is raw: no escapes.
-
-<STRING_LITERAL>        ::= '"' <string_item_list> '"'
+STRING_LITERAL          ::= '"' <string_item_list> '"'
                           | "`" <raw_char_list> "`"
 
 <string_item_list>      ::= <empty>
@@ -731,9 +511,7 @@ A "`"-delimited string is raw: no escapes.
 <raw_char_list>         ::= <empty>
                           | <raw_char_list> <raw_char>
 
-A <CHAR_LITERAL> holds exactly one character.
-
-<CHAR_LITERAL>          ::= "'" <char_item> "'"
+CHAR_LITERAL            ::= "'" <char_item> "'"
 
 <char_item>             ::= <char_char>
                           | <escape>
@@ -756,15 +534,14 @@ A <CHAR_LITERAL> holds exactly one character.
                           | "A" | "B" | "C" | "D" | "E" | "F"
 
 <keyword>               ::= <primitive_type>
-                          | "fn"     | "let"   | "var"      | "struct"
-                          | "trait"  | "impl"  | "public"   | "private"
-                          | "import" | "enum"  | "if"       | "elif"
-                          | "else"   | "while" | "for"      | "in"
-                          | "return" | "break" | "continue" | "match"
-                          | "as"     | "true"  | "false"    | "this"
-                          | "null"   | "_"
-
-A block comment does not nest.
+                          | "fn"      | "let"    | "var"      | "const"
+                          | "struct"  | "trait"  | "impl"     | "public"
+                          | "private" | "import" | "enum"     | "namespace"
+                          | "if"      | "elif"   | "else"     | "while"
+                          | "for"     | "in"     | "return"   | "break"
+                          | "continue"| "match"  | "as"       | "where"
+                          | "move"    | "true"   | "false"    | "this"
+                          | "_"
 
 <comment>               ::= "//" <line_char_list>
                           | "/*" <any_char_list> "*/"
@@ -774,191 +551,3 @@ A block comment does not nest.
 
 <any_char_list>         ::= <empty>
                           | <any_char_list> <any_char>
-
-<line_char> is any character except a newline; <any_char> is any character
-at all.
-
-
-==============================================================================
-7. Automatic separator insertion
-
-A ";" may always be written by hand, and a "," always must be. The lexer
-inserts a ";" at a newline when all of the following hold:
-
-  a. The previous token can end a statement: an identifier, "_", a literal,
-     "this", "null", "return", "break", "continue", ")", "]", "}", "..", a
-     primitive type name, or the ">" closing a generic argument list. A "_"
-     is there because it names a binding, so "let _" is as complete a
-     declaration as "let x".
-  b. No "(" or "[" is open, and the innermost open brace is not an entry
-     body — a struct, enum or match body, or a struct, map or set literal. A
-     block is a boundary; an argument list is not, and neither is a list of
-     entries, which is punctuated by hand.
-  c. The next line does not begin with "}". A closing brace ends the last
-     entry or statement on its own, which is what makes the trailing comma
-     of a struct, enum or match body optional, and the semicolon of a
-     block's last statement optional with it.
-  d. The next line does not begin with a continuation: one of
-     . + - * / % = < > & | , :
-     or one of the keywords  else  elif  as  in.
-  e. The previous token is not the "}" of a *block* — unless the next line
-     begins with one of those keywords, or with a "," or a ":".
-
-     Rule (d) alone is wrong once if, while, for and match are expressions,
-     because a block's "}" then closes either a statement or an operand and
-     an operator on the next line fits both readings:
-
-         match x { ... }
-         -1
-
-     Every other closer keeps rule (d) as it was, so a method chain still
-     hangs off the ")" above it — and off the "}" of a literal, which closes
-     a value and never a statement. Only a block's "}" is
-     treated this way, and only against the operators: "," and ":" separate
-     rather than operate, so they still continue the line and an entry body
-     may still be written in the leading-comma style.
-  f. A "->" does not precede the newline. "->" explicitly splices the next
-     line onto this one and is consumed by the lexer, never reaching the
-     parser. It is the way to write the reading rule (e) gives up:
-
-         match x { ... } ->
-         -1
-
-Whether anything is inserted depends on the innermost open brace, of which
-there are four kinds. Two are decided by what stands in front of the brace:
-
-  - the *body of a header* — the first "{" at the bracket and brace depth its
-    keyword was seen at, for "if", "elif", "else", "while", "for", "match",
-    "fn", "struct", "enum", "trait" and "impl". Almost nothing else can be
-    there, which is what section 5.1 buys by keeping a struct literal out of
-    the top level of a header. It is an *entry body* under "struct", "enum"
-    and "match", and a statement body under the rest;
-  - a *struct literal*, when no header claims the brace and a type name ends
-    immediately in front of it: "Point {", "Vec<i32> {". Its fields are
-    entries too, so it is an entry body as well.
-
-The other two stand in the same places and have the same thing in front of
-them — an "=", a "(", a "=>", a separator — so nothing there can tell them
-apart, and the lexer looks inside instead:
-
-  - a *map or set literal*, when a "#" is glued to the front of the brace, or
-    when a "," or a ":" turns up at the top level of it. It is an entry body,
-    and its "}" closes a value;
-  - a *block* otherwise. A ";" at the top level of the brace says so, and so
-    does a keyword only a statement starts with — "let", "var", "return",
-    "fn" and the rest. This is the only kind that gets anything inserted.
-
-Only the brace's own level counts: the "," of "{ f(a, b) }" belongs to the
-call and the ":" of "{ Point { x: 1 } }" to the literal, so neither decides
-the brace around it. A line break that would end a statement counts as a ";",
-since that is what it is about to become — "{ f()" / newline / "g() }" is two
-statements however it is punctuated, while between entries a newline means
-nothing and the "," or ":" of a real literal is met before any line break
-that could be read this way.
-
-That leaves "{}" and "{ x }", which hold neither separator. Those are
-literals where only a value can stand — after an "=", a "(", a ",", a
-"return", an operator — and blocks where a statement could: at the start of
-one, after a "=>", inside another block. So "{}" after an "=" is the empty
-map and "{ x }" the set of one, while the same two written where a statement
-belongs are an empty block and a block yielding x.
-
-A header is the one thing that overrules the look inside, and only as far as
-it has to: it claims its brace whatever is in there, except that a body of
-statements gives way to a brace that can only be a literal, since a "," or a
-":" is illegal at its top level anyway. That is what lets "for x in {1, 2, 3}
-{ ... }" be written without parentheses. A struct, enum or match body keeps
-its brace unconditionally — its own entries are separated by commas, so the
-look inside cannot tell it from a set.
-
-So a ";" is inserted in a statement body — at top level and in the body of a
-fn, trait, impl, block or match arm — and nothing at all in an entry body,
-whose commas are written by hand (rule b). The kinds nest, and it is the
-innermost brace that decides: a statement inside an arm's block is followed
-by a ";", the "}" closing that block is followed by the written "," that ends
-the arm, and a block inside a literal's field or a map's value is a statement
-body again.
-
-A separator is also inserted at end of input when (a) holds. "..=" never
-ends a statement — it always needs an upper bound — while ".." does.
-
-The header rule is the whole of it. Take it away and "if cond {" cannot be
-told from "Point {" — both are a name followed by a brace — which is why the
-restriction on <header_expr> is not a nicety the parser could drop.
-
-Caveat: rule (c) is what gives a block its value. The last expression in a
-block never gets a ";" inserted after it, so it becomes the block's trailing
-expression (section 4). To evaluate something for its effect and leave the
-block void, write the ";" — the lexer will not.
-
-Caveat: rule (e) is a choice about which reading is common, not a proof that
-the other is wrong. A block expression really can be an operand, and one
-spread over lines has to say so with a "->".
-
-Caveat: a "{" at the top level of a header is the body, even where a struct
-literal was meant. "if Cfg { on: true }.on {" does not work; parenthesise it,
-"if (Cfg { on: true }).on {", and the inner brace is deeper than the header,
-so it lexes as the literal it is. The same goes for a "{}" or a "{ x }" in a
-header, which say nothing about themselves: "for x in ({y}) { ... }".
-
-Caveat: a block used as a value has to hold a statement boundary — a ";", a
-line break, or a keyword only a statement starts with. Every block worth
-writing does, since a block of one expression is that expression; but
-"let x = { f() }" is the set of one that it looks like, and "let x = (f())"
-is how to say the other.
-==============================================================================
-
-
-==============================================================================
-8. Open questions
-
-These productions are extrapolated from the token set; the lexer does not
-pin them down, and no parser exists yet to confirm them.
-
-  - <import_decl>: dotted path with an optional "as" alias is assumed. A
-    string-literal path ("import \"std/io\"") would lex just as well.
-  - <attribute>: "#[...]" versus a bare "#name" line is a free choice. "#" now
-    has a second use in "#{...}", which settles nothing about the first: the
-    two are told apart by the bracket after it either way.
-  - "break x" gives a loop its value, which leaves the loop that ends by
-    itself with none to give: it is void, so only a loop no condition can
-    end — "while true" — is usable for a value of any other type. An
-    "else" block run on normal completion would lift that restriction and
-    let "for" and a conditional "while" yield values too; nothing here
-    reserves the syntax for one.
-  - Whether "return", "break" and "continue" are themselves expressions of
-    an empty type — enough to write "let x = if c { 1 } else { return }" —
-    is unsettled. They are statements above.
-  - <struct_literal>: "Name { field: expr }" is ambiguous with the body of
-    an if, while, for or match. Resolved by <header_expr> (section 5.1): no
-    struct literal at the top level of a header. Settled, then, rather than
-    open — the lexer relies on it to tell the two braces apart (section 7),
-    so the parser inherits the answer instead of enforcing the rule.
-  - <type_bounds> uses "&&" for multiple bounds because a single "&" is a
-    lex error. "+" is the other candidate.
-  - <match_arm> alternation uses "|", which is likewise a lex error on its
-    own; "||" would be the token-legal spelling.
-  - Array types ("T[]") and array literals are inferred from the lexer's
-    comment about "<Map<str, i32[]>>"; sized arrays ("T[8]") are a guess.
-  - <map_literal> and <set_literal> have literal syntax but no type syntax:
-    "Map<K, V>" and "Set<T>" as ordinary generic types is what the lexer's
-    comment assumes, and nothing here sugars them the way "T[]" sugars an
-    array, or says how the hashed kinds are named — "HashMap<K, V>", or one
-    type whose hashing is a property of how it was built.
-  - Whether "{}" and "{ x }" are literals or blocks is decided by the position
-    they stand in (section 7), which is a choice about which reading is
-    common. The other reading always has a spelling: "(f())" for the block,
-    "{:}" and "{,}" for the empty map and set.
-  - <enum_variant> carries a positional payload only. A named one — "Move {
-    x: i32, y: i32 }" — would need a pattern to match it and a body the
-    lexer would have to tell from a struct's, and neither is provided.
-  - "_" is a pattern and a binding name, and nothing else. It is not an
-    inferred-type placeholder — "let v: Vec<_>" does not parse, and the lexer
-    abandons a generic context on it for that reason; a "let" with an
-    initializer already infers its type, so the placeholder buys only the
-    partly-annotated case. Nor is it a digit separator: "1_000_000" is the
-    malformed-literal error that junk glued to a number has always been. Both
-    are additions the token allows and neither is taken.
-  - No syntax is reserved for pointers/references, closures, or generic
-    constraints beyond a bound list.
-==============================================================================

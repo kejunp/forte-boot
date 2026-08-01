@@ -1,0 +1,973 @@
+==============================================================================
+fortec grammar — commentary
+------------------------------------------------------------------------------
+The productions live in docs/grammar.bnf, which holds nothing but rules. This
+file holds everything else: the notation, the reasoning behind the rules, the
+lexer's separator insertion, and the open questions. Section numbers here are
+what the cross-references inside this file mean; the rules are named, so a
+mention of <foo> is found in grammar.bnf by searching for it.
+==============================================================================
+
+
+==============================================================================
+0. Notation
+==============================================================================
+
+Pure BNF:
+
+    <name>      nonterminal         ::=     definition
+    NAME        terminal            |       alternation
+    "..."       terminal            '...'   terminal
+    <empty>     the empty string
+
+Angle brackets mark a nonterminal and mark nothing else, so everything
+without them is a terminal: a spelling in quotes, or a token kind in
+capitals. The quotes are not part of the terminal — "fn" is the two letters —
+and the two kinds of quote mean the same thing, '...' being there for the
+terminal that holds a '"' of its own.
+
+BNF has no optional, repetition or grouping brackets, so every one of those
+is written out as its own rule: an optional X becomes a nonterminal with an
+<empty> alternative, and a repetition becomes a left-recursive list. The
+convention here is that <x_opt> is "X or nothing", <x_list> is "one or more
+X separated by commas" unless its rule says otherwise, and <x_seq> is a bare
+juxtaposed sequence. <empty> derives nothing.
+
+BNF also has no comment syntax, which is why this file exists: grammar.bnf is
+all productions, and every line of commentary about them is here.
+
+The terminals in capitals — IDENTIFIER, INT_LITERAL and the rest — are the
+token kinds the lexer produces. A quoted terminal is one spelling and a
+capitalised one is a class of them, which is the whole of the difference: a
+rule can ask for "fn" or for any IDENTIFIER, and never for a particular one.
+Section 6 gives the characters behind each, and there the same names are
+nonterminals — the start symbols of a second, character-level grammar. The
+parser sees them as atoms. EOF is the end of the input.
+
+This grammar describes the *token* stream, not the character stream. Two
+passes run before it:
+
+  1. The preprocessor (src/prep/comments.rs) blanks comments to spaces,
+     preserving line and column.
+  2. The lexer (src/lex/lexer.rs) produces tokens and *inserts semicolons*
+     at line breaks that end a statement, and nothing at all before a "}"
+     (see section 7).
+
+Only the ";" is ever synthesised, and only in a statement body. A "," is
+always written: the entries of a struct, an enum, a match and of every
+literal — a struct's, a map's, a set's — are separated by hand, and a newline
+among them means nothing. A written ";" and an inserted one are the same
+token to the parser, and the grammar does not distinguish them. Newlines are
+otherwise invisible.
+
+
+==============================================================================
+1. Compilation unit
+==============================================================================
+
+<item>, <visibility>. A declaration is private to its file until "public"
+exports it. "private" is therefore only the default written down: it is
+accepted wherever "public" is — a file-scope item, a struct field, an impl
+member — and changes nothing there. It exists to be said out loud, not to do
+anything.
+
+<declaration>. A <var_decl> at file scope is a global. A <const_decl> is the
+compile-time constant, and stands there and in a block alike (section 2).
+
+<attribute>. One "@" per attribute — "@inline", "@repr(C)",
+"@derive(Show, Clone)" — and a list of them is a list, written one after
+another with nothing between:
+
+    @inline
+    @cold
+    public fn panic(m: str): null
+
+An attribute is a prefix of the declaration it annotates and not a statement
+of its own, so the lexer inserts no separator at the end of one however many
+lines the list runs to. The arguments' "(" is glued to the name, as the "["
+of the older "#[...]" spelling was; a space there ends the attribute at the
+name and leaves the parenthesis for the parser to complain about.
+
+That leaves "#" with one use instead of two: "#{" makes a map or set literal
+hashed (section 5), and nothing else in the language begins with it.
+
+The set of them is closed: the compiler knows every attribute there is, and
+one it does not know is an error where it is written rather than something
+ignored. No library defines one, and adding one is a change to the compiler —
+which is what buys a misspelling an error naming what was meant. These are
+the six:
+
+  @symbol("malloc")     Gives a fn the exact symbol name it is compiled to,
+                        in place of the mangled one. A name is otherwise
+                        mangled to "name_type_type_..." so that two functions
+                        may share it, and nothing outside the language can
+                        predict the result — so this is what a call out to C,
+                        or a call in from it, is written with. Takes one
+                        STRING_LITERAL.
+  @must_use             Says the value a fn returns may not be dropped: an
+                        <expr_stmt> that discards it is an error. Worth
+                        having because "null" belongs to every type
+                        (section 3), so a result nobody looked at is exactly
+                        what a missed failure looks like. "let _ = f()" is
+                        how to say the value really was meant to go.
+  @inline               A hint, and the one thing here a backend may ignore.
+  @noinline             The other direction, and the more useful of the two:
+                        it is a promise about what a stack trace will show.
+                        A word of its own rather than "@inline(never)",
+                        since "never" names the empty type (section 3) and an
+                        <attr_arg> takes an IDENTIFIER.
+  @deprecated("...")    Warns wherever the thing it marks is used, and says
+                        in its own words what to use instead. It goes on any
+                        declaration.
+  @test                 Marks a fn as a test: no parameters, "null" returned,
+                        collected and run on its own rather than compiled
+                        into an ordinary build.
+
+"@repr", "@derive" and "@cfg" are the names to expect next, and none of them
+is reserved: each needs something the language has not got — a layout story,
+traits with code behind them, and a configuration to ask about.
+
+
+==============================================================================
+2. Declarations
+==============================================================================
+
+<fn_decl>. A body is a block, and a block is an expression (section 4), so a
+function that falls off the end returns its body's value: "fn add(a: i32, b:
+i32): i32 { a + b }" needs no "return". A <fn_body> of ";" is a signature
+only, as in a trait.
+
+A <return_type_opt> left out is "null" (section 3), which is a type like any
+other — so "fn log(m: str)" and "fn log(m: str): null" are the same
+declaration, and a bare "return" returns the value that type has.
+
+<const_opt>. A "const fn" is one the compiler may run itself, which is what
+lets a <const_decl> call anything at all: "const fn square(n: i32): i32" makes
+"const AREA: i32 = square(8)" legal. It is a promise about the body, checked
+where the body is written and not at the call. A "const" at the head of a
+declaration is therefore the start of one of two things, told apart by the
+word after it — "fn" makes a function and anything else a constant.
+
+What may stand in the body is anything that can be worked out at compile
+time, which is a wider licence than it sounds: a "let", a "var", an
+assignment, a loop, an if, a match, a reference taken to something the body
+made itself, and a call to another const fn. Mutation is not the difficulty —
+mutating a local is just the evaluator keeping a value — and neither is
+iteration. The single rule behind all of it is that the body must be closed
+over its arguments: nothing may be read that the call did not bring in.
+
+So what is refused is what reaches outside. A global "var", whose value
+depends on when you look. A call to an ordinary fn, which has made no
+promise. Anything doing input or output. A reference to a place that will not
+exist until the program runs.
+
+A const fn stays an ordinary function besides. Nothing stops it being called
+at run time with arguments that were not known any earlier, and it is only
+where every argument is a constant that the call folds away.
+
+<where_clause_opt>. The same bounds a <generic_param> carries, said after the
+signature instead of inside the angle brackets, which is worth doing once a
+list of them stops fitting. It also says one thing the inline form cannot,
+being written about a whole <type> rather than about a parameter being
+introduced: "where Vec<T>: Show" bounds something that is not a parameter at
+all, and has nowhere else to go.
+
+Both places may be used at once and what they say is joined: "fn dump<T:
+Show>(xs: &T[]) where T: Clone" asks for "T: Show + Clone" exactly as if the
+two had been written together. Nothing has to be chosen between them, so a
+signature is split wherever it reads best.
+
+A <where_pred> has to constrain something the signature introduced, though —
+its left side must mention a parameter somewhere inside it. "where Vec<T>:
+Show" does and "where i32: Show" does not: the second says something about
+the world that is true or false however the function is called, which is
+never what was meant and is usually a parameter that got misspelled.
+
+The "{" of the body still has to open on the line the clause ends, as every
+body does — nothing continues a line into a "{" (section 7).
+
+<binding_name>. A parameter, a variable and a for's loop variable are all
+bindings, and any of them may be written "_" to say the value is deliberately
+unused. A "_" binds nothing, so nothing can refer to it and two of them never
+collide: "fn f(_: i32, _: str)" is legal where two parameters of one name are
+not.
+
+"_" is a token of its own, not an IDENTIFIER, and only as a whole word:
+"_foo" and "__" are ordinary identifiers that happen to be spelled with
+underscores, and bind as one. Nor is it an expression — it may not stand on
+the right of anything, so a value is discarded by binding it, "let _ = f()",
+and not by assigning to it: "_ = f()" is not an assignment.
+
+<impl_member>. An impl makes methods for a struct and does nothing else. Its
+members are <fn_decl>s and there is no other kind: no constant, no type, no
+field. Whatever else wants to be grouped under a name is grouped by
+<namespace_decl> below, which is the thing for it.
+
+<namespace_decl>. A namespace is a name put in front of a list of items. It
+holds whatever a file holds — a fn, a struct, an enum, a constant, another
+namespace — and changes nothing about them except how they are reached and
+what "public" means one level up:
+
+    namespace limits {
+        public const MAX: i32 = 65535
+        public fn clamp(n: i32): i32 { ... }
+    }
+
+    let n = limits::clamp(x)
+
+The "::" is C++'s, and reaching into a namespace is the second thing section
+5 gives it: a type on one side of that separator or a namespace, never a
+value. A namespace is a place to put things and not a type, so nothing is
+ever an instance of one and no "." reaches into it — a "." is for what is
+there at run time.
+
+Nothing stops the two from meeting, since a namespace holds types and a type
+holds variants: "shapes::Color::Red" walks a namespace, then a type, then
+lands on a value.
+
+Nesting falls out of the rule — a namespace is an <item> like any other — and
+"public" is needed at both levels to escape both, since a public member of a
+private namespace is reachable only from inside it.
+
+<const_decl>. A constant is a name for a value the compiler works out for
+itself: "const MAX: i32 = 1 << 20". Both halves are required where a
+<var_decl>'s are optional — the type, since nothing is there to infer it
+from until the value exists, and the initializer, since a constant with no
+value is nothing at all. It takes a <visibility_opt> and attributes like any
+other declaration, and its ";" is inserted at a line break as any other
+statement's is.
+
+That is the syntax; the rest of it is a rule for the checker. <const_expr> is
+written as an ordinary <expression> because the grammar cannot say which one
+it wants: "evaluable at compile time" is a property of what the names inside
+refer to, and nothing about the shape of the expression shows it. What is
+meant to be accepted is the part of the language that is closed under
+evaluation — literals, other constants, the operators over them, a cast, and
+an array, map, set or struct literal whose parts are themselves constant,
+together with if, match and block, which fold away once what they test is
+known — and a call to a "const fn" (section 2), which is what makes a
+constant able to compute anything at all. What is meant to be rejected is
+anything that reaches outside: a call to an ordinary fn, a global "var", a
+parameter, a reference to a place that exists only once the program runs.
+
+A constant is not a place. Nothing assigns to it, and "*" of one is therefore
+an error where "&" of one is not — a constant has no single home, being free
+to be copied into each use.
+
+<enum_variant>. A variant is a case of a sum type: the types it carries are
+its payload, got at by destructuring it in a match (<variant_pattern>,
+section 5.2) and by nothing else. A payload is positional, "Move(i32, i32)",
+or named, "Move { x: i32, y: i32 }" — the second where telling the parts apart
+by order would be a mistake waiting to happen. A variant with no payload may
+fix its discriminant instead, which is what makes an enum of plain constants.
+The three are exclusive — a tagged value has no room for a chosen integer.
+
+A <named_payload> is a brace holding field declarations, which is a struct
+body in everything but name, and the lexer treats it as one: a type name
+stands in front of it, so it is an entry body whose commas are written
+(section 7).
+
+A variant is named through its enum with "::" — "Color::Red",
+"Option::Some(x)" — in an expression and in a pattern alike.
+
+Every one of the commas in this section is written. The lexer synthesises
+none of them, so a field, variant or arm per line needs a comma on each line;
+only the last may go without, since a "}" closes the entry in front of it by
+itself.
+
+
+==============================================================================
+3. Types
+==============================================================================
+
+<primitive_type>. "null" is in that list, and is the one type whose name is
+also a value: "null" the type has exactly one of them, "null" the <literal>,
+and a thing of that type carries no information beyond having arrived. It is
+what a function with no <return_type_opt> returns, what a block with no
+trailing expression is worth, and what a loop that nobody broke out of yields
+(sections 4 and 5.1). There is no "void" — the type that would have been
+called that has a value, and can be named, passed and stored like any other.
+
+It is not a null pointer. A reference is never null (<ref_type> below), so
+nothing in the language reads "null" as an absent something; it is the
+present nothing-in-particular.
+
+"never" is its opposite, and the other type in that list whose values are
+worth counting: it has none. Nothing is ever of type "never", which is why an
+expression of it argues with nothing standing beside it — there is no value
+it could disagree about. A "return", a "break" and a "continue" have it
+(section 5), and so does a function that does not come back:
+
+    fn panic(m: str): never
+
+    let x = match c {
+        1 => 5,
+        _ => panic("no"),
+    }
+
+That types as an i32. The second arm yields nothing at all, so it agrees with
+the first by having nothing to disagree with. Written "null" instead, the
+same arm would be an error — a value that carries no information is still a
+value, and an i32 is not one.
+
+A body may not fall off the end of a "never": something in it has to leave,
+or loop forever. That is a rule for the checker, as is everything about what
+follows a call to one.
+
+<ref_type>. "&T" is an immutable reference and "*T" a mutable one. Neither is
+a pointer: no arithmetic reaches them, none of them is null, and there is
+nothing to dereference. A reference stands for the place it refers to and is
+read, called, indexed and reached into exactly as that place is, so "&" and
+"*" decide one thing only — whether writing through it is allowed. It is the
+distinction "let" and "var" draw over a binding, drawn instead over a
+borrowed place.
+
+The two compose with everything a type does: "&Point", "*i32", "Vec<&str>",
+"&Map<str, *Node>". A reference binds looser than an array suffix, so
+"&i32[]" is a reference to a run of i32 — the view of <array_suffix> below —
+and an array of references is said with a <grouped_type>, "(&i32)[8]".
+
+A method borrows its receiver by annotating it, since "this" is a <param>
+like any other: "fn norm(this: &Point): f64" reads the point and
+"fn scale(this: *Point, k: f64)" writes to it. Nothing else marks the two
+apart — there is no "&this" form, and no rule here says which of them a trait
+wants.
+
+A reference to a reference is written as one expects, "&&T", though those two
+characters are the logical operator as well. What tells them apart is what
+stands in front of them: an operand — a value, or a type — makes "&&" the
+infix operator, and anything else makes it two prefixes. So "a && b" is a
+conjunction, while "&&i32", "f(&&x)" and "return &&x" are double references,
+and the "&&" of a <type_bounds> list follows a type and so stays whole.
+
+Note for implementers: only the first "&" is taken when the pair splits, so
+the second is scanned on its own and "&&&*T" needs no rule of its own. This
+is the ">>" of "List<List<i32>>" asked from the other side — one spelling
+that two readings want, split on context the lexer already has. The one
+reading given up is the conjunction of an open range, "1.. && x", and a range
+is not a truth value anyway.
+
+<array_suffix>. Two suffixes, and what separates them is ownership.
+
+"T[8]" is a raw fixed-size array: eight T laid end to end and nothing else —
+no header, no indirection, and no length stored beside them, the length being
+in the type. So it is a value like any other. "let b = a" copies all eight of
+them, and so does handing one to a function or returning it; its size is
+known, so it may be a local, a field, a parameter or a return type. "T[8]"
+and "T[9]" are different types, and neither of them is "T[]".
+
+"T[]" is a run of T whose length the type does not give. That makes it a type
+of no known size, and nothing can hold one: no local, no field, no parameter
+and no return may be a "T[]". It exists only behind a reference, and there it
+is a borrowed view — "&T[]" one that reads and "*T[]" one that writes, the
+same two spellings that say it everywhere else. A view is not a bare address
+either: it carries the length its type left out, which is what lets it be
+indexed at all and what keeps "not a pointer" true of it.
+
+A reference to a fixed array is a view of it: "&i32[8]" is a "&i32[]" and
+"*i32[8]" a "*i32[]", the length moving out of the type and into the value.
+That conversion is the only one, and it runs one way — a view has forgotten
+how many there are as a matter of type, so nothing turns it back.
+
+Suffixes read left to right, outermost first, which is the order the indexing
+that undoes them reads in: "i32[3][2]" is three arrays of two, an "a[i]" of
+one is an "i32[2]", and an "a[i][j]" is an i32. An element must have a size,
+so only the first suffix may be "[]" — "&i32[][3]" is a view of rows of
+three, while "i32[3][]" would be three things of no size and is not a type.
+A <grouped_type> changes which suffix belongs to what, and is how an array of
+references is written at all: "(&i32)[8]".
+
+An <array_literal> is a fixed array, so "[1, 2, 3]" is an "i32[3]". The
+language has no owned array that grows: "T[8]" owns and does not grow, a view
+neither owns nor grows, and anything else is a library's to provide (section
+8).
+
+<type_bounds>. Several bounds on one parameter are joined with "+", which is
+the one thing that character does: "<T: Show + Clone>". The "&" and "*" beside
+it are references and would read as one here, which is why the separator is
+not either of them.
+
+<grouped_type>. Parentheses around a type group it and do nothing else, which
+is what gives the other reading of a reference and a suffix a spelling:
+
+    &i32[]        a view of a run of i32
+    (&i32)[8]     eight references, laid end to end
+    &(i32[8])     a view of an array of eight, as "&i32[8]" already was
+
+A group holds one type. "(i32, str)" is not a tuple — nothing here has
+tuples, and a comma inside those parentheses is an error rather than a second
+member.
+
+<generic_args>. Note for implementers: the lexer only guesses at "<". It
+opens a generic context after an IDENTIFIER and abandons it on any token
+that cannot appear in a type argument list. The parser must therefore still
+be able to reject a "<" that turned out to be a comparison. Inside an open
+context ">>" is emitted as two ">" tokens, so "Map<str, List<i32>>" closes
+cleanly.
+
+A "+", a "_", a "::", a parenthesis and an integer can appear in a type
+argument as well — a bound separator, an inferred argument, a qualified name,
+a group and an array size. A "." cannot, since a type path is all "::" now,
+and one inside an open context says the "<" was a comparison after all. Nor
+can a "&&" or a "||", which is what abandons the context in "a < 1 && b >> c"
+now that the literal no longer does.
+
+"&" and "*" can appear in a type argument, so neither abandons the context.
+An "&&" cannot appear in one at all — a type argument never begins after an
+operand, so the pair would have split — and a "&&" met inside an open context
+is therefore proof the "<" was a comparison, and abandons it. That "a < b * c
+> d" now keeps its context open where it used to lose it changes nothing the
+parser did not already have to do, "a < b > c" having always kept it, and the
+guess stays confined to ">>" splitting and semicolon insertion.
+
+
+==============================================================================
+4. Statements
+==============================================================================
+
+<block>. A block is an expression, and its value is the trailing expression —
+the one left without a ";". A block with no trailing expression is "null".
+
+The lexer inserts nothing before a "}", so the last line of a block never
+gets a separator, and an expression written there is that trailing
+expression. Write the ";" yourself and it is a statement again, and the block
+is "null". That is the one place where a written separator and an inserted
+one differ, and only because none is inserted there.
+
+<statement>. A <declaration> there is a nested fn / struct / ...; a bare ";"
+is the empty statement. "return", "break" and "continue" are not listed:
+they are expressions (section 5), so each reaches a statement through
+<expr_stmt> like every other one.
+
+The ";" ending a <var_decl>, return, break or continue may be omitted before
+a "}", as it may anywhere the writer leaves it out and no newline follows —
+read those as "; or the following }". An <expr_stmt> is the exception: the
+";" is exactly what separates a discarded value from the block's own.
+
+<break_stmt>. The operand is the value of the loop the break leaves (section
+5.1). Like a return's, it has to start on the same line: "break" can end a
+statement, so a newline after it inserts the ";" and a value left on the next
+line is a statement of its own.
+
+if, while, for and match are expressions (section 5), so they reach a
+statement only through <expr_stmt>: a statement is one whose value is
+discarded. Nothing marks that position as special — the parser takes the
+longest expression it can, and a separator is what ends it. On one line,
+"match x { ... } - 1" is a subtraction; broken across two, the "}" ends the
+statement and the "- 1" starts another, by rule (e) of section 7.
+
+
+==============================================================================
+5. Expressions and patterns
+==============================================================================
+
+Lowest precedence first. Each level is written left-recursively, which is
+what makes it left-associative; <assignment> is right-recursive and so
+right-associative.
+
+<jump_expr>. "return", "break" and "continue" are expressions of type
+"never", the empty type (section 3) — no values at all, which is not "null"
+and not anything else. Having no value, one never disagrees with a value
+beside it, so a jump fits any branch: "let x = if c { 1 } else { return }"
+types, the else arm yielding nothing because it leaves. That is the whole of
+what being an expression buys them.
+
+They sit here, beside <assignment>, and not among the <primary>s, so the
+operand runs as far as the expression does: "return a + b" returns the sum.
+
+<closure_expr>. "|a, b| a + b", and "|| f()" for one that takes nothing. A
+parameter may be annotated where it cannot be worked out, "|x: i32| x + 1",
+and the body is one expression — a block being an expression, "|x| { ... }"
+is how a longer one is written.
+
+A name the body uses but did not declare is captured, and how is worked out
+per name, each taking the least the body asks of it. Reading one takes a "&"
+of it and assigning to one takes a "*", which is the same pair everything
+else uses and carries the same consequences: two closures that only read a
+name may both hold it, and one that writes to it may share it with nothing.
+A <move_opt> overrules all of that at once — "move |x| n + x" takes a copy of
+every name it captures, so the closure owns what it holds and outlives the
+frame it was made in.
+
+    var n = 0
+    let show = || print(n)      // captures &n
+    let bump = || n = n + 1     // captures *n
+    let own  = move || n + 1    // captures a copy
+
+This is the one place a reference is taken without being written, so it is
+also the one place the rules of section 3 apply to something the writer did
+not spell out.
+
+The body extends as far as it can, which is what putting the rule here rather
+than among the <primary>s says: "|x| x + 1" is a closure returning a sum and
+not a closure plus one.
+
+Note for implementers: "||" is the same problem "&&" was (section 3), and
+takes the same answer — an operand in front of it makes it the disjunction,
+and none makes it the empty parameter list of a closure. "a || b" is a test
+and "let f = || b" is a closure.
+
+<assignment>. The left side of an assignment must be a place expression
+(name, field access or index) — a restriction the parser enforces, not the
+grammar. A reference is transparent (section 3), so a name of type "*T" is a
+place too, and what assigning to it does depends on what is assigned: a value
+of type T is written through to the referent, and a reference of type *T
+re-aims the name itself. Only a "var" may be re-aimed — a "let" of reference
+type refers to one place for its life, as a C++ reference does — so the two
+readings never both apply to the same binding by accident:
+
+    let  fixed: *i32 = *a       // never moves
+    var  cur:   *i32 = *a
+    cur = 5                     // writes 5 into a
+    cur = *b                    // re-aims cur at b
+    fixed = 5                   // writes into a; nothing re-aims fixed
+
+The type has to match exactly, and an assignment reaches one step and no
+further. That is what keeps the two readings apart where a reference refers
+to a reference, since the name's own type and its referent's are never the
+same type:
+
+    var q: *i32  = *x
+    var p: **i32 = *q
+    p = r                       // r is a *i32: q now aims where r does
+    p = 5                       // rejected: 5 is an i32, not a *i32
+
+So reading is transparent to any depth and writing is not — "p + 1" walks
+down to the i32 and adds to it, while "p = 5" will not walk down to put one
+there. Writing at the bottom of a chain is done through a name that stands at
+the bottom, which is what "q = 5" is for.
+
+<range_expr>. Non-associative, and every bound is optional: "1..10", "1..",
+"..10", "..=n", "..".
+
+<unary_op>. "&x" takes an immutable reference to x and "*x" a mutable one,
+the same two spellings the types use (section 3). "*" is prefix and infix
+both, as "-" already was, and where it stands is the whole of what tells the
+two apart: "a * b" is a product and "*b" is a reference. There is no operator
+for the other direction, since a reference already is what it refers to.
+
+"*x" asks that x be a place the writer may write to — a "var", or a field or
+element reached from one. "&x" asks less: any place at all, and a value with
+no home of its own, which the compiler gives one. Both are rules for the
+checker, as is everything about how long the reference stays good.
+
+<postfix_op>. Those are, in order: a field or method access, a call, and an
+index or slice.
+
+<index>. A range is an expression, so a slice needs no rule of its own.
+
+What a slice denotes is the run itself: "a[1..3]" is a place of type "T[]",
+and nothing can hold one (section 3), so it is borrowed like any other place
+— "&a[1..3]" reads those two and "*a[1..3]" writes to them. Indexing by a
+single value is an ordinary place of type T and asks for none of that:
+"a[1]" is the element, and "&a[1]" a reference to it.
+
+<path>. Three separators, each reaching into a different thing:
+
+  "."   into a value or a module — a field, a method, "io.read". Also
+        <postfix_op> above.
+  "::"  into a namespace or a type — "limits::MAX", "Color::Red". An enum
+        variant is what it reaches in a type, and the only thing: an impl
+        holds methods, and a method is reached through a value with a "."
+        like any other member (section 2).
+  ":"   neither — it annotates.
+
+So "shapes::Color::Red.name" walks a namespace, then a type, then a value.
+The rule behind the first two is that "::" walks what the compiler knows the
+name of and "." walks what is there at run time — which leaves a module on
+the wrong side of it, and section 8 has that question open.
+
+<struct_literal>. A "{" that opens neither a body nor a block, and a place a
+separator is never synthesised (section 7, rule b). Every comma here is
+written, so a field-per-line literal needs one on each line.
+
+<map_literal>, <set_literal>. An array is "[...]"; a "{...}" whose entries
+carry colons is a map and one whose entries do not is a set. A "#" glued to
+the front of either brace makes it hashed — "#{1: 2}" is a hash map, "#{1, 2}"
+a hash set — and orders nothing: a map or set written without it keeps its
+keys in order.
+
+"{}" is the empty map, as it is in Python, and "{,}" the empty set, which has
+to be said some other way because "{}" is taken. No trailing comma is required
+anywhere, so a set of one is "{x}".
+
+Those two braces are also blocks, and the lexer is what tells them apart —
+section 7. It takes a "," or a ":" at the top level of the brace as the mark of
+a literal, and a ";" or a line break that ends a statement as the mark of a
+block; where neither appears, "{}" and "{ x }" are literals where only a value
+can stand and blocks where a statement could. "{:}" is the empty map written so
+that it is decidable in either place, as "{,}" already is.
+
+The empty set is written, never derived from <empty>: that spelling is the
+map's.
+
+
+------------------------------------------------------------------------------
+5.1 Block expressions
+------------------------------------------------------------------------------
+
+if, while, for and match are expressions, not statements. Each is a
+<primary>, so each composes like any other: bound to a name, passed as an
+argument, returned, or left as the trailing expression of a block. What
+each evaluates to:
+
+  block       its trailing expression, or "null".
+  if          the branch taken. Without an "else" some path through it
+              yields nothing, which is "null".
+  match       the arm taken.
+  while, for  the operand of the "break" that leaves it. Every loop takes
+              one — "break x" in a "for" and a conditional "while" as much
+              as in a "while true" — and where none is given the loop is
+              "null": a bare "break", or a loop that ends by itself with
+              the condition going false or the sequence running out.
+
+That every branch of an if, every arm of a match, and every "break" leaving
+one loop agree on a type is a rule for the checker, not one this grammar
+can state. A loop that can end by itself has "null" among the values it
+yields, which is the same rule asked of the loop.
+
+Being a <primary>, a block expression also takes postfix operators:
+"match x { ... }.len()" parses, and so does "if c { a } else { b } + 1".
+
+<header_expr>. The header — a condition, an iterable, a scrutinee — is an
+ordinary expression with one restriction: no struct literal at its top level,
+so the "{" that follows always opens the body. Parenthesise to get one in:
+"if (Config { on: true }).on { ... }".
+
+This is what lets the lexer tell "Point {" from "if cond {" at all, and so
+which braces hold statements and take an inserted ";"; see section 7.
+
+A map or set literal is exempt where the body it competes with holds
+statements, since that body can hold no "," or ":" at its top level and a
+literal that shows one is therefore not it: "for x in {1, 2, 3} { ... }" needs
+no parentheses. The exemption stops at the bodies that do hold entries — a
+match's, and a struct's and enum's in section 2 — whose commas look exactly
+like a set's; a literal at the top level of one of those headers has to be
+parenthesised, as a struct literal does. So must "{}" and "{ x }" anywhere in
+a header: nothing in them says literal, so the body claims them.
+
+<match_arm>. A block is an expression, so "=> { ... }" is covered by this too.
+
+
+------------------------------------------------------------------------------
+5.2 Patterns
+------------------------------------------------------------------------------
+
+<pattern>. "_" is the wildcard; a bare IDENTIFIER is a binding. The two
+differ only in that the wildcard binds nothing, which is why it may be
+repeated in one pattern — "Pair::Of(_, _)" — where a name may not.
+
+<variant_pattern>. Written out in full, "Color::Red" — a bare "Red" is an
+IDENTIFIER, and so a binding that matches everything, not the variant of
+that name. A variant carrying named fields is destructured with the braces it
+was declared with, "Event::Move { x, y }", and a field may be renamed on the
+way out, "Event::Move { x: col, y: row }".
+
+<const_pattern>. A name that resolves to a constant tests against its value
+instead of binding: with "const MAX: u16 = 65535" in scope, the "MAX" of a
+match arm asks whether the scrutinee is 65535. Any other name binds, as
+before.
+
+That makes a pattern's meaning depend on what is in scope, which is the price
+of it: adding a constant somewhere else can turn a binding into a test. It is
+the reading that surprises no one, and it is what a <variant_pattern> would
+do too if a bare name could resolve to a variant.
+
+
+==============================================================================
+6. Lexical grammar
+==============================================================================
+
+Produced by src/lex/lexer.rs. Listed for reference — the parser sees only
+the token kinds.
+
+This is where the notation turns over: the capitalised names are terminals
+everywhere above and the start symbols here, and the angle-bracketed rules
+below them are reached from nowhere else.
+
+Four character classes are too large to enumerate, so they are given by
+description instead of by a rule, and so appear in grammar.bnf only as
+undefined nonterminals:
+
+  <string_char>   any character except '"' and '\'
+  <raw_char>      any character except '`'
+  <char_char>     any character except "'" and '\'
+  <letter>        any alphabetic Unicode character
+
+IDENTIFIER. An IDENTIFIER is any such word that is not a <keyword>. "_"
+is one of those keywords, so a lone underscore is the wildcard token and
+never an identifier; "_x" and "__" are longer words, so they are identifiers
+like any other.
+
+<decimal_int>. A <decimal_int> must fit in an i64.
+
+<base_marker>. Those are bases 16, 8, 3, 2 and 10 in turn, and a <base_digit>
+is a digit valid in the marker's base.
+
+FLOAT_LITERAL. The fractional part is only taken when a digit follows the
+".", so "1.foo" is INT_LITERAL "." IDENTIFIER and "1..2" is a range.
+
+STRING_LITERAL. A "`"-delimited string is raw: no escapes.
+
+CHAR_LITERAL. A CHAR_LITERAL holds exactly one character.
+
+<comment>. A block comment does not nest. <line_char> is any character except
+a newline; <any_char> is any character at all.
+
+
+==============================================================================
+7. Automatic separator insertion
+==============================================================================
+
+A ";" may always be written by hand, and a "," always must be. The lexer
+inserts a ";" at a newline when all of the following hold:
+
+  a. The previous token can end a statement: an identifier, "_", a literal,
+     "this", "null", "return", "break", "continue", ")", "]", "}", "..", a
+     primitive type name, or the ">" closing a generic argument list. A "_"
+     is there because it names a binding, so "let _" is as complete a
+     declaration as "let x".
+  b. No "(" or "[" is open, and the innermost open brace is not an entry
+     body — a struct, enum or match body, or a struct, map or set literal. A
+     block is a boundary; an argument list is not, and neither is a list of
+     entries, which is punctuated by hand.
+  c. The next line does not begin with "}". A closing brace ends the last
+     entry or statement on its own, which is what makes the trailing comma
+     of a struct, enum or match body optional, and the semicolon of a
+     block's last statement optional with it.
+  d. The next line does not begin with a continuation: one of
+     . + - * / % = < > & | , :
+     or one of the keywords  else  elif  as  in.
+  e. The previous token is not the "}" of a *block* — unless the next line
+     begins with one of those keywords, or with a "," or a ":".
+
+     Rule (d) alone is wrong once if, while, for and match are expressions,
+     because a block's "}" then closes either a statement or an operand and
+     an operator on the next line fits both readings:
+
+         match x { ... }
+         -1
+
+     Every other closer keeps rule (d) as it was, so a method chain still
+     hangs off the ")" above it — and off the "}" of a literal, which closes
+     a value and never a statement. Only a block's "}" is
+     treated this way, and only against the operators: "," and ":" separate
+     rather than operate, so they still continue the line and an entry body
+     may still be written in the leading-comma style.
+  f. A "->" does not precede the newline. "->" explicitly splices the next
+     line onto this one and is consumed by the lexer, never reaching the
+     parser. It is the way to write the reading rule (e) gives up:
+
+         match x { ... } ->
+         -1
+
+Whether anything is inserted depends on the innermost open brace, of which
+there are four kinds. Two are decided by what stands in front of the brace:
+
+  - the *body of a header* — the first "{" at the bracket and brace depth its
+    keyword was seen at, for "if", "elif", "else", "while", "for", "match",
+    "fn", "struct", "enum", "trait" and "impl". Almost nothing else can be
+    there, which is what section 5.1 buys by keeping a struct literal out of
+    the top level of a header. It is an *entry body* under "struct", "enum"
+    and "match", and a statement body under the rest;
+  - a *struct literal*, when no header claims the brace and a type name ends
+    immediately in front of it: "Point {", "Vec<i32> {". Its fields are
+    entries too, so it is an entry body as well.
+
+The other two stand in the same places and have the same thing in front of
+them — an "=", a "(", a "=>", a separator — so nothing there can tell them
+apart, and the lexer looks inside instead:
+
+  - a *map or set literal*, when a "#" is glued to the front of the brace, or
+    when a "," or a ":" turns up at the top level of it. It is an entry body,
+    and its "}" closes a value;
+  - a *block* otherwise. A ";" at the top level of the brace says so, and so
+    does a keyword only a statement starts with — "let", "var", "return",
+    "fn" and the rest. This is the only kind that gets anything inserted.
+
+Only the brace's own level counts: the "," of "{ f(a, b) }" belongs to the
+call and the ":" of "{ Point { x: 1 } }" to the literal, so neither decides
+the brace around it. A line break that would end a statement counts as a ";",
+since that is what it is about to become — "{ f()" / newline / "g() }" is two
+statements however it is punctuated, while between entries a newline means
+nothing and the "," or ":" of a real literal is met before any line break
+that could be read this way.
+
+That leaves "{}" and "{ x }", which hold neither separator. Those are
+literals where only a value can stand — after an "=", a "(", a ",", a
+"return", an operator — and blocks where a statement could: at the start of
+one, after a "=>", inside another block. So "{}" after an "=" is the empty
+map and "{ x }" the set of one, while the same two written where a statement
+belongs are an empty block and a block yielding x.
+
+A header is the one thing that overrules the look inside, and only as far as
+it has to: it claims its brace whatever is in there, except that a body of
+statements gives way to a brace that can only be a literal, since a "," or a
+":" is illegal at its top level anyway. That is what lets "for x in {1, 2, 3}
+{ ... }" be written without parentheses. A struct, enum or match body keeps
+its brace unconditionally — its own entries are separated by commas, so the
+look inside cannot tell it from a set.
+
+So a ";" is inserted in a statement body — at top level and in the body of a
+fn, trait, impl, block or match arm — and nothing at all in an entry body,
+whose commas are written by hand (rule b). The kinds nest, and it is the
+innermost brace that decides: a statement inside an arm's block is followed
+by a ";", the "}" closing that block is followed by the written "," that ends
+the arm, and a block inside a literal's field or a map's value is a statement
+body again.
+
+A separator is also inserted at end of input when (a) holds. "..=" never
+ends a statement — it always needs an upper bound — while ".." does.
+
+The header rule is the whole of it. Take it away and "if cond {" cannot be
+told from "Point {" — both are a name followed by a brace — which is why the
+restriction on <header_expr> is not a nicety the parser could drop.
+
+Caveat: rule (c) is what gives a block its value. The last expression in a
+block never gets a ";" inserted after it, so it becomes the block's trailing
+expression (section 4). To evaluate something for its effect and leave the
+block "null", write the ";" — the lexer will not.
+
+Caveat: rule (e) is a choice about which reading is common, not a proof that
+the other is wrong. A block expression really can be an operand, and one
+spread over lines has to say so with a "->".
+
+Caveat: a "{" at the top level of a header is the body, even where a struct
+literal was meant. "if Cfg { on: true }.on {" does not work; parenthesise it,
+"if (Cfg { on: true }).on {", and the inner brace is deeper than the header,
+so it lexes as the literal it is. The same goes for a "{}" or a "{ x }" in a
+header, which say nothing about themselves: "for x in ({y}) { ... }".
+
+Caveat: a block used as a value has to hold a statement boundary — a ";", a
+line break, or a keyword only a statement starts with. Every block worth
+writing does, since a block of one expression is that expression; but
+"let x = { f() }" is the set of one that it looks like, and "let x = (f())"
+is how to say the other.
+
+Caveat: "&" and "*" begin an expression now as well as joining two, and rule
+(d) has always listed both, so a line starting with either continues the line
+above it — the reading "-" has had all along. A statement that begins by
+taking a reference discards it and is worth nothing anyway; where one is
+really meant, end the line above with a written ";".
+
+
+==============================================================================
+8. Open questions
+==============================================================================
+
+Every question the token set raised has now been answered; what follows is
+what those answers left behind. Each says what was decided and what the
+decision does not cover, and the ones marked settled are kept because the
+answer is not obvious from the rules alone.
+
+  - <import_decl> is a "::" path with an optional "as" alias, since an import
+    is a namespace someone else wrote and is reached like one. A "." is left
+    meaning only "into a value at run time". Settled. What it does not say is
+    where a path is looked up, or whether a name that is not a legal
+    identifier can be imported at all.
+  - <attribute> is "@name" with its arguments, one per "@", the set of them
+    is closed, and an unknown one is an error (section 1). Settled. The six
+    are @symbol, @must_use, @inline, @noinline, @deprecated and @test;
+    "@repr",
+    "@derive" and "@cfg" wait on features that do not exist. Nothing says
+    which declarations each of the five may sit on, beyond what its own
+    description implies.
+  - Every loop takes a "break x" and yields "null" where none is given
+    (section 5.1), and "null" belongs to every type, so the operand of a
+    break and the "null" of a loop that ended by itself always agree. Settled
+    — and it is the billion-dollar bet: every type admits a value that
+    carries no information, so every read of one may find it. Whether the
+    checker tracks which of them can be null, and refuses the reads it cannot
+    prove safe, is the whole of what is left.
+  - "return", "break" and "continue" are expressions of type "never", the
+    empty type, which is nameable and sits among the primitives beside its
+    opposite "null" (section 3). Settled. A function may be declared to
+    return it, and a body that could fall off the end of one is refused.
+  - <struct_literal>: "Name { field: expr }" is ambiguous with the body of
+    an if, while, for or match. Resolved by <header_expr> (section 5.1): no
+    struct literal at the top level of a header. Settled — the lexer relies
+    on it to tell the two braces apart (section 7), so the parser inherits
+    the answer instead of enforcing the rule.
+  - <type_bounds> joins bounds with "+", which leaves "&" and "*" to the
+    references that had claimed them. Settled. Nothing is said about where a
+    bound may be written besides a <generic_param> and a <where_pred>.
+  - <match_arm> alternation uses "|", which is a token of its own now, split
+    from "||" by what stands in front of it (section 5). Settled. A closure
+    takes the same character, and the two never meet.
+  - The two array suffixes are "T[8]" owned and fixed and "T[]" a run only a
+    reference can hold (section 3). Settled. What that leaves out is the
+    owned array that grows: there is none, and "Vec<T>" as an ordinary
+    generic type is the assumption everywhere here that one is wanted.
+    Nothing says how it is built or how it hands out the "&T[]" of its
+    contents.
+  - A map and a set are "Map<K, V>" and "Set<T>", and the hashed kinds are
+    types of their own, "HashMap<K, V>" and "HashSet<T>" — so which one you
+    named says how it behaves, and a "#{" literal builds the hashed one.
+    Settled. Neither is sugared in a type the way the suffixes sugar an
+    array, and nothing says what a "{" literal with no annotation builds.
+  - Whether "{}" and "{ x }" are literals or blocks is decided by the position
+    they stand in (section 7), which is a choice about which reading is
+    common. The other reading always has a spelling: "(f())" for the block,
+    "{:}" and "{,}" for the empty map and set. Settled.
+  - <enum_variant> carries a positional payload or a named one (section 2).
+    Settled. A named payload is a struct body in all but name, and nothing
+    says whether the two should be one thing.
+  - "_" is a pattern, a binding name, an inferred type argument and a digit
+    separator (sections 2 and 6). Settled — the last two are what Rust does
+    with it. The lexer no longer abandons a generic context on one, so
+    "Vec<_>" holds together; what an inferred argument may be inferred *from*
+    is a rule for the checker.
+  - A "*T" is re-aimed by assigning a reference to it and written through by
+    assigning a value; the type decides, matching exactly and reaching one
+    step, and a "let" of reference type never moves (section 5). Settled.
+    What it leaves is the asymmetry: reading walks a chain of references to
+    the bottom and writing does not, so the two are transparent to different
+    depths and only the reader of a long chain has to notice.
+  - How long a reference stays good is never written down. There are no
+    lifetime parameters and nothing standing in for them: the checker works
+    it out from the shapes of the declarations it is given, and a program
+    where a reference could outlive what it refers to is refused where it is
+    written. Settled. The cost is the ordinary cost of inference without
+    annotations — a program the checker cannot prove safe is rejected even
+    where a person can see that it is, and there is nothing to write to
+    argue the point. Which programs those are is a property of the checker
+    and not of this grammar.
+  - An array of references is "(&i32)[8]", a <grouped_type> being what says
+    which of the two a reference and a suffix make (section 3). Settled.
+    Parentheses group one type and never make a tuple, since nothing here
+    has tuples to make.
+  - A constant is evaluable when a "const fn" is what it calls, and a const
+    fn may use anything workable out at compile time — locals, mutation,
+    loops, references to its own values, other const fns — the one rule
+    being that its body is closed over its arguments (section 2). Settled.
+    What is left is the evaluator's own limits: how deep a recursion or how
+    long a loop it will sit through before giving up, and what it says when
+    it does.
+  - There are no associated constants, and "Color::MAX" names nothing: an
+    impl makes methods for a struct and holds nothing else (section 2). A
+    constant that wants a name in front of it goes in a <namespace_decl> and
+    is reached with "::", "limits::MAX". Settled.
+  - <impl_decl> takes its own <generic_params_opt>, so "impl<T> Stack<T>"
+    parses and a method may use the parameter its struct was declared with.
+    Settled. Whether the parameters of the impl and those of a method inside
+    it may share a name is not said.
+  - <array_suffix> takes a <const_expr>, so a constant gives an array its
+    size: "i32[ROWS]" parses and "i32[rows()]" does too when "rows" is a
+    const fn. Settled. Whether two array types whose sizes are written
+    differently but compute alike are the same type is not said.
+  - A <const_pattern> tests and any other name binds (section 5.2), which
+    makes what a pattern means depend on what is in scope. Settled. Nothing
+    says whether the checker should warn when a binding shadows a constant of
+    the same name, which is where the surprise would show up.
+  - A closure captures a name by "&" where it reads one and by "*" where it
+    assigns to one, worked out per name, and a "move" closure captures a copy
+    of every name instead (section 5). Settled. What follows from it is the
+    lifetime question above, sharpened: a closure that captures by reference
+    cannot outlive what it captured, and "move" is the only thing that lets
+    one be returned.
+  - A parameter may take bounds inline and in a <where_clause_opt> at once,
+    and the two are joined; a <where_pred> must constrain a parameter the
+    signature introduced, so "where i32: Show" is refused (section 2).
+    Settled. What a bound *means* is still a question for whatever checks
+    traits, and nothing here says it.
+==============================================================================

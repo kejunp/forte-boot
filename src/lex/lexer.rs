@@ -11,6 +11,14 @@ pub struct Lexer {
     last_closed_block: bool,
     bracket_depth:     usize,
 
+    // Whether an operand stands in front of the token being scanned, which is
+    // what splits `&&` into two prefix `&`. See `read_operator`.
+    last_ends_operand: bool,
+
+    // Whether an `@attribute` is still being read. See `next_token`.
+    in_attribute:      bool,
+    attr_bracket_depth: usize,
+
     // Brace context. See `push_brace`.
     brace_depth:        usize,
     entry_braces:       u64,
@@ -28,6 +36,7 @@ pub struct Lexer {
     // Generic argument list state.
     generic_depth:     usize,
     last_was_name:     bool,
+    last_was_impl:     bool,
     last_was_type_end: bool,
 }
 
@@ -42,6 +51,10 @@ struct State {
     last_can_end:      bool,
     last_closed_block: bool,
     bracket_depth:     usize,
+    last_ends_operand: bool,
+
+    in_attribute:       bool,
+    attr_bracket_depth: usize,
 
     brace_depth:        usize,
     entry_braces:       u64,
@@ -57,6 +70,7 @@ struct State {
 
     generic_depth:     usize,
     last_was_name:     bool,
+    last_was_impl:     bool,
     last_was_type_end: bool,
 }
 
@@ -71,9 +85,13 @@ enum BraceScan {
     Undecided,
 }
 
-/// Whether a token can legally end a statement, making it a candidate for a
-/// separator to be inserted after it at a newline.
-fn can_end_statement(t: &TokType) -> bool {
+/// Whether a token ends an operand — a value or a type — and so stands where an
+/// *infix* operator may follow.
+///
+/// This is what tells the two readings of `&&` apart: an operand in front of it
+/// makes it the logical operator, and no operand makes it two prefix `&`. See
+/// `read_operator`.
+fn ends_an_operand(t: &TokType) -> bool {
     matches!(
         t,
         TokType::Identifier(_)
@@ -84,25 +102,39 @@ fn can_end_statement(t: &TokType) -> bool {
             | TokType::True
             | TokType::False
             | TokType::This
+            // A literal, and a type name besides.
             | TokType::Null
-            // A wildcard names a binding, so it stands where a name stands and
-            // closes a declaration as one does: `let _`.
+            // A wildcard names a binding, so it stands where a name stands.
             | TokType::Underscore
-            | TokType::Return
-            | TokType::Break
-            | TokType::Continue
             | TokType::RParen
             | TokType::RBracket
             | TokType::RCurlyBracket
-            // An open range is a complete expression: `let rest = 1..`. `..=`
-            // is not — it always needs an upper bound — so it keeps looking.
-            | TokType::DotDot
-            // A type name can end a field or parameter declaration.
+            // A type name ends a type, which is an operand for this purpose:
+            // the `&&` of a bound list follows one.
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
             | TokType::F32 | TokType::F64
-            | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
+            | TokType::Bool | TokType::Char | TokType::Str | TokType::Never
     )
+}
+
+/// Whether a token can legally end a statement, making it a candidate for a
+/// separator to be inserted after it at a newline.
+///
+/// Everything that ends an operand does, and three keywords and a `..` besides,
+/// which end a statement without being anything an operator could take.
+fn can_end_statement(t: &TokType) -> bool {
+    ends_an_operand(t)
+        || matches!(
+            t,
+            TokType::Return
+                | TokType::Break
+                | TokType::Continue
+                // An open range is a complete expression: `let rest = 1..`.
+                // `..=` is not — it always needs an upper bound — so it keeps
+                // looking.
+                | TokType::DotDot
+        )
 }
 
 /// Tokens that can legally appear inside a `<...>` type argument list.
@@ -117,17 +149,36 @@ fn fits_in_generics(t: &TokType) -> bool {
         t,
         TokType::Identifier(_)
             | TokType::Comma
-            // Trait bounds, e.g. `<T: Show>`.
+            // Trait bounds, e.g. `<T: Show + Clone>`.
             | TokType::Colon
+            | TokType::Plus
+            // An inferred type argument, e.g. `Vec<_>`.
+            | TokType::Underscore
+            // A qualified type name, e.g. `<limits::Kind>`. A type path is all
+            // `::`, so a `.` inside one says the `<` was a comparison.
+            | TokType::ColonColon
+            // A grouped type, e.g. `<(&i32)[8]>`.
+            | TokType::LParen
+            | TokType::RParen
+            // An array size, e.g. `<i32[8]>`. A literal cannot *start* a type
+            // argument, but `<array_suffix>` takes a constant expression, so
+            // one may well turn up inside it.
+            | TokType::IntLiteral(_)
             // Nested arguments and array types, e.g. `<Map<str, i32[]>>`.
             | TokType::LessThan
             | TokType::GreaterThan
             | TokType::LBracket
             | TokType::RBracket
+            // Reference types, e.g. `<&i32>`, `<Map<str, *Node>>`. `&&` is not
+            // here: a `<` in front of one was a comparison.
+            | TokType::Ampersand
+            | TokType::Star
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
             | TokType::F32 | TokType::F64
-            | TokType::Bool | TokType::Char | TokType::Str | TokType::Void
+            | TokType::Bool | TokType::Char | TokType::Str | TokType::Never
+            // `null` names a type as well as a value: `Map<str, null>`.
+            | TokType::Null
     )
 }
 
@@ -189,6 +240,8 @@ fn heads_a_body(t: &TokType) -> bool {
             | TokType::Enum
             | TokType::Trait
             | TokType::Impl
+            // Its body holds items, so it is a statement body like a fn's.
+            | TokType::Namespace
     )
 }
 
@@ -205,6 +258,7 @@ fn starts_statement(t: &TokType) -> bool {
         t,
         TokType::Let
             | TokType::Var
+            | TokType::Const
             | TokType::Return
             | TokType::Break
             | TokType::Continue
@@ -214,8 +268,11 @@ fn starts_statement(t: &TokType) -> bool {
             | TokType::Trait
             | TokType::Impl
             | TokType::Import
+            | TokType::Namespace
             | TokType::Public
             | TokType::Private
+            // An attribute only ever prefixes a declaration.
+            | TokType::At
     )
 }
 
@@ -224,7 +281,8 @@ fn starts_statement(t: &TokType) -> bool {
 /// that starts with one is always a continuation — including a cast split
 /// across lines, `let n = x` / newline / `as i64`.
 fn continues_statement(word: &str) -> bool {
-    matches!(word, "else" | "elif" | "as" | "in")
+    // `where` is here so a signature may put its bounds on the next line.
+    matches!(word, "else" | "elif" | "as" | "in" | "where")
 }
 
 /// Base prefixes accepted after a leading `0`, e.g. `0xFF`, `0b1010`.
@@ -256,12 +314,13 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "bool" => TokType::Bool,
         "char" => TokType::Char,
         "str" => TokType::Str,
-        "void" => TokType::Void,
+        "never" => TokType::Never,
 
         // Declarations
         "fn" => TokType::Fn,
         "let" => TokType::Let,
         "var" => TokType::Var,
+        "const" => TokType::Const,
         "struct" => TokType::Struct,
         "trait" => TokType::Trait,
         "impl" => TokType::Impl,
@@ -269,6 +328,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "private" => TokType::Private,
         "import" => TokType::Import,
         "enum" => TokType::Enum,
+        "namespace" => TokType::Namespace,
 
         // Control flow
         "if" => TokType::If,
@@ -284,6 +344,8 @@ fn keyword_of(word: &str) -> Option<TokType> {
 
         // Type operators
         "as" => TokType::As,
+        "where" => TokType::Where,
+        "move" => TokType::Move,
 
         // Literals
         "true" => TokType::True,
@@ -311,6 +373,11 @@ impl Lexer {
             last_can_end:      false,
             last_closed_block: false,
             bracket_depth:     0,
+            // Nothing precedes the first token, so a `&&` there is two `&`.
+            last_ends_operand: false,
+
+            in_attribute:       false,
+            attr_bracket_depth: 0,
 
             brace_depth:        0,
             entry_braces:       0,
@@ -327,6 +394,7 @@ impl Lexer {
 
             generic_depth:     0,
             last_was_name:     false,
+            last_was_impl:     false,
             last_was_type_end: false,
         }
     }
@@ -362,6 +430,10 @@ impl Lexer {
             last_can_end:      self.last_can_end,
             last_closed_block: self.last_closed_block,
             bracket_depth:     self.bracket_depth,
+            last_ends_operand: self.last_ends_operand,
+
+            in_attribute:       self.in_attribute,
+            attr_bracket_depth: self.attr_bracket_depth,
 
             brace_depth:        self.brace_depth,
             entry_braces:       self.entry_braces,
@@ -377,6 +449,7 @@ impl Lexer {
 
             generic_depth:     self.generic_depth,
             last_was_name:     self.last_was_name,
+            last_was_impl:     self.last_was_impl,
             last_was_type_end: self.last_was_type_end,
         }
     }
@@ -389,6 +462,9 @@ impl Lexer {
         self.last_can_end = s.last_can_end;
         self.last_closed_block = s.last_closed_block;
         self.bracket_depth = s.bracket_depth;
+        self.last_ends_operand = s.last_ends_operand;
+        self.in_attribute = s.in_attribute;
+        self.attr_bracket_depth = s.attr_bracket_depth;
 
         self.brace_depth = s.brace_depth;
         self.entry_braces = s.entry_braces;
@@ -404,6 +480,7 @@ impl Lexer {
 
         self.generic_depth = s.generic_depth;
         self.last_was_name = s.last_was_name;
+        self.last_was_impl = s.last_was_impl;
         self.last_was_type_end = s.last_was_type_end;
     }
 
@@ -442,6 +519,9 @@ impl Lexer {
         if self.wants_separator(crossed_newline) {
             self.last_can_end = false;
             self.last_closed_block = false;
+            // The statement is over, so no operand stands in front of what
+            // follows: a line beginning `&&x` begins with two references.
+            self.last_ends_operand = false;
             self.last_was_type_end = false;
             self.hash_prefix = false;
             // An inserted separator ends the statement as a written one does, so
@@ -467,7 +547,11 @@ impl Lexer {
         let closed_generic = self.generic_depth > 0 && tok.toktype == TokType::GreaterThan;
         match &tok.toktype {
             // Only a name can be generic, which rules out `1 < 2` and `) < x`.
-            TokType::LessThan if self.last_was_name => self.generic_depth += 1,
+            // `impl` is the one keyword a `<` may follow, since an impl
+            // introduces its own parameters before naming a type: `impl<T>`.
+            TokType::LessThan if self.last_was_name || self.last_was_impl => {
+                self.generic_depth += 1;
+            }
             TokType::GreaterThan => {
                 self.generic_depth = self.generic_depth.saturating_sub(1);
             }
@@ -478,10 +562,20 @@ impl Lexer {
         // generic context and heads no struct literal: `_ < 2` is a comparison
         // and the `{` after a `_` is whatever it would have been on its own.
         self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
+        self.last_was_impl = tok.toktype == TokType::Impl;
         // A name, or the `>` closing its type arguments: `Point {`, `Vec<i32> {`.
         self.last_was_type_end = self.last_was_name || closed_generic;
 
         self.last_can_end = can_end_statement(&tok.toktype) || closed_generic;
+        // An attribute is a prefix of the declaration it annotates, so nothing
+        // inside one ends a statement: `@inline` / newline / `fn f()` is a
+        // single item, and the name that closes the attribute must not have a
+        // separator inserted after it.
+        if self.in_attribute {
+            self.last_can_end = false;
+        }
+        // The `>` closing a type argument list ends a type, and so an operand.
+        self.last_ends_operand = ends_an_operand(&tok.toktype) || closed_generic;
         self.last_closed_block = false;
         // A `#` marks the brace behind it as a hash map or hash set, but only
         // when glued to it — `#{`, as `#[` opens an attribute.
@@ -523,6 +617,30 @@ impl Lexer {
                 }
             }
             _ => {}
+        }
+
+        // An attribute runs from the `@` to the name after it, or to the `)`
+        // closing that name's arguments. The `(` has to be glued on, as the `[`
+        // of the old `#[...]` was: a space ends the attribute at the name and
+        // leaves the parenthesis to the parser to complain about.
+        if tok.toktype == TokType::At {
+            self.in_attribute = true;
+            self.attr_bracket_depth = self.bracket_depth;
+        } else if self.in_attribute {
+            match &tok.toktype {
+                // Only the attribute's own name closes it — a name among its
+                // arguments is deeper, and `@repr(C)` ends at the `)`.
+                TokType::Identifier(_)
+                    if self.bracket_depth == self.attr_bracket_depth
+                        && self.peek_char() != Some('(') =>
+                {
+                    self.in_attribute = false;
+                }
+                TokType::RParen if self.bracket_depth == self.attr_bracket_depth => {
+                    self.in_attribute = false;
+                }
+                _ => {}
+            }
         }
         tok
     }
@@ -653,6 +771,10 @@ impl Lexer {
             }
             let tok = self.scan_token();
             prev_can_end = can_end_statement(&tok.toktype);
+            // Kept up to date through the look so a `&&` inside the body reads
+            // the same here as it will when the body is really scanned. The
+            // rewind below puts it back.
+            self.last_ends_operand = ends_an_operand(&tok.toktype);
             match tok.toktype {
                 TokType::LParen | TokType::LBracket | TokType::LCurlyBracket => depth += 1,
                 TokType::RParen | TokType::RBracket => depth = depth.saturating_sub(1),
@@ -838,19 +960,27 @@ impl Lexer {
                 }
             }
 
+            // A lone `&` takes an immutable reference — `&x`, `&i32` — and `&&`
+            // is either the logical operator or two of those, which is decided
+            // by what stands in front of it: an operand makes it infix, and no
+            // operand makes it a pair of prefixes. Only the first `&` is taken
+            // in that case, so the second is scanned on its own and `&&&T` needs
+            // no further thought. This is how `>>` is split in a type argument
+            // list, asked of the other side of the token.
             '&' => {
-                if self.eat('&') { TokType::And }
+                if self.last_ends_operand && self.eat('&') { TokType::And }
                 else if self.eat('=') { TokType::AndEquals }
-                else {
-                    return Tok { toktype: TokType::Error("Expected '&&' or '&='".to_string()), line, col };
-                }
+                else { TokType::Ampersand }
             }
+            // A lone `|` separates the alternatives of a pattern and delimits a
+            // closure's parameters, so `||` is split the same way `&&` is: an
+            // operand in front of it makes it the logical operator, and none
+            // makes it two `|` — which is how a closure of no parameters,
+            // `|| f()`, is told from a disjunction.
             '|' => {
-                if self.eat('|') { TokType::Or }
+                if self.last_ends_operand && self.eat('|') { TokType::Or }
                 else if self.eat('=') { TokType::OrEquals }
-                else {
-                    return Tok { toktype: TokType::Error("Expected '||' or '|='".to_string()), line, col };
-                }
+                else { TokType::Pipe }
             }
 
             '(' => TokType::LParen,
@@ -871,6 +1001,7 @@ impl Lexer {
             }
             ';' => TokType::Semicolon,
             '#' => TokType::HashTag,
+            '@' => TokType::At,
 
             _ => TokType::Error(format!("Unexpected character '{}'", c)),
         };
@@ -1036,6 +1167,11 @@ impl Lexer {
             if c.is_ascii_digit() {
                 num_str.push(c);
                 self.advance();
+            } else if c == '_' {
+                // A digit separator: `1_000_000`. Dropped, never part of the
+                // value. It cannot lead, since a word starting with `_` was
+                // read as an identifier long before this.
+                self.advance();
             } else if c == '.' && !is_float && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit()) {
                 // Only the first '.' with a digit behind it belongs to the number;
                 // `1.foo` stays an int followed by a Dot.
@@ -1052,7 +1188,7 @@ impl Lexer {
         // decimal point without touching `1..2`, where the dots are a range.
         if let Some(c) = self.peek_char() {
             let bad_dot = c == '.' && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit());
-            if bad_dot || c.is_alphabetic() || c == '_' {
+            if bad_dot || c.is_alphabetic() {
                 self.consume_literal_tail();
                 return Tok {
                     toktype: TokType::Error(format!("Malformed number literal '{}'", num_str)),
@@ -1090,10 +1226,13 @@ impl Lexer {
             if c.is_digit(radix) {
                 digits.push(c);
                 self.advance();
+            } else if c == '_' {
+                // A digit separator: `0xFF_FF`.
+                self.advance();
             } else if c == '.' && self.peek_char_at(1) == Some('.') {
                 // `0x10..0x20` — the dots are a range, not part of the literal.
                 break;
-            } else if c.is_alphanumeric() || c == '_' || c == '.' {
+            } else if c.is_alphanumeric() || c == '.' {
                 // A digit outside this base, or a decimal point: consume it so the
                 // error covers the whole malformed literal.
                 bad = true;
