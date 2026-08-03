@@ -199,11 +199,12 @@ fn starts_continuation(c: char) -> bool {
 /// -1
 /// ```
 ///
-/// A statement is overwhelmingly the common case, so a block's `}` at the end of
-/// a line ends it and the `-1` stands alone. `->` splices the two lines back
-/// together for the rare case that wanted an operand. What survives here is
-/// punctuation that separates rather than operates — a leading `,` in an entry
-/// body, a `:` — which no expression could have continued anyway.
+/// A block expression is never an operand, so a block's `}` at the end of a
+/// line ends a statement and the `-1` stands alone — the only reading the
+/// grammar has. Splicing the two together with `->` only moves where the parse
+/// fails. What survives here is punctuation that separates rather than
+/// operates — a leading `,` in an entry body, a `:` — which no expression
+/// could have continued anyway.
 ///
 /// A literal's `}` — a struct's, a map's, a set's — closes a value, not a
 /// statement, so none of this applies to it and a chained `.norm()` on the next

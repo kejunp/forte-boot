@@ -141,12 +141,19 @@ A <return_type_opt> left out is "null" (section 3), which is a type like any
 other — so "fn log(m: str)" and "fn log(m: str): null" are the same
 declaration, and a bare "return" returns the value that type has.
 
-<const_opt>. A "const fn" is one the compiler may run itself, which is what
-lets a <const_decl> call anything at all: "const fn square(n: i32): i32" makes
-"const AREA: i32 = square(8)" legal. It is a promise about the body, checked
-where the body is written and not at the call. A "const" at the head of a
-declaration is therefore the start of one of two things, told apart by the
-word after it — "fn" makes a function and anything else a constant.
+<fn_sig>, "const". A "const fn" is one the compiler may run itself, which is
+what lets a <const_decl> call anything at all: "const fn square(n: i32): i32"
+makes "const AREA: i32 = square(8)" legal. It is a promise about the body,
+checked where the body is written and not at the call. A "const" at the head
+of a declaration is therefore the start of one of two things, told apart by
+the word after it — "fn" makes a function and anything else a constant.
+
+The two modifiers are written out as four alternatives of <fn_sig> rather
+than made optional, which is why there is no <const_opt> or <unsafe_opt> to
+name. A statement may begin with "unsafe" too (section 4), so an optional
+"const" in front of one would have to be reduced away before the "unsafe"
+after it is read — a decision needing the token past the one the parser is
+holding, which is exactly what an LR(1) table has not got.
 
 What may stand in the body is anything that can be worked out at compile
 time, which is a wider licence than it sounds: a "let", a "var", an
@@ -165,14 +172,14 @@ A const fn stays an ordinary function besides. Nothing stops it being called
 at run time with arguments that were not known any earlier, and it is only
 where every argument is a constant that the call folds away.
 
-<unsafe_opt>. An "unsafe fn" is one whose caller has something to prove that
-the checker cannot — that a run really holds the number of elements it was
-said to hold, that what a "@symbol" names on the other side does what its
-declaration here claims, whatever the function happens to need. What the
-obligation is is written where the function is documented and nowhere the
-compiler can read it; the word only says that there is one. So calling such a
-function is itself unsafe, and the call has to stand inside an <unsafe_stmt>
-(section 4).
+<fn_sig>, "unsafe". An "unsafe fn" is one whose caller has something to
+prove that the checker cannot — that a run really holds the number of
+elements it was said to hold, that what a "@symbol" names on the other side
+does what its declaration here claims, whatever the function happens to
+need. What the obligation is is written where the function is documented and
+nowhere the compiler can read it; the word only says that there is one. So
+calling such a function is itself unsafe, and the call has to stand inside an
+<unsafe_stmt> (section 4).
 
 Almost all of what needs this is what crosses out of the language: nothing
 inside it is a pointer (section 3), so the reference rules hold wherever the
@@ -181,7 +188,7 @@ where it cannot.
 
 It sits after the visibility and in front of the "fn", so a declaration reads
 "public unsafe fn write(dst: *u8[], n: u64)", and "const unsafe fn" where
-both apply. The order is the order of the <fn_decl> rule and not a matter of
+both apply. The order is the order of the <fn_sig> rule and not a matter of
 taste: "unsafe public fn" is not a declaration.
 
 The word says nothing about the body. An unsafe fn is checked exactly as any
@@ -204,9 +211,13 @@ signature is split wherever it reads best.
 
 A <where_pred> has to constrain something the signature introduced, though —
 its left side must mention a parameter somewhere inside it. "where Vec<T>:
-Show" does and "where i32: Show" does not: the second says something about
-the world that is true or false however the function is called, which is
-never what was meant and is usually a parameter that got misspelled.
+Show" does and "where i32: Show" does not. The second is not turned away for
+being false: "i32" may well implement "Show", since an impl is written about
+any type and a primitive is a type like another (section 2). It is turned
+away for being settled — it holds or it does not however the function is
+called, so it asks the caller for nothing and the signature is no narrower
+for having said it. Written by mistake it is a parameter misspelled; written
+on purpose it repeats what the impl already said.
 
 The "{" of the body still has to open on the line the clause ends, as every
 body does — nothing continues a line into a "{" (section 7).
@@ -223,7 +234,12 @@ underscores, and bind as one. Nor is it an expression — it may not stand on
 the right of anything, so a value is discarded by binding it, "let _ = f()",
 and not by assigning to it: "_ = f()" is not an assignment.
 
-<impl_member>. An impl makes methods for a struct and does nothing else. Its
+<impl_decl>. What an impl is written about is a <type>, and any type will do:
+a struct, an enum, an array, a reference, a primitive. "impl i32" and "impl
+Show for str" are both said, and nothing marks a primitive out as the language
+does not hold one kind of type apart from another.
+
+<impl_member>. An impl makes methods for its type and does nothing else. Its
 members are <fn_decl>s and there is no other kind: no constant, no type, no
 field. Whatever else wants to be grouped under a name is grouped by
 <namespace_decl> below, which is the thing for it.
@@ -500,17 +516,21 @@ Its ";" is the prefixed statement's own, and may be left out in front of a
 "}" like any other. A block ending in an unsafe statement is "null", which
 costs nothing: the "unsafe let" above is what a value wanted anyway.
 
-<break_stmt>. The operand is the value of the loop the break leaves (section
+<jump_expr>. The operand is the value of the loop the break leaves (section
 5.1). Like a return's, it has to start on the same line: "break" can end a
 statement, so a newline after it inserts the ";" and a value left on the next
 line is a statement of its own.
 
 if, while, for and match are expressions (section 5), so they reach a
 statement only through <expr_stmt>: a statement is one whose value is
-discarded. Nothing marks that position as special — the parser takes the
-longest expression it can, and a separator is what ends it. On one line,
-"match x { ... } - 1" is a subtraction; broken across two, the "}" ends the
-statement and the "- 1" starts another, by rule (e) of section 7.
+discarded. Nothing marks that position as special.
+
+What ends one of them is the body's "}", and nothing carries on from there: a
+block expression is a whole expression and never an operand (section 5.1), so
+"match x { ... } - 1" is not a subtraction on one line either. Written across
+two the "}" ends the statement and the "- 1" starts another, which is what
+rule (e) of section 7 is for — without it the lexer would splice the two into
+the one reading the grammar has not got.
 
 
 ==============================================================================
@@ -607,8 +627,12 @@ element reached from one. "&x" asks less: any place at all, and a value with
 no home of its own, which the compiler gives one. Both are rules for the
 checker, as is everything about how long the reference stays good.
 
-<postfix_op>. Those are, in order: a field or method access, a call, and an
-index or slice.
+<postfix_op>. Those are, in order: a field or method access, a "::" reaching
+into a namespace or a type, a call, an index or slice, and the brace of a
+struct literal. The separators and the brace are the ones worth naming as
+suffixes at all: either separator may follow the other, so neither belongs to
+the name it reaches through, and the brace hangs off whatever the two of them
+built — which is the whole of what makes "shapes.Point { x: 1 }" sayable.
 
 <index>. A range is an expression, so a slice needs no rule of its own.
 
@@ -618,10 +642,12 @@ and nothing can hold one (section 3), so it is borrowed like any other place
 single value is an ordinary place of type T and asks for none of that:
 "a[1]" is the element, and "&a[1]" a reference to it.
 
-<path>. Three separators, each reaching into a different thing:
+".", "::" and ":". No rule gathers these into a path — the first two are
+<postfix_op>s above and the third is not an operator at all — but the three
+of them are the language's separators, and each reaches into a different
+thing:
 
-  "."   into a value or a module — a field, a method, "io.read". Also
-        <postfix_op> above.
+  "."   into a value or a module — a field, a method, "io.read".
   "::"  into a namespace or a type — "limits::MAX", "Color::Red". An enum
         variant is what it reaches in a type, and the only thing: an impl
         holds methods, and a method is reached through a value with a "."
@@ -633,9 +659,11 @@ The rule behind the first two is that "::" walks what the compiler knows the
 name of and "." walks what is there at run time — which leaves a module on
 the wrong side of it, and section 8 has that question open.
 
-<struct_literal>. A "{" that opens neither a body nor a block, and a place a
-separator is never synthesised (section 7, rule b). Every comma here is
-written, so a field-per-line literal needs one on each line.
+<struct_literal_tail>. A "{" that opens neither a body nor a block, and a
+place a separator is never synthesised (section 7, rule b). Every comma here
+is written, so a field-per-line literal needs one on each line. It is a tail
+because the name in front of it is not part of the rule: the literal is a
+<postfix_op> on whatever expression named the type.
 
 <map_literal>, <set_literal>. An array is "[...]"; a "{...}" whose entries
 carry colons is a map and one whose entries do not is a set. A "#" glued to
@@ -663,9 +691,9 @@ map's.
 ------------------------------------------------------------------------------
 
 if, while, for and match are expressions, not statements. Each is a
-<primary>, so each composes like any other: bound to a name, passed as an
-argument, returned, or left as the trailing expression of a block. What
-each evaluates to:
+<block_expr>, so each composes wherever a whole expression is wanted: bound
+to a name, passed as an argument, returned, or left as the trailing
+expression of a block. What each evaluates to:
 
   block       its trailing expression, or "null".
   if          the branch taken. Without an "else" some path through it
@@ -682,8 +710,18 @@ one loop agree on a type is a rule for the checker, not one this grammar
 can state. A loop that can end by itself has "null" among the values it
 yields, which is the same rule asked of the loop.
 
-Being a <primary>, a block expression also takes postfix operators:
-"match x { ... }.len()" parses, and so does "if c { a } else { b } + 1".
+What a <block_expr> is not is an operand. It sits beside <assignment> under
+<value_expr> and not among the <primary>s, so no operator reaches one from
+either side: "match x { ... }.len()" and "if c { a } else { b } + 1" are both
+refused, as is "1 + if c { 1 } else { 2 }". A <grouping> says all three —
+"(match x { ... }).len()" — since parentheses make a <primary> of whatever is
+inside them.
+
+That is the price of the brace. A "{" after a complete expression can be read
+as a body without looking any further, because a finished expression has
+nowhere to put a block: "for i in 0.. {" needs no rule beyond that, the range
+being done and the brace belonging to the "for". The reading given up is the
+one nobody writes.
 
 <header_expr>. The header — a condition, an iterable, a scrutinee — is an
 ordinary expression with one restriction: no struct literal at its top level,
@@ -798,11 +836,16 @@ inserts a ";" at a newline when all of the following hold:
      begins with one of those keywords, or with a "," or a ":".
 
      Rule (d) alone is wrong once if, while, for and match are expressions,
-     because a block's "}" then closes either a statement or an operand and
-     an operator on the next line fits both readings:
+     because a block's "}" then ends a statement in the very place rule (d)
+     would carry the line on:
 
          match x { ... }
          -1
+
+     A block expression is never an operand (section 5.1), so there is no
+     reading in which those two lines are a subtraction. Rule (d) would
+     splice them into one and leave the parser with an error; rule (e) is
+     what makes them the two statements they were written as.
 
      Every other closer keeps rule (d) as it was, so a method chain still
      hangs off the ")" above it — and off the "}" of a literal, which closes
@@ -812,10 +855,22 @@ inserts a ";" at a newline when all of the following hold:
      may still be written in the leading-comma style.
   f. A "->" does not precede the newline. "->" explicitly splices the next
      line onto this one and is consumed by the lexer, never reaching the
-     parser. It is the way to write the reading rule (e) gives up:
+     parser. It cancels the insertion whatever the line ends with, so it
+     reaches the lines rule (d) does not — the ones beginning with something
+     that is not an operator:
 
-         match x { ... } ->
-         -1
+         let n = f ->
+         (x)
+
+     That is a call. Without the "->" the same two lines are a statement
+     naming f and a statement grouping x, both of them legal and neither of
+     them what was meant.
+
+     It was put there for rule (e)'s sake, to write the reading that rule
+     gives up, and that use is gone: the grammar refuses a block expression
+     as an operand however the lines are punctuated, so splicing "-1" onto a
+     "}" only moves where the parse fails. Section 8 has what is left of the
+     question.
 
 Whether anything is inserted depends on the innermost open brace, of which
 there are four kinds. Two are decided by what stands in front of the brace:
@@ -891,9 +946,10 @@ block never gets a ";" inserted after it, so it becomes the block's trailing
 expression (section 4). To evaluate something for its effect and leave the
 block "null", write the ";" — the lexer will not.
 
-Caveat: rule (e) is a choice about which reading is common, not a proof that
-the other is wrong. A block expression really can be an operand, and one
-spread over lines has to say so with a "->".
+Caveat: rule (e) is not a choice about which reading is common. It was one
+when a block expression could be an operand; now that the grammar has only
+the one reading (section 5.1), rule (e) is what keeps the lexer from handing
+the parser a token stream that has none.
 
 Caveat: a "{" at the top level of a header is the body, even where a struct
 literal was meant. "if Cfg { on: true }.on {" does not work; parenthesise it,
@@ -946,11 +1002,19 @@ answer is not obvious from the rules alone.
     empty type, which is nameable and sits among the primitives beside its
     opposite "null" (section 3). Settled. A function may be declared to
     return it, and a body that could fall off the end of one is refused.
-  - <struct_literal>: "Name { field: expr }" is ambiguous with the body of
-    an if, while, for or match. Resolved by <header_expr> (section 5.1): no
-    struct literal at the top level of a header. Settled — the lexer relies
-    on it to tell the two braces apart (section 7), so the parser inherits
-    the answer instead of enforcing the rule.
+  - <struct_literal_tail>: "Name { field: expr }" is ambiguous with the body
+    of an if, while, for or match. Resolved by <header_expr> (section 5.1):
+    no struct literal at the top level of a header. Settled — the lexer
+    relies on it to tell the two braces apart (section 7), so the parser
+    inherits the answer instead of enforcing the rule.
+  - A block expression is a whole <value_expr> and never an operand, so no
+    operator reaches one from either side and a <grouping> is what says the
+    other thing (section 5.1). Settled — it is what lets a "{" after a
+    finished expression be read as a body without looking past it, which is
+    the lexer's whole footing in section 7. What it leaves behind is rule
+    (f): "->" was put in to write the reading this gives up, there is no
+    longer one to write, and whether the general line splice earns its keep
+    on the cases rule (d) misses is not decided.
   - <type_bounds> joins bounds with "+", which leaves "&" and "*" to the
     references that had claimed them. Settled. Nothing is said about where a
     bound may be written besides a <generic_param> and a <where_pred>.
@@ -1007,7 +1071,7 @@ answer is not obvious from the rules alone.
     long a loop it will sit through before giving up, and what it says when
     it does.
   - There are no associated constants, and "Color::MAX" names nothing: an
-    impl makes methods for a struct and holds nothing else (section 2). A
+    impl makes methods for its type and holds nothing else (section 2). A
     constant that wants a name in front of it goes in a <namespace_decl> and
     is reached with "::", "limits::MAX". Settled.
   - <impl_decl> takes its own <generic_params_opt>, so "impl<T> Stack<T>"

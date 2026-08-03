@@ -1,4 +1,6 @@
+pub mod ast;
 pub mod tables;
+mod parser;
 
 /// Runs the generated tables over a token stream and says whether they accept
 /// it. No tree is built: this is the tables' own test, and what it tests is
@@ -6,19 +8,17 @@ pub mod tables;
 #[cfg(test)]
 fn recognise(source: &str) -> Result<(), String> {
     use crate::lex::lexer::Lexer;
-    use tables::{action, goto, terminal_of, Action, RULES};
+    use tables::{action_for, goto, Action, State, RULES};
 
     let mut lexer = Lexer::new(source);
-    let mut stack = vec![0usize];
+    let mut stack: Vec<State> = vec![0];
     loop {
         let tok = lexer.peek();
-        let terminal = terminal_of(&tok.toktype)
-            .ok_or_else(|| format!("{}:{}: {:?}", tok.line, tok.col, tok.toktype))?;
         let state = *stack.last().unwrap();
-        match action(state, terminal) {
+        match action_for(state, &tok.toktype) {
             Action::Shift(next) => {
                 lexer.next_token();
-                stack.push(next as usize);
+                stack.push(next);
             }
             Action::Reduce(rule) => {
                 let rule = &RULES[rule as usize];
@@ -65,6 +65,10 @@ fn parses_declarations() {
     accepts("trait Show {\n    fn show(this): str\n    fn id(this): i32\n}\n");
     accepts("impl Show<i32> for Box {\n    fn show(this: i32): str { return \"box\" }\n}\n");
     accepts("impl<T> Stack<T> where T: Ord + Show {\n    fn len(this): i32;\n}\n");
+    // A type is a type: an impl takes any of them, primitives included.
+    accepts("impl i32 {\n    fn abs(this): i32;\n}\n");
+    accepts("impl Show for str {\n    fn show(this): str { return this }\n}\n");
+    accepts("impl<T> Show for T[] {\n    fn show(this): str;\n}\n");
     accepts("namespace limits {\n    public const MAX: i32 = 255\n}\n");
     accepts("@inline\n@repr(C)\npublic fn f();\n");
     accepts("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n");
@@ -97,6 +101,8 @@ fn parses_statements() {
     accepts_body("let view: &i32[]\nlet refs: (&i32)[8]");
     accepts_body("let grid: i32[ROWS][ROWS]\nlet v: Vec<_> = f()");
     accepts_body("let c = shapes.Color::Red\nlet n = limits::MAX");
+    // A primitive has methods like anything else, and "5." is not a float.
+    accepts_body("let n = 5.abs()\nlet f = 5.0 + 1.0");
     accepts_body("let found = for x in xs {\n    if p(x) { break x }\n}");
     accepts_body("while true {\n    break\n    continue\n}");
     accepts_body("return");
@@ -181,9 +187,32 @@ fn says_what_it_expected() {
         recognise("fn f(x i32);\n").unwrap_err(),
         "1:8: expected `:`, `,` or `)`, found `i32`"
     );
-    // A state that permits the start of any expression counts the rest rather
-    // than spelling out most of the terminals there are.
-    let e = recognise("fn f() {\n    let x = ;\n}\n").unwrap_err();
-    assert!(e.starts_with("2:13: expected "), "{e}");
-    assert!(e.contains(" more, found `;`"), "{e}");
+    // A state that permits the start of any expression says so, rather than
+    // spelling out the fifty terminals that begin one.
+    assert_eq!(
+        recognise("fn f() {\n    let x = ;\n}\n").unwrap_err(),
+        "2:13: expected an expression, found `;`"
+    );
+    // A state partway through one names what may carry it on. `*` cannot: the
+    // parser has an additive in hand, and that is the looseness `an operator`
+    // buys -- the terminals it leaves out are not listed either.
+    assert_eq!(
+        recognise("fn f() {\n    let x = 1 + 2 3\n}\n").unwrap_err(),
+        "2:19: expected an operator, `}` or `;`, found an integer literal"
+    );
+}
+
+/// A token the lexer could not read is not a terminal, so no state has an
+/// action for it. What it says of itself is the whole message: an `expected ..`
+/// would be about a token that was never there.
+#[test]
+fn says_what_the_lexer_could_not_read() {
+    assert_eq!(
+        recognise("fn f() {\n    let x = $\n}\n").unwrap_err(),
+        "2:13: Unexpected character '$'"
+    );
+    assert_eq!(
+        recognise("fn f() {\n    let s = \"oops\n}\n").unwrap_err(),
+        "2:13: Unterminated string"
+    );
 }
