@@ -29,20 +29,20 @@ pub struct Parser {
 
 /// Where a token was written: what a diagnostic points at.
 fn span_of(tok: &tokens::Tok) -> Span {
-    return Span::new(tok.line, tok.col, tok.len);
+    Span::new(tok.line, tok.col, tok.len)
 }
 
 /// The closer that mates an opener. Both kinds of `{` close with the same `}`:
 /// which one it opened is the lexer's to know and not the reader's to write.
 fn closer_of(opener: tables::Terminal) -> Option<tables::Terminal> {
-    return match opener {
+    match opener {
         tables::Terminal::LParen => Some(tables::Terminal::RParen),
         tables::Terminal::LBracket => Some(tables::Terminal::RBracket),
         tables::Terminal::LCurlyBracket | tables::Terminal::LCurlyValue => {
             Some(tables::Terminal::RCurlyBracket)
         }
         _ => None,
-    };
+    }
 }
 
 /// How a delimiter is written, for a note that has already said what it is
@@ -50,12 +50,12 @@ fn closer_of(opener: tables::Terminal) -> Option<tables::Terminal> {
 /// what was wanted has to; one about what is still open has the opener's own
 /// position to point at, and the longer name only gets in the way.
 fn spelling_of(delimiter: tables::Terminal) -> &'static str {
-    return match delimiter {
+    match delimiter {
         tables::Terminal::LParen => "`(`",
         tables::Terminal::LBracket => "`[`",
         tables::Terminal::LCurlyBracket | tables::Terminal::LCurlyValue => "`{`",
         other => tables::name_of(other),
-    };
+    }
 }
 
 /// Near-misses worth naming outright: a terminal that was written, one that
@@ -123,7 +123,7 @@ const HINTS: &[(tables::Terminal, tables::Terminal, &str)] = &[
 /// `build`'s, which is the only place that knows which rule fired.
 fn leaf_of(toktype: &tokens::TokType) -> ast_nodes::ASTNodeKind {
     use ast_nodes::{ASTLit, ASTNodeKind, ASTPrimType};
-    return match toktype {
+    match toktype {
         tokens::TokType::Identifier(name) => ASTNodeKind::Ident(name.clone()),
         tokens::TokType::IntLiteral(n) => ASTNodeKind::Literal(ASTLit::Int(*n)),
         tokens::TokType::FloatLiteral(f) => ASTNodeKind::Literal(ASTLit::Float(*f)),
@@ -154,7 +154,7 @@ fn leaf_of(toktype: &tokens::TokType) -> ast_nodes::ASTNodeKind {
         // A keyword, a delimiter, an operator: the rule it belongs to is the
         // whole of what it says, and the position is all a parent wants of it.
         _ => ASTNodeKind::Empty,
-    };
+    }
 }
 
 /// How many tokens a parse has to take after an error before it is trusted to
@@ -202,12 +202,12 @@ impl Parser {
     /// The token in hand: what the tables are asked about, and what `advance`
     /// would hand back. Lent rather than given, so that looking costs nothing.
     fn peek(&self) -> &tokens::Tok {
-        return &self.current;
+        &self.current
     }
 
     /// Takes the token in hand and reads the next one into its place.
     fn advance(&mut self) -> tokens::Tok {
-        return std::mem::replace(&mut self.current, self.lexer.next_token());
+        std::mem::replace(&mut self.current, self.lexer.next_token())
     }
 
     /// What the automaton does with `tok`: the tables' answer for it in the
@@ -223,7 +223,7 @@ impl Parser {
     /// `action_for`'s doing, and there is no case for it here.
     fn action(&self, tok: &tokens::TokType) -> tables::Action {
         let (state, _) = *self.stack.last().expect("the start state is never popped");
-        return tables::action_for(state, tok);
+        tables::action_for(state, tok)
     }
 
     /// Where a reduction leaves the automaton: the state to enter now that
@@ -236,13 +236,13 @@ impl Parser {
     /// `action`'s to report.
     fn goto(&self, lhs: tables::NonTerminal) -> tables::State {
         let (state, _) = *self.stack.last().expect("the start state is never popped");
-        return tables::goto(state, lhs).expect("a reduce the tables asked for has a goto");
+        tables::goto(state, lhs).expect("a reduce the tables asked for has a goto")
     }
 
     /// Puts a node in the arena and gives back the only handle to it.
     fn push_node(&mut self, node: ast_nodes::ASTNode) -> ASTNodeId {
         self.nodes.push(node);
-        return self.nodes.len() - 1;
+        self.nodes.len() - 1
     }
 
     /// A node by the handle `push_node` gave out.
@@ -251,7 +251,7 @@ impl Parser {
     /// building one reads a child at most to take its position, and nothing is
     /// ever moved out of the arena.
     fn get_node(&self, id: ASTNodeId) -> &ast_nodes::ASTNode {
-        return &self.nodes[id];
+        &self.nodes[id]
     }
 
     /// Puts an entry on the stack: the state to parse in from here, and the
@@ -270,7 +270,7 @@ impl Parser {
     /// `pop_node` could not each take one -- the second would drop a whole
     /// entry to reach a half of it.
     fn pop(&mut self) -> (tables::State, ASTNodeId) {
-        return self.stack.pop().expect("the start state is never popped");
+        self.stack.pop().expect("the start state is never popped")
     }
 
     /// Takes the token in hand and pushes it under `next`, the state the tables
@@ -288,7 +288,7 @@ impl Parser {
         let idx = self.push_node(node);
         self.push(next, idx);
         self.note_shift(&tok);
-        return idx;
+        idx
     }
 
     /// Runs one reduction: takes the rule's symbols off the stack, builds what
@@ -313,7 +313,7 @@ impl Parser {
         // in, which is the one that says where a `rule.lhs` goes next.
         let next = self.goto(rule.lhs);
         self.push(next, idx);
-        return idx;
+        idx
     }
 
     /// Takes note of a token shifted: the parse has taken something, so the
@@ -362,11 +362,11 @@ impl Parser {
     /// rule the parse has begun and not finished, which is the honest answer
     /// even where a reader can see the end of it.
     fn context(&self) -> Option<&'static str> {
-        return self
+        self
             .stack
             .iter()
             .rev()
-            .find_map(|&(state, _)| tables::context(state));
+            .find_map(|&(state, _)| tables::context(state))
     }
 
     /// The opener still waiting to be closed, where that is what went wrong.
@@ -387,7 +387,7 @@ impl Parser {
         if found == tables::Terminal::EOF || (closes_something && !mates) {
             return Some(opener);
         }
-        return None;
+        None
     }
 
     /// Why the token in hand is not the one wanted, where the difference is a
@@ -407,7 +407,7 @@ impl Parser {
                 return Some(hint.to_string());
             }
         }
-        return None;
+        None
     }
 
     /// Everything there is to say about the token in hand being the wrong one.
@@ -435,7 +435,7 @@ impl Parser {
             let spelling = spelling_of(tables::terminal_of(&opener.toktype));
             d = d.with_secondary(span_of(opener), format!("unclosed {} opened", spelling));
         }
-        return d;
+        d
     }
 
     /// Writes down what the tables turned down. `parse` reports and then
@@ -461,7 +461,7 @@ impl Parser {
     /// preprocessed copy, and quoting that back would show a reader a line
     /// they did not write.
     pub fn errors(&self) -> &Diagnostics {
-        return &self.errors;
+        &self.errors
     }
 
     /// Puts the parse somewhere it can go on from, and says whether it found
@@ -502,7 +502,7 @@ impl Parser {
     /// among them.
     fn expected_tokens(&self) -> Vec<tables::Terminal> {
         let (state, _) = *self.stack.last().expect("the start state is never popped");
-        return tables::expected(state);
+        tables::expected(state)
     }
 
     /// Runs the automaton over the token stream and gives back what it built.
@@ -585,7 +585,7 @@ mod tests {
                 }
             }
         }
-        return p;
+        p
     }
 
     /// Every message a source drew, each laid out on its own.
@@ -596,14 +596,14 @@ mod tests {
     fn errors_in(source: &str) -> Vec<String> {
         let text: Vec<char> = source.chars().collect();
         let quoted = crate::error::Source::new("input.fc", &text);
-        return parsed(source).errors().iter().map(|e| e.render(&quoted)).collect();
+        parsed(source).errors().iter().map(|e| e.render(&quoted)).collect()
     }
 
     /// The one message a source is meant to draw.
     fn error_in(source: &str) -> String {
         let mut errors = errors_in(source);
         assert_eq!(errors.len(), 1, "{}\n{}", source, errors.join("\n\n"));
-        return errors.remove(0);
+        errors.remove(0)
     }
 
     /// The lexer never sees a comment -- they are blanked out before it runs --

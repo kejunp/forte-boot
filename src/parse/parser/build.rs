@@ -34,45 +34,45 @@ const HOLE: ASTNodeId = 0;
 /// grammar settles which mark reaches which rule, so anything else is these
 /// arms disagreeing with the tables, not a source being wrong.
 fn bin_of(mark: ASTMark) -> ASTBinOp {
-    return match mark {
+    match mark {
         ASTMark::Bin(op) => op,
         other => panic!("a binary rule was given {:?}", other),
-    };
+    }
 }
 
 fn assign_of(mark: ASTMark) -> ASTAssignOp {
-    return match mark {
+    match mark {
         ASTMark::Assign(op) => op,
         other => panic!("an assignment was given {:?}", other),
-    };
+    }
 }
 
 fn unary_of(mark: ASTMark) -> ASTUnaryOp {
-    return match mark {
+    match mark {
         ASTMark::Unary(op) => op,
         other => panic!("a unary rule was given {:?}", other),
-    };
+    }
 }
 
 fn range_of(mark: ASTMark) -> ASTRangeOp {
-    return match mark {
+    match mark {
         ASTMark::Range(op) => op,
         other => panic!("a range was given {:?}", other),
-    };
+    }
 }
 
 fn ref_of(mark: ASTMark) -> ASTRefOp {
-    return match mark {
+    match mark {
         ASTMark::Ref(op) => op,
         other => panic!("a reference was given {:?}", other),
-    };
+    }
 }
 
 fn intro_of(mark: ASTMark) -> ASTVariableIntro {
-    return match mark {
+    match mark {
         ASTMark::Intro(intro) => intro,
         other => panic!("a variable was introduced by {:?}", other),
-    };
+    }
 }
 
 impl Parser {
@@ -80,7 +80,7 @@ impl Parser {
 
     /// What a handle names, for a rule that has to look before it builds.
     fn kind(&self, id: ASTNodeId) -> &ASTNodeKind {
-        return &self.get_node(id).kind;
+        &self.get_node(id).kind
     }
 
     /// A node of `kind` standing where the child `anchor` stands. A node's
@@ -88,7 +88,7 @@ impl Parser {
     /// by now is the lookahead that ended the rule rather than anything in it.
     fn at(&self, kind: ASTNodeKind, anchor: ASTNodeId) -> ASTNode {
         let anchored = self.get_node(anchor);
-        return ASTNode::new(kind, anchored.line, anchored.col);
+        ASTNode::new(kind, anchored.line, anchored.col)
     }
 
     /// A node of `kind` at the token in hand -- an ε rule's only choice, having
@@ -96,36 +96,36 @@ impl Parser {
     /// at: it is an empty list or an option that was not written, and a
     /// diagnostic reaching one would have nothing to say about it.
     fn here(&self, kind: ASTNodeKind) -> ASTNode {
-        return ASTNode::at(kind, self.peek());
+        ASTNode::at(kind, self.peek())
     }
 
     /// A child passed straight up, which is the whole of what a rule with one
     /// symbol and no meaning of its own does.
     fn pass(&self, id: ASTNodeId) -> ASTNode {
-        return self.get_node(id).clone();
+        self.get_node(id).clone()
     }
 
     /// The handles a `List` gathered. An `Empty` is a list that was never
     /// written, which is the same list as one written empty.
     fn list(&self, id: ASTNodeId) -> Vec<ASTNodeId> {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::List(ids) => ids.clone(),
             ASTNodeKind::Empty => Vec::new(),
             other => panic!("a list rule built {:?}", other),
-        };
+        }
     }
 
     /// `id`, unless it stands for an `<..._opt>` that was not written.
     fn opt(&self, id: ASTNodeId) -> Option<ASTNodeId> {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Empty => None,
             _ => Some(id),
-        };
+        }
     }
 
     /// A list of one, standing where that one does.
     fn one(&self, item: ASTNodeId) -> ASTNode {
-        return self.at(ASTNodeKind::List(vec![item]), item);
+        self.at(ASTNodeKind::List(vec![item]), item)
     }
 
     /// A list with one more on the end. An empty list has nowhere of its own to
@@ -134,43 +134,43 @@ impl Parser {
         let mut ids = self.list(list);
         let anchor = if ids.is_empty() { item } else { list };
         ids.push(item);
-        return self.at(ASTNodeKind::List(ids), anchor);
+        self.at(ASTNodeKind::List(ids), anchor)
     }
 
     /// The spelling an `Ident` leaf carried.
     fn text(&self, id: ASTNodeId) -> String {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Ident(name) => name.clone(),
             other => panic!("a rule wanted a name and was given {:?}", other),
-        };
+        }
     }
 
     /// The segments a `Name` gathered.
     fn path(&self, id: ASTNodeId) -> Vec<String> {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Name(segments) => segments.clone(),
             other => panic!("a rule wanted a path and was given {:?}", other),
-        };
+        }
     }
 
     /// The value a `Literal` leaf carried, for a pattern, which keeps its
     /// literals by value rather than by handle.
     fn lit(&self, id: ASTNodeId) -> ASTLit {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Literal(value) => value.clone(),
             ASTNodeKind::LitPat { value, .. } => value.clone(),
             other => panic!("a rule wanted a literal and was given {:?}", other),
-        };
+        }
     }
 
     /// The number an `INT_LITERAL` leaf carried, for the `.0` of a tuple. No
     /// negative one can reach here: the `-` in front of a literal is an
     /// operator of its own, and no rule puts one after a `.`.
     fn index(&self, id: ASTNodeId) -> u64 {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Literal(ASTLit::Int(n)) => *n as u64,
             other => panic!("a rule wanted an index and was given {:?}", other),
-        };
+        }
     }
 
     /// The members of a tuple: the one in front of the comma, and the rest.
@@ -179,38 +179,38 @@ impl Parser {
     fn members(&self, first: ASTNodeId, rest: ASTNodeId) -> Vec<ASTNodeId> {
         let mut elems = vec![first];
         elems.extend(self.list(rest));
-        return elems;
+        elems
     }
 
     /// What a `<binding_name>` or a `<param_name>` binds.
     fn binding(&self, id: ASTNodeId) -> ASTBinding {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Ident(name) => ASTBinding::Name(name.clone()),
             ASTNodeKind::Wildcard => ASTBinding::Discard,
             ASTNodeKind::This => ASTBinding::This,
             other => panic!("a rule wanted a binding and was given {:?}", other),
-        };
+        }
     }
 
     /// The word an `ASTMark` carried up.
     fn mark(&self, id: ASTNodeId) -> ASTMark {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Mark(mark) => *mark,
             other => panic!("a rule wanted a word and was given {:?}", other),
-        };
+        }
     }
 
     /// What a `<visibility_opt>` said, which where it said nothing is not
     /// `Private`: unwritten is its own answer, and whose it is to settle is not
     /// the parser's. See section 9 of docs/prose.txt.
     fn visibility(&self, id: ASTNodeId) -> ASTVisibility {
-        return match self.kind(id) {
+        match self.kind(id) {
             ASTNodeKind::Empty => ASTVisibility::Unwritten,
             _ => match self.mark(id) {
                 ASTMark::Vis(vis) => vis,
                 other => panic!("a visibility rule built {:?}", other),
             },
-        };
+        }
     }
 
     // ---- Filling the holes -----------------------------------------------
@@ -232,7 +232,7 @@ impl Parser {
             ASTNodeKind::StructLit { base: under, .. } => *under = base,
             other => panic!("a postfix rule built {:?}", other),
         }
-        return node;
+        node
     }
 
     /// `T[8][]` and the rest: each suffix in turn takes what is built so far as
@@ -254,7 +254,7 @@ impl Parser {
             elem = self.push_node(node.clone());
             built = node;
         }
-        return built;
+        built
     }
 
     /// A declaration with the attributes and the visibility written in front of
@@ -287,7 +287,7 @@ impl Parser {
             }
             other => panic!("attributes were written in front of {:?}", other),
         }
-        return node;
+        node
     }
 
     /// A function signature with a modifier written in front of it. `const` and
@@ -302,7 +302,7 @@ impl Parser {
             }
             other => panic!("a modifier was written in front of {:?}", other),
         }
-        return node;
+        node
     }
 
     /// A list with what a `<..._tail_opt>` held on the end of it. A body's last
@@ -313,13 +313,13 @@ impl Parser {
         if let Some(last) = self.opt(tail) {
             members.push(last);
         }
-        return members;
+        members
     }
 
     /// What a rule builds out of the children it just took.
     pub(super) fn build(&mut self, rule_id: tables::RuleId, children: &[ASTNodeId]) -> ASTNode {
         let c = children;
-        return match rule_id {
+        match rule_id {
             // ---- The file ------------------------------------------------
             // <start> -> <program>
             0 => self.pass(c[0]),
@@ -1424,7 +1424,7 @@ impl Parser {
             // the same grammar, so a rule with no arm is the two having come
             // apart -- not a source being wrong.
             other => panic!("rule {} has no arm in `build`", other),
-        };
+        }
     }
 }
 
@@ -1439,7 +1439,7 @@ mod tests {
         let mut p = Parser::new(lexer::Lexer::new(source));
         let root = p.parse();
         assert!(p.errors().is_empty(), "{}\n{:#?}", source, p.errors());
-        return (p, root);
+        (p, root)
     }
 
     /// The one item of a file that has one.
@@ -1451,7 +1451,7 @@ mod tests {
         };
         assert_eq!(items.len(), 1, "{}", source);
         let item = p.get_node(items[0]).clone();
-        return (p, item);
+        (p, item)
     }
 
     /// The statements of `fn main`'s body, for a test about statements rather
@@ -1467,7 +1467,7 @@ mod tests {
             ASTNodeKind::Block { stmts, .. } => stmts.clone(),
             other => panic!("a body built {:?}", other),
         };
-        return (p, stmts);
+        (p, stmts)
     }
 
     #[test]
@@ -2106,6 +2106,6 @@ mod tests {
             | ASTNodeKind::Wildcard
             | ASTNodeKind::LitPat { .. } => {}
         }
-        return out;
+        out
     }
 }
