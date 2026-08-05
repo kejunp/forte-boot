@@ -16,7 +16,7 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     pub fn new() -> Diagnostics {
-        return Diagnostics { items: Vec::new() };
+        Diagnostics { items: Vec::new() }
     }
 
     pub fn push(&mut self, diagnostic: Diagnostic) {
@@ -30,32 +30,32 @@ impl Diagnostics {
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
-        return self.items.iter();
+        self.items.iter()
     }
 
     pub fn len(&self) -> usize {
-        return self.items.len();
+        self.items.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        return self.items.is_empty();
+        self.items.is_empty()
     }
 
     /// Whether anything here stops the build. Warnings do not, so a report
     /// that is not empty is not the same as a compilation that failed.
     pub fn has_errors(&self) -> bool {
-        return self.items.iter().any(|d| d.is_error());
+        self.items.iter().any(|d| d.is_error())
     }
 
     /// All of them laid out, with a blank line between so that a run of them
     /// does not read as one long message.
     pub fn render(&self, source: &Source) -> String {
-        return self
+        self
             .items
             .iter()
             .map(|d| d.render(source))
             .collect::<Vec<_>>()
-            .join("\n\n");
+            .join("\n\n")
     }
 }
 

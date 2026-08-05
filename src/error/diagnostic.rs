@@ -18,10 +18,10 @@ pub enum Severity {
 impl Severity {
     /// The word it is announced with.
     pub fn word(self) -> &'static str {
-        return match self {
+        match self {
             Severity::Error => "error",
             Severity::Warning => "warning",
-        };
+        }
     }
 }
 
@@ -48,10 +48,10 @@ pub enum Remark {
 
 impl Remark {
     pub fn word(self) -> &'static str {
-        return match self {
+        match self {
             Remark::Help => "help",
             Remark::Note => "note",
-        };
+        }
     }
 }
 
@@ -103,43 +103,43 @@ impl Diagnostic {
     }
 
     pub fn error(message: String, span: Span) -> Diagnostic {
-        return Diagnostic::new(Severity::Error, message, span);
+        Diagnostic::new(Severity::Error, message, span)
     }
 
     pub fn warning(message: String, span: Span) -> Diagnostic {
-        return Diagnostic::new(Severity::Warning, message, span);
+        Diagnostic::new(Severity::Warning, message, span)
     }
 
     /// What to write beside the caret.
     pub fn with_label(mut self, text: impl Into<String>) -> Diagnostic {
         self.label = Some(text.into());
-        return self;
+        self
     }
 
     /// Another place to quote, under a heading of its own.
     pub fn with_secondary(mut self, span: Span, text: impl Into<String>) -> Diagnostic {
         self.secondary.push(Label { text: text.into(), span });
-        return self;
+        self
     }
 
     pub fn with_help(mut self, text: impl Into<String>) -> Diagnostic {
         self.remarks.push((Remark::Help, text.into()));
-        return self;
+        self
     }
 
     pub fn with_note(mut self, text: impl Into<String>) -> Diagnostic {
         self.remarks.push((Remark::Note, text.into()));
-        return self;
+        self
     }
 
     /// Whether this is something that stops the build.
     pub fn is_error(&self) -> bool {
-        return self.severity == Severity::Error;
+        self.severity == Severity::Error
     }
 
     /// The message with the source under it, the way a reader wants it. See
     /// `render` for what the layout is.
     pub fn render(&self, source: &Source) -> String {
-        return render::diagnostic(self, source);
+        render::diagnostic(self, source)
     }
 }

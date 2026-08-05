@@ -21,7 +21,7 @@ impl<'a> Source<'a> {
 
     /// What to call it in a `--> path:line:col`.
     pub fn path(&self) -> &str {
-        return self.path;
+        self.path
     }
 
     /// The `line`th line, counted from one and without its newline.
@@ -51,7 +51,7 @@ impl<'a> Source<'a> {
         if at < line {
             return None;
         }
-        return Some(text);
+        Some(text)
     }
 }
 
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
 
     fn chars(s: &str) -> Vec<char> {
-        return s.chars().collect();
+        s.chars().collect()
     }
 
     #[test]

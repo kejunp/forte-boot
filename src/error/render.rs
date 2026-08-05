@@ -62,7 +62,7 @@ pub fn diagnostic(d: &Diagnostic, source: &Source) -> String {
         out.push_str(&format!("note: {} here\n", label.text));
         out.push_str(&snippet(source, label.span, None, gutter));
     }
-    return out.trim_end().to_string();
+    out.trim_end().to_string()
 }
 
 /// The `--> where` line, the quoted source, and the caret under it.
@@ -108,7 +108,7 @@ fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> S
         Some(label) => out.push_str(&format!(" {}\n", label)),
         None => out.push('\n'),
     }
-    return out;
+    out
 }
 
 /// The line as it will be shown, and how far along it a caret for `col` goes.
@@ -138,7 +138,7 @@ fn expand_tabs(text: &str, col: usize) -> (String, usize) {
     if col > count {
         offset = shown.chars().count() + (col - count - 1);
     }
-    return (shown, offset);
+    (shown, offset)
 }
 
 #[cfg(test)]
@@ -147,7 +147,7 @@ mod tests {
     use super::*;
 
     fn chars(s: &str) -> Vec<char> {
-        return s.chars().collect();
+        s.chars().collect()
     }
 
     /// The whole shape of one: the message, where it was, the line itself, and
