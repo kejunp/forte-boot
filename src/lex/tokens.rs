@@ -88,6 +88,9 @@ pub enum TokType {
     // Logical operators
     And,
     Or,
+    // `^^`. The one of the three with no short-circuit to it: both sides of an
+    // exclusive or have to be known before the answer is.
+    Xor,
     Bang,
 
     // A lone `|`: pattern alternation, and a closure's parameter list. Told
@@ -99,6 +102,11 @@ pub enum TokType {
     // one, in a type and in an expression alike; `Star` above is the same token
     // as the multiplication one, told apart by where it stands.
     Ampersand,
+
+    // A lone `^`: exclusive or, on the bits. Unlike `&` and `|` it spells one
+    // thing only -- nothing is prefixed with it and no pattern uses it -- so
+    // `^^` needs no deciding and is always the logical one.
+    Caret,
 
     // Type operators
     As,
@@ -119,6 +127,7 @@ pub enum TokType {
     SlashEquals,
     AndEquals,
     OrEquals,
+    CaretEquals,
     LShiftEquals,
     RShiftEquals,
 
@@ -154,6 +163,17 @@ pub enum TokType {
 pub struct Tok {
     pub line:    usize,
     pub col:     usize,
+    /// How many characters of the source the token was written with, so that a
+    /// diagnostic can underline the whole of it rather than its first column.
+    ///
+    /// Counted from the input and not from the spelling, because a token does
+    /// not always keep what it was written as: `0x10` and `16` are the same
+    /// `IntLiteral`, and a string literal has lost its quotes and its escapes.
+    ///
+    /// Zero where nothing was written -- end of file, and the separators the
+    /// lexer inserts at the end of a line. Those mark a place rather than a
+    /// span, and a reader is pointed at it with a single caret.
+    pub len:     usize,
     pub toktype: TokType,
 }
 

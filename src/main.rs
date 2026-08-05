@@ -1,11 +1,13 @@
+mod error;
 mod lex;
 mod parse;
 mod prep;
 
 use lex::lexer::Lexer;
 use lex::tokens::TokType;
-use prep::comments::strip_comments;
-use prep::mangle_prep::prep_mangle;
+use error::Source;
+use parse::parser::Parser;
+use prep::preprocess;
 
 fn dump(source: &str) {
     println!("source:\n{}\n", source);
@@ -24,19 +26,52 @@ fn dump_tokens(source: &str) {
     println!();
 }
 
-fn dump_strip(source: &str) {
-    let stripped = strip_comments(source);
+fn dump_prep(source: &str) {
+    let prepped = preprocess(source);
     println!("source:\n{}\n", source);
-    println!("stripped:\n{}\n", stripped);
+    println!("preprocessed:\n{}\n", prepped);
 
-    // Comments are blanked out, not deleted, so line/col stay put.
-    dump_tokens(&stripped);
+    // Both passes rewrite in place -- a comment is blanked rather than deleted
+    // and an `_` becomes a `U` -- so every character keeps its line and column.
+    dump_tokens(&prepped);
     println!();
 }
 
-fn dump_mangle(name: &str) {
-    let mangled: String = name.chars().map(prep_mangle).collect();
-    println!("mangle: {} -> {}\n", name, mangled);
+/// Parses `source` and shows what it had to say about it.
+///
+/// This is where a source is held and where one is quoted, which is the same
+/// place on purpose. Every phase below reports a `Span` -- which piece of the
+/// source it is about -- and none of them knows what the text is or what it is
+/// called. Only here are the two put together.
+///
+/// That split is what a preprocessor makes necessary. The lexer has no case
+/// for the `/` that opens a comment, so what it reads is a copy with the
+/// comments blanked out; a phase quoting the text it was handed would show a
+/// reader a line they did not write. Blanking keeps every character where it
+/// was -- that is why a comment is blanked rather than deleted -- so a span
+/// taken from the stripped copy lands in the same place in the written one,
+/// and quoting the second needs nothing moved.
+///
+/// A parse that recovers reports more than one thing, and every one of them is
+/// printed: the point of recovering is that a second mistake need not wait for
+/// the first to be fixed.
+fn dump_parse(path: &str, source: &str) {
+    let prepped = preprocess(source);
+    debug_assert_eq!(
+        source.chars().count(),
+        prepped.chars().count(),
+        "preprocessing must not move anything"
+    );
+
+    let mut parser = Parser::new(Lexer::new(&prepped));
+    parser.parse();
+    if parser.errors().is_empty() {
+        println!("{}: parsed\n", path);
+        return;
+    }
+
+    let written: Vec<char> = source.chars().collect();
+    println!("{}\n", parser.errors().render(&Source::new(path, &written)));
 }
 
 fn main() {
@@ -46,13 +81,13 @@ fn main() {
     dump("let x = 25\nlet y = x + 1\n");
 
     // Line comment: everything after // becomes spaces on the same line.
-    dump_strip("let x = 25; // the answer\nlet y = x + 1\n");
+    dump_prep("let x = 25; // the answer\nlet y = x + 1\n");
 
     // Block comment: newlines inside it survive so later lines keep their numbers.
-    dump_strip("let x = /* a\nmultiline\ncomment */ 25\n");
+    dump_prep("let x = /* a\nmultiline\ncomment */ 25\n");
 
     // Unterminated block comment runs to end of input.
-    dump_strip("let x = 1 /* never closed\n");
+    dump_prep("let x = 1 /* never closed\n");
 
     // Generics: the `>>` closing a nested argument list is two tokens.
     dump("let m: Map<str, List<i32>> = empty()\n");
@@ -126,6 +161,13 @@ fn main() {
     // and `*T[]` writes to it. A slice is a run, so it is borrowed the same way.
     dump("let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\nlet s: &i32[] = &a\nlet w: *i32[] = *a[1..3]\n");
 
+    // A tuple is two or more types or values in parentheses: positional,
+    // declared nowhere, and reached into by number. The comma is what makes
+    // one — `(i32)` is an i32 — and a number after a `.` is an index and so a
+    // whole one, which is what keeps `p.0.1` two of them rather than a float.
+    dump("fn divmod(a: i32, b: i32): (i32, i32) {\n    (a / b, a % b)\n}\n");
+    dump("let p: (i32, str) = (1, `one`)\nlet n = p.0\nlet d = q.0.1\n");
+
     // An attribute is `@name` with its arguments, and a prefix of what it
     // annotates — so no separator is inserted at the end of the list.
     dump("@inline\n@repr(C)\npublic fn f();\n");
@@ -172,9 +214,38 @@ fn main() {
     // opens a body, so the brace below is still the literal's.
     dump("public unsafe fn write(dst: *u8[], n: u64);\nunsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}\nunsafe free(q)\nunsafe p = P { x: 1 }\n");
 
-    dump_mangle("my_var_name");
-    dump_mangle("already_ok");
+    // What the parser makes of a source it can take, and of five it cannot.
+    // Each mistake is shown against the line it was written on.
+    dump_parse("ok.fc", "fn main() {\n    let x = 1  // fine\n    g(x)\n}\n");
+
+    // A comment on the line a mistake is on. The parse never sees it -- it was
+    // blanked out before the lexer ran -- and the quoted line has it back.
+    dump_parse("note.fc", "fn main() {\n    let x = /* huh */ ;  // why\n}\n");
+
+    // A type is wanted and an `=` is written: the caret sits on the token the
+    // tables turned down, and the margin says what was being written.
+    dump_parse("annot.fc", "fn main() {\n    let x: = 5\n}\n");
+
+    // A near-miss the language has a rule about, rather than a slip: `;` where
+    // the entries of a struct are separated by `,`.
+    dump_parse("field.fc", "struct P {\n    x: i32,\n    y: i32;\n}\n");
+
+    // The `}` that gave it away is two lines from the `(` that caused it, so
+    // the opener gets a snippet of its own.
+    dump_parse("args.fc", "fn main() {\n    f(1, 2\n}\n");
+
+    // A token the lexer gave up inside of: the caret runs to the end of the
+    // line, which is as far as the reader can see it.
+    dump_parse("string.fc", "fn main() {\n    let s = \"unclosed\n}\n");
+
+    // One mistake does not hide the next: the parse recovers and goes on, and
+    // both are reported against their own lines.
+    dump_parse("two.fc", "fn a() { let x = ; }\nfn b() { let y = ; }\n");
 }
+
+
+
+
 
 #[cfg(test)]
 fn lex_types(source: &str) -> Vec<TokType> {
@@ -187,6 +258,62 @@ fn lex_types(source: &str) -> Vec<TokType> {
         }
         out.push(tok.toktype);
     }
+}
+
+/// Every token's column and width, which is what a diagnostic underlines.
+#[cfg(test)]
+fn lex_spans(source: &str) -> Vec<(usize, usize)> {
+    let mut lexer = Lexer::new(source);
+    let mut out = Vec::new();
+    loop {
+        let tok = lexer.next_token();
+        if tok.toktype == TokType::EOF {
+            return out;
+        }
+        out.push((tok.col, tok.len));
+    }
+}
+
+/// A token knows how wide it was written, which is not something its type can
+/// answer: `0x10` and `16` are the same literal, and a string has lost both its
+/// quotes and its escapes by the time it is one.
+#[test]
+fn a_token_knows_how_wide_it_was_written() {
+    // The inserted separator at the end is a place and not a piece: no width.
+    assert_eq!(
+        lex_spans("let x = 25\n"),
+        vec![(1, 3), (5, 1), (7, 1), (9, 2), (11, 0)]
+    );
+    // Written in a base, and with the separators a reader may put in it.
+    assert_eq!(lex_spans("0x10"), vec![(1, 4), (5, 0)]);
+    assert_eq!(lex_spans("2_147_483_647"), vec![(1, 13), (14, 0)]);
+    // The quotes are the literal's, though its value has none.
+    assert_eq!(lex_spans("\"hi\""), vec![(1, 4), (5, 0)]);
+    assert_eq!(lex_spans("'\\n'"), vec![(1, 4), (5, 0)]);
+    // A `>>` that closes two generic lists is two tokens of one character, not
+    // one of two -- the width follows the split.
+    assert_eq!(
+        lex_spans("Map<str, List<i32>>"),
+        vec![
+            (1, 3),   // Map
+            (4, 1),   // <
+            (5, 3),   // str
+            (8, 1),   // ,
+            (10, 4),  // List
+            (14, 1),  // <
+            (15, 3),  // i32
+            (18, 1),  // the first `>`
+            (19, 1),  // the second
+            (20, 0),  // the inserted separator
+        ]
+    );
+    // A real shift is still one token, and two characters wide.
+    assert_eq!(lex_spans("bits >> 2"), vec![(1, 4), (6, 2), (9, 1), (10, 0)]);
+    // A token the lexer gave up inside of covers what it read before it did.
+    // An unterminated string runs to the end of the input, so its width counts
+    // the newline it ran past; a diagnostic quoting one line stops at the end
+    // of that line, which is where a caret can still be seen.
+    assert_eq!(lex_spans("let s = \"oops\n"), vec![(1, 3), (5, 1), (7, 1), (9, 6)]);
 }
 
 #[test]
@@ -646,6 +773,45 @@ fn still_rejects_doubled_decimal_point() {
     assert!(matches!(lex_types("1.2.3")[0], TokType::Error(_)));
 }
 
+/// A number written after a `.` is the index of a tuple member, so it is a
+/// whole one however many dots follow it: `t.0.1` reaches into the tuple in
+/// the first member, and there is no float for the second `.` to belong to.
+#[test]
+fn a_dot_before_a_number_makes_it_an_index() {
+    assert_eq!(
+        lex_types("t.0.1"),
+        vec![
+            TokType::Identifier("t".to_string()),
+            TokType::Dot,
+            TokType::IntLiteral(0),
+            TokType::Dot,
+            TokType::IntLiteral(1),
+            TokType::Semicolon,
+        ]
+    );
+    // Anywhere else a float still absorbs its point, the dots of a range
+    // being their own token.
+    assert_eq!(
+        lex_types("let f = 5.0"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("f".to_string()),
+            TokType::Equals,
+            TokType::FloatLiteral(5.0),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("0..0.5"),
+        vec![
+            TokType::IntLiteral(0),
+            TokType::DotDot,
+            TokType::FloatLiteral(0.5),
+            TokType::Semicolon,
+        ]
+    );
+}
+
 /// No statement starts with `as`, so a cast may hang off the previous line.
 #[test]
 fn cast_continues_across_newline() {
@@ -664,9 +830,10 @@ fn cast_continues_across_newline() {
 }
 
 /// Blanking rather than deleting only pays off if the output lines up with the
-/// input character for character.
+/// input character for character: that is what lets a diagnostic quote the
+/// source as it was written while the parse runs on the preprocessed copy.
 #[test]
-fn strip_preserves_length_and_lines() {
+fn preprocessing_preserves_length_and_lines() {
     let cases = [
         "let x = 25; // the answer\nlet y = x + 1\n",
         "let x = /* a\nmultiline\ncomment */ 25\n",
@@ -677,9 +844,10 @@ fn strip_preserves_length_and_lines() {
         "no comments here\n",
         "/*",
         "//",
+        "let my_var = 1  // a_b\n",
     ];
     for src in cases {
-        let out = strip_comments(src);
+        let out = preprocess(src);
         assert_eq!(
             src.chars().count(),
             out.chars().count(),
@@ -1626,6 +1794,37 @@ fn lexes_wildcard() {
     );
 }
 
+/// A name reaches the parser as it was written. Nothing rewrites one on the
+/// way, and an `_` in a name is a character of that name.
+///
+/// It was not always so, and the two places it was tried are both wrong. Over
+/// the source text, a rewrite cannot tell a name from a digit separator, the
+/// inside of a string, or the `_` that is the wildcard. On identifier tokens
+/// it can, but a symbol's name is settled from a declaration that has been
+/// resolved and typed -- which parameter types it takes, which namespace it
+/// sits in -- and none of that is known here. That belongs to codegen; this
+/// test is what says so if it drifts back.
+#[test]
+fn a_name_comes_through_as_it_was_written() {
+    assert_eq!(
+        lex_types("my_var_name"),
+        vec![TokType::Identifier("my_var_name".to_string()), TokType::Semicolon]
+    );
+    // The three a text-level rewrite got wrong, none of which is a name.
+    assert_eq!(
+        lex_types("2_147_483_647"),
+        vec![TokType::IntLiteral(2_147_483_647), TokType::Semicolon]
+    );
+    assert_eq!(
+        lex_types("\"a_b\""),
+        vec![TokType::StringLiteral("a_b".to_string()), TokType::Semicolon]
+    );
+    assert_eq!(lex_types("_"), vec![TokType::Underscore, TokType::Semicolon]);
+    // A keyword is settled before a name is built, so none is rewritten. No
+    // separator follows this one: a `const` cannot end a statement.
+    assert_eq!(lex_types("const"), vec![TokType::Const]);
+}
+
 /// Reserved as a whole word only. An underscore that starts a longer word is
 /// just a character of that word, exactly as it was before.
 #[test]
@@ -1896,6 +2095,82 @@ fn splits_a_prefix_ampersand_pair() {
             TokType::Semicolon,
         ]
     );
+}
+
+/// `^` needs none of that deciding. Nothing is written with a prefix `^`, so
+/// what stands in front of one settles nothing: a single `^` is always the
+/// bitwise operator and a doubled one always the logical one, in every place
+/// where a `&&` would have had to be split.
+#[test]
+fn a_caret_is_never_split() {
+    assert_eq!(
+        lex_types("a ^ b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::Caret,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("a ^^ b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::Xor,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // Glued on either side, and with no operand in front of it -- the shape
+    // that makes `&&` two references and `||` a closure's empty parameters.
+    assert_eq!(lex_types("a^^b")[1], TokType::Xor);
+    assert_eq!(lex_types("let x = ^^y")[3], TokType::Xor);
+    // Three in a row is the doubled one and then a single, as `&&&` is.
+    assert_eq!(
+        lex_types("a ^^^ b"),
+        vec![
+            TokType::Identifier("a".to_string()),
+            TokType::Xor,
+            TokType::Caret,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // `^=` is a third thing the character spells, and the doubled one still
+    // wins: only a single `^` can take the `=`.
+    assert_eq!(lex_types("a ^= b")[1], TokType::CaretEquals);
+    assert_eq!(lex_types("a ^^= b")[1], TokType::Xor);
+
+    // Neither ends a statement, so a newline after one continues the line...
+    assert_eq!(
+        lex_types("let m = a ^\n    b\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("m".to_string()),
+            TokType::Equals,
+            TokType::Identifier("a".to_string()),
+            TokType::Caret,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // ...and neither starts a statement, so a line beginning with one carries
+    // the line above it on, as `&` and `|` already did.
+    for source in ["let m = a\n    ^ b\n", "let m = a\n    ^^ b\n", "a\n    ^= b\n"] {
+        assert_eq!(
+            lex_types(source).iter().filter(|t| **t == TokType::Semicolon).count(),
+            1,
+            "{:?} is one statement",
+            source
+        );
+    }
+}
+
+/// The widths of the new pair, which is what a diagnostic underlines.
+#[test]
+fn the_carets_are_as_wide_as_they_are_written() {
+    assert_eq!(lex_spans("a ^ b"), vec![(1, 1), (3, 1), (5, 1), (6, 0)]);
+    assert_eq!(lex_spans("a ^^ b"), vec![(1, 1), (3, 2), (6, 1), (7, 0)]);
 }
 
 /// ...and an operand in front of it keeps it whole, wherever that operand ends.

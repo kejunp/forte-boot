@@ -1,6 +1,6 @@
-pub mod ast;
+pub mod ast_nodes;
+pub mod parser;
 pub mod tables;
-mod parser;
 
 /// Runs the generated tables over a token stream and says whether they accept
 /// it. No tree is built: this is the tables' own test, and what it tests is
@@ -131,6 +131,12 @@ fn parses_braces_of_both_kinds() {
     accepts_body("for x in {1, 2} {\n    f(x)\n    g(x)\n}");
     accepts_body("for x in #{{1, 2}, {3}} {\n    f(x)\n    g(x)\n}");
     accepts_body("if (Cfg { on: true }).on {\n    f()\n}");
+    // A header waits for its body across the commas of its own brackets: a
+    // parameter list separates parameters and ends nothing, so the brace
+    // below is the body even where what is inside it reads as a set.
+    accepts("fn f(a: i32, b: i32): i32 {\n    (a)\n}\n");
+    accepts("fn divmod(a: i32, b: i32): (i32, i32) {\n    (a / b, a % b)\n}\n");
+    accepts_body("if (a, b) == (c, d) {\n    f()\n    g()\n}");
     // A block nested inside a literal's entry is a block again.
     accepts_body("let m = {\n    1: {\n        f()\n        g()\n    },\n}");
     accepts_body("let p = Point {\n    x: if c {\n        f()\n        g()\n    } else { 2 },\n}");
@@ -145,6 +151,36 @@ fn parses_match_and_patterns() {
     accepts_body("match x {\n    1 => a\n}\n-1");
 }
 
+/// Tuples: a type, a literal, a pattern and the `.0` that reaches into one.
+/// The comma is what makes each of them, so the group of one still groups.
+#[test]
+fn parses_tuples() {
+    accepts("fn divmod(a: i32, b: i32): (i32, i32) {\n    (a / b, a % b)\n}\n");
+    accepts("fn head(p: (i32, str)): i32 {\n    p.0\n}\n");
+    accepts_body("let p: (i32, str) = (1, \"a\")");
+    accepts_body("let t = (1, 2, 3)\nlet trailing = (1, 2,)");
+    accepts_body("let nested: ((i32, i32), str) = ((1, 2), \"a\")");
+    accepts_body("let pairs: (i32, str)[8]\nlet view: &(i32, str)[]");
+    accepts_body("let v: Vec<(i32, str)> = empty()");
+    accepts_body("let q = x as (i32, str)");
+    accepts_body("let n = t.0 + t.1.0\nlet m = f().1\nlet k = ps[0].1");
+    accepts_body("let swapped = (b, a)\n(a, b) = (b, a)");
+    accepts_body("match p {\n    (0, 0) => a,\n    (x, y) => x,\n    _ => b,\n}");
+    accepts_body("for x in (1, 2) {\n    f(x)\n    g(x)\n}");
+    accepts_body("let f = |x| (x, x)\nlet t = (\n    1,\n    2,\n)");
+    accepts("enum E {\n    B((i32, str)),\n}\n");
+    accepts("impl (i32, str) {\n    fn first(this): i32;\n}\n");
+    accepts("fn f<T>(p: (T, T)): T where T: Ord;\n");
+    // A group of one is what it always was, and a call takes its own comma.
+    accepts_body("let g = (1)\nlet refs: (&i32)[8]\nlet c = f(1, 2)");
+    // Two members at least, so neither the empty tuple nor the one-tuple is
+    // written -- in a type or in an expression.
+    assert!(recognise("fn f(): () {}\n").is_err());
+    assert!(recognise("fn f(): (i32,) {}\n").is_err());
+    assert!(recognise("fn main() {\n    let t = (1,)\n}\n").is_err());
+    assert!(recognise("fn main() {\n    let t = ()\n}\n").is_err());
+}
+
 #[test]
 fn parses_unsafe() {
     accepts_body("unsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}");
@@ -152,6 +188,37 @@ fn parses_unsafe() {
     accepts_body("unsafe p = P { x: 1 }");
     accepts_body("unsafe let p = malloc(n)");
     accepts_body("unsafe fn write(n: u64) {\n    f()\n}");
+}
+
+/// `&` and `|` between two operands. Both characters already spelled other
+/// things -- a reference, a closure's parameters, a pattern's alternatives --
+/// and every one of those has to go on reading as it did.
+#[test]
+fn parses_the_bitwise_operators() {
+    accepts_body("let m = a & b\nlet n = a | b\nlet o = a ^ b");
+    accepts_body("let ok = a ^^ b\nlet p = (a && b) ^^ (c || d)");
+    accepts_body("let m = a | b ^ c & d\nlet n = a || b ^^ c && d");
+    accepts_body("let m = flags & 0xFF | 1\nlet n = (a | b) & c");
+    accepts_body("let m = a & b << c | d >> e");
+    accepts_body("let ok = a & b == 0\nlet p = x | y != 0");
+    // Still a reference where nothing stands in front of it, and still one
+    // where the thing in front of it is the operator.
+    accepts_body("let r = &x\nlet m = a & &b\nlet rr: &&i32 = &&x");
+    // Still the logical pair, which the lexer tells apart from these.
+    accepts_body("let ok = a && b\nlet no = a || b\nlet x = a ^^ b");
+    // Still a closure's parameters, with a `|` inside the body for good
+    // measure, and still one after `move`.
+    accepts_body("let f = |x: i32| x & 1\nlet g = || a | b\nlet h = move || a & b");
+    // Still a pattern's alternatives, in a match whose arms are expressions
+    // that use the operators themselves.
+    accepts_body("match x {\n    1 | 2 => a & b,\n    _ => c | d,\n}");
+    // And still the compound assignments, which were always spelled this way.
+    accepts_body("a &= b\na |= b\na ^= b");
+    // Only the single `^` takes the `=`. `a ^^= b` is `^^` and then a `=`,
+    // which nothing takes -- there is no compound assignment for a logical
+    // operator, and `a = a ^^ b` is how that is written.
+    assert!(recognise("fn main() {\n    a ^^= b\n}\n").is_err());
+    assert!(recognise("fn main() {\n    a &&= b\n}\n").is_err());
 }
 
 #[test]
@@ -216,3 +283,6 @@ fn says_what_the_lexer_could_not_read() {
         "2:13: Unterminated string"
     );
 }
+
+
+

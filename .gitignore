@@ -1,4 +1,4 @@
 /target
 /build
 __pycache__/
-src/parse/tables.rs
+/src/parse/tables.rs

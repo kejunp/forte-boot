@@ -217,9 +217,16 @@
 <base_type>             ::= <primitive_type>
                           | <named_type>
                           | <grouped_type>
+                          | <tuple_type>
                           | "_"
 
 <grouped_type>          ::= "(" <type> ")"
+
+# What tells a tuple from a group is the comma, so a tuple has two members at
+# least: `(i32)` is an i32 and `(i32, str)` is a pair. No trailing comma, as in
+# every other list of types the language writes — which is also what leaves
+# `(i32,)` unsaid, there being no one-member tuple to say.
+<tuple_type>            ::= "(" <type> "," <type_list> ")"
 
 <named_type>            ::= <qualified_name> <generic_args_opt>
 
@@ -316,8 +323,8 @@
 <assignment>            ::= <range_expr>
                           | <range_expr> <assign_op> <value_expr>
 
-<assign_op>             ::= "="  | "+=" | "-="  | "*=" | "/="
-                          | "&=" | "|=" | "<<=" | ">>="
+<assign_op>             ::= "="  | "+=" | "-="  | "*="  | "/="
+                          | "&=" | "|=" | "^=" | "<<=" | ">>="
 
 <range_expr>            ::= <logical_or>
                           | <logical_or> <range_op>
@@ -328,8 +335,14 @@
 <range_op>              ::= ".."
                           | "..="
 
-<logical_or>            ::= <logical_and>
-                          | <logical_or> "||" <logical_and>
+<logical_or>            ::= <logical_xor>
+                          | <logical_or> "||" <logical_xor>
+
+# `^^` is `^` on two booleans, and sits between the other two exactly as `^`
+# sits between `&` and `|`. It is the one of the three that cannot short-
+# circuit: neither side of an exclusive or settles it alone.
+<logical_xor>           ::= <logical_and>
+                          | <logical_xor> "^^" <logical_and>
 
 <logical_and>           ::= <equality>
                           | <logical_and> "&&" <equality>
@@ -340,10 +353,30 @@
 <equality_op>           ::= "=="
                           | "!="
 
-<comparison>            ::= <shift>
-                          | <comparison> <comparison_op> <shift>
+<comparison>            ::= <bit_or>
+                          | <comparison> <comparison_op> <bit_or>
 
 <comparison_op>         ::= "<" | ">" | "<=" | ">="
+
+# The bitwise pair binds tighter than a comparison and looser than a shift, so
+# `a & mask == 0` is `(a & mask) == 0` -- the reading everyone means. C put
+# them the other way round and has regretted it since; nothing is gained by
+# repeating that here, and `&` is `&&` on whole words wherever `&&` is `&` on
+# their bits, which is an ordering worth keeping.
+#
+# A single `&` between two operands, where `&&` is the logical one: the lexer
+# has already told them apart, and the same `&` before an operand rather than
+# between two is a reference. `|` is a bit the same way, and the `|` of a
+# closure's parameters or a pattern's alternatives is neither -- no expression
+# stands in front of one.
+<bit_or>                ::= <bit_xor>
+                          | <bit_or> "|" <bit_xor>
+
+<bit_xor>               ::= <bit_and>
+                          | <bit_xor> "^" <bit_and>
+
+<bit_and>               ::= <shift>
+                          | <bit_and> "&" <shift>
 
 <shift>                 ::= <additive>
                           | <shift> <shift_op> <additive>
@@ -374,6 +407,7 @@
 <cast_base>             ::= <primitive_type>
                           | <qualified_name>
                           | <grouped_type>
+                          | <tuple_type>
                           | "_"
 
 <unary>                 ::= <unary_op> <unary>
@@ -391,6 +425,7 @@
 # neither belongs to the name — both are suffixes, and so is the brace of a
 # struct literal, which is what makes `shapes.Point { x: 1 }` sayable.
 <postfix_op>            ::= "." IDENTIFIER
+                          | "." INT_LITERAL
                           | "::" IDENTIFIER
                           | "(" <arg_list_opt> ")"
                           | "[" <index> "]"
@@ -414,8 +449,15 @@
                           | <map_literal>
                           | <set_literal>
                           | <grouping>
+                          | <tuple_expr>
 
 <grouping>              ::= "(" <expression> ")"
+
+# The comma decides here as it does in <tuple_type>, so `(x)` is x and
+# `(x, y)` is a pair. The trailing one is allowed, as it is in every other
+# parenthesised or bracketed list of values.
+<tuple_expr>            ::= "(" <expression> "," <expression_seq> ")"
+                          | "(" <expression> "," <expression_seq> "," ")"
 
 <jump_expr>             ::= "return" <expression_opt>
                           | "break" <expression_opt>
@@ -532,9 +574,15 @@
                           | <literal_pattern>
                           | <range_pattern>
                           | <variant_pattern>
+                          | <tuple_pattern>
                           | <const_pattern>
 
 <const_pattern>         ::= <qualified_name>
+
+# A <variant_pattern> with nothing in front of it, and the same two members at
+# least: a tuple is what is being matched, so `(a)` would be a pattern in
+# parentheses and there is nothing for that to say.
+<tuple_pattern>         ::= "(" <pattern> "," <pattern_list> ")"
 
 <literal_pattern>       ::= <literal>
                           | "-" <literal>

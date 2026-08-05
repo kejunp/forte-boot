@@ -49,13 +49,15 @@ TOKENS = {
     '<': 'LessThan', '>': 'GreaterThan',
     '<=': 'LessOrEqual', '>=': 'GreaterOrEqual',
 
-    '&&': 'And', '||': 'Or', '!': 'Bang', '|': 'Pipe', '&': 'Ampersand',
+    '&&': 'And', '||': 'Or', '^^': 'Xor', '!': 'Bang',
+    '|': 'Pipe', '&': 'Ampersand', '^': 'Caret',
 
     '..': 'DotDot', '..=': 'DotDotEquals',
 
     '=': 'Equals', '+=': 'PlusEquals', '-=': 'MinusEquals',
     '*=': 'StarEquals', '/=': 'SlashEquals', '&=': 'AndEquals',
-    '|=': 'OrEquals', '<<=': 'LShiftEquals', '>>=': 'RShiftEquals',
+    '|=': 'OrEquals', '^=': 'CaretEquals',
+    '<<=': 'LShiftEquals', '>>=': 'RShiftEquals',
 
     '(': 'LParen', ')': 'RParen', '[': 'LBracket', ']': 'RBracket',
     '{': 'LCurlyBracket', '}': 'RCurlyBracket',
@@ -131,7 +133,7 @@ CLASSES = {
     '<primitive_type>': 'a primitive type',
     '<qualified_name>': 'a name',
     # The one rung of the ladder a state does offer whole: an assignment takes
-    # any of the nine at once, where a `+` is only ever offered beside a `*`
+    # any of the ten at once, where a `+` is only ever offered beside a `*`
     # that the rung above has already taken.
     '<assign_op>': 'an assignment operator',
 }
@@ -148,7 +150,7 @@ CLASSES = {
 LOOSE_CLASSES = {
     ('<additive_op>', '<multiplicative_op>', '<shift_op>', '<comparison_op>',
      '<equality_op>', '<assign_op>', '<range_op>', '<postfix_op>',
-     '&&', '||', 'as'): 'an operator',
+     '&', '|', '^', '&&', '||', '^^', 'as'): 'an operator',
 }
 
 # Every class, strict ones first so that they win a tie: both describe the
@@ -168,6 +170,12 @@ CANDIDATES = ([(symbols, phrase, True) for symbols, phrase in CLASSES.items()]
 CONTEXTS = {
     '<attr_arg_list>': "an attribute's arguments",
     '<attribute>': 'an attribute',
+
+    # Both stand inside whatever holds them -- an argument list, a match's
+    # scrutinee, a variant's payload -- and are the innermost of it, so they
+    # are named ahead of everything they can be written in.
+    '<tuple_expr>': 'a tuple',
+    '<tuple_pattern>': 'a tuple pattern',
 
     '<field_pattern_list>': 'a struct pattern',
     '<pattern_list>': "a pattern's payload",
@@ -212,6 +220,7 @@ CONTEXTS = {
     '<where_pred_list>': 'a `where` clause',
     '<where_clause_opt>': 'a `where` clause',
     '<type_bounds>': 'a type bound',
+    '<tuple_type>': 'a tuple type',
     '<grouped_type>': 'a parenthesised type',
     '<array_suffix>': 'an array type',
     '<ref_type>': 'a type',

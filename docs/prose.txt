@@ -435,9 +435,30 @@ is what gives the other reading of a reference and a suffix a spelling:
     (&i32)[8]     eight references, laid end to end
     &(i32[8])     a view of an array of eight, as "&i32[8]" already was
 
-A group holds one type. "(i32, str)" is not a tuple — nothing here has
-tuples, and a comma inside those parentheses is an error rather than a second
-member.
+A group holds one type. What a comma inside those parentheses makes is a
+<tuple_type>, and the comma is the whole of the difference: no comma, no
+tuple.
+
+<tuple_type>. "(i32, str)" is a pair and "(i32, i32, i32)" a triple. The
+members are positional and in the order they were written, and two tuple
+types are the same type exactly when their members are — a tuple is declared
+nowhere and named nothing, which is what it is for: "fn divmod(a: i32, b:
+i32): (i32, i32)" gives back two things without a struct written for the
+occasion.
+
+Two members at least. "(i32)" is an i32, the parentheses there having grouped
+and nothing more, and there is no one-member tuple to write instead: the
+trailing comma of "(i32,)" is refused, as no list of types in this language
+takes one. Nor is "()" a type. The value that carries no information is
+"null" (above), and an empty tuple would be a second name for it.
+
+A tuple is a value like a fixed array is: it is copied whole, its size is
+known, and it may be a local, a field, a parameter or a return type. The
+suffixes compose with it as they do with anything — "(i32, str)[8]" is eight
+pairs — and so does a reference: "&(i32, str)" reads one.
+
+A member is reached with ".0", ".1" and so on (section 5), and the whole of
+one is taken apart with a <tuple_pattern> (section 5.2).
 
 <generic_args>. Note for implementers: the lexer only guesses at "<". It
 opens a generic context after an IDENTIFIER and abandons it on any token
@@ -616,6 +637,46 @@ the bottom, which is what "q = 5" is for.
 <range_expr>. Non-associative, and every bound is optional: "1..10", "1..",
 "..10", "..=n", "..".
 
+<bit_or>, <bit_xor> and <bit_and>. "|", "^" and "&" between two operands,
+which are "||", "^^" and "&&" done a bit at a time. They bind tighter than a
+comparison and looser than a shift, so "a & mask == 0" is "(a & mask) == 0" —
+the reading everyone means. C put a comparison tighter and has regretted it
+ever since; there is nothing to be gained by repeating that here.
+
+Among themselves the order is "&", then "^", then "|", tightest first, so
+"a | b ^ c & d" is "a | (b ^ (c & d))". The three logical operators are the
+same ladder over booleans — "&&", then "^^", then "||" — and the two ladders
+sit one under the other: every bitwise operator binds tighter than every
+logical one, so the bits are worked out before the booleans are.
+
+Two of the three characters spell other things, and where one stands is what
+says which. An operand in front of "&" makes it this operator and nothing in
+front makes it a reference, exactly as "*" is a product or a reference by the
+same test (see <unary_op> below). "|" is this operator only between two
+operands as well: the "|" that opens a closure's parameters has no operand in
+front of it, and the "|" between a pattern's alternatives stands where a
+pattern does and not where an expression does. "^" is the exception and needs
+no such test — nothing is written with a prefix "^" and no pattern uses one,
+so a "^" is this operator wherever it appears and "^^" is always the logical
+one. The lexer has told the doubled from the single before any of this
+(section 4), so the grammar sees six operators and not three characters.
+
+<logical_xor>. "^^", which is to "^" what "&&" is to "&". It is the one of
+the three logical operators that cannot short-circuit: "a && b" is settled by
+an a that is false and "a || b" by an a that is true, but neither side of an
+exclusive or settles it alone, so both are always evaluated. That is a fact
+about what the operator means rather than a rule the grammar carries.
+
+"^=" goes with it, as "&=" and "|=" go with theirs, so the compound
+assignments are one per binary operator that has a use for one. There is no
+"^^=", and none of the logical three has one: "a ^^= b" would write a boolean
+back to a name that has to have held one already, which is what "a = a ^^ b"
+says without a spelling of its own.
+
+The single "^" takes the "=" and the doubled one does not, so "a ^^= b" is
+"^^" followed by "=" and not an operator. Nothing in the grammar takes that
+pair, and the error says so.
+
 <unary_op>. "&x" takes an immutable reference to x and "*x" a mutable one,
 the same two spellings the types use (section 3). "*" is prefix and infix
 both, as "-" already was, and where it stands is the whole of what tells the
@@ -627,12 +688,20 @@ element reached from one. "&x" asks less: any place at all, and a value with
 no home of its own, which the compiler gives one. Both are rules for the
 checker, as is everything about how long the reference stays good.
 
-<postfix_op>. Those are, in order: a field or method access, a "::" reaching
-into a namespace or a type, a call, an index or slice, and the brace of a
-struct literal. The separators and the brace are the ones worth naming as
-suffixes at all: either separator may follow the other, so neither belongs to
-the name it reaches through, and the brace hangs off whatever the two of them
-built — which is the whole of what makes "shapes.Point { x: 1 }" sayable.
+<postfix_op>. Those are, in order: a field or method access, the "." of a
+tuple member, a "::" reaching into a namespace or a type, a call, an index or
+slice, and the brace of a struct literal. The separators and the brace are
+the ones worth naming as suffixes at all: either separator may follow the
+other, so neither belongs to the name it reaches through, and the brace hangs
+off whatever the two of them built — which is the whole of what makes
+"shapes.Point { x: 1 }" sayable.
+
+A tuple member is counted rather than named, so what follows the "." is the
+number: "p.0" is the first of them and "p.1" the second. It is the same "."
+and the same suffix — "f().0" and "ps[i].1" read as they look — and the only
+thing special about it is lexical: a number written after a "." is a whole
+one, so "t.0.1" reaches into the tuple in the first member rather than
+naming a float (section 6).
 
 <index>. A range is an expression, so a slice needs no rule of its own.
 
@@ -684,6 +753,22 @@ that it is decidable in either place, as "{,}" already is.
 
 The empty set is written, never derived from <empty>: that spelling is the
 map's.
+
+<tuple_expr>. "(1, name)" is a pair, and the comma decides here as it does
+in a type: "(x)" is a <grouping> and worth exactly x. Two members at least,
+and for the same reason — there is no "()" and no "(x,)".
+
+The trailing comma *is* allowed at the end of a longer one, "(1, 2,)", which
+is the one place a tuple and a tuple type part company. Every parenthesised
+or bracketed list of values takes one — an argument list, an array, a set —
+and none of the lists of types does, so each side keeps the habit it already
+had. What the type side buys by refusing it is that "(i32,)" has no reading
+at all rather than a second one.
+
+A tuple is an operand like any other, so a member comes off it directly:
+"(a, b).0" is a. The uses are the ones a type has (section 3) — a return of
+two things, a pair passed as one argument — and what takes one apart on the
+way in is a <tuple_pattern> (section 5.2).
 
 
 ------------------------------------------------------------------------------
@@ -757,6 +842,16 @@ that name. A variant carrying named fields is destructured with the braces it
 was declared with, "Event::Move { x, y }", and a field may be renamed on the
 way out, "Event::Move { x: col, y: row }".
 
+<tuple_pattern>. A <variant_pattern> with no name in front of it: "(x, y)"
+matches a pair and binds both members, "(0, y)" matches only those whose
+first is 0, and a member no one wants is "_". Two members at least, as
+everywhere else a tuple is written — "(x)" would be a pattern in parentheses,
+and there is nothing for that to say.
+
+It is the only way to take a tuple apart by binding, since "let" takes a
+<binding_name> and not a pattern (section 2): "match p { (x, y) => ... }" is
+how the two come out at once, where "p.0" and "p.1" take them one at a time.
+
 <const_pattern>. A name that resolves to a constant tests against its value
 instead of binding: with "const MAX: u16 = 65535" in scope, the "MAX" of a
 match arm asks whether the scrutinee is 65535. Any other name binds, as
@@ -800,6 +895,13 @@ is a digit valid in the marker's base.
 
 FLOAT_LITERAL. The fractional part is only taken when a digit follows the
 ".", so "1.foo" is INT_LITERAL "." IDENTIFIER and "1..2" is a range.
+
+Nor is it taken at all when a "." stands in front of the number: that number
+is the index of a tuple member (section 5), and a whole one. So "t.0.1" is
+five tokens and reaches into the tuple in t's first member, where the same
+characters would otherwise be "t" "." and the float 0.1 — which is not
+something the grammar has anywhere to put. Only the lone "." does this; the
+dots of a range are their own token, so "0..0.5" keeps its float.
 
 STRING_LITERAL. A "`"-delimited string is raw: no escapes.
 
@@ -1060,9 +1162,23 @@ answer is not obvious from the rules alone.
     argue the point. Which programs those are is a property of the checker
     and not of this grammar.
   - An array of references is "(&i32)[8]", a <grouped_type> being what says
-    which of the two a reference and a suffix make (section 3). Settled.
-    Parentheses group one type and never make a tuple, since nothing here
-    has tuples to make.
+    which of the two a reference and a suffix make (section 3). Settled. The
+    same parentheses make a tuple when a comma is inside them and group when
+    none is, so "(&i32)[8]" is eight references and "(&i32, u8)[8]" eight
+    pairs; the two never compete, a group of one being the only thing a
+    <grouped_type> is.
+  - A tuple is two or more types or values in parentheses, positional,
+    declared nowhere, reached into with ".0" and taken apart with a
+    <tuple_pattern> (sections 3, 5 and 5.2). Settled — including that there
+    is no "()" and no one-member tuple, that "null" is what an empty one
+    would have been, and that the trailing comma is a value's and not a
+    type's. Two things it does not say. A tuple has no place to be
+    destructured but a match arm, since a <var_head> takes a <binding_name>
+    and not a pattern, so "let (a, b) = p" is not written. And a tuple on
+    the left of an "=" is a <tuple_expr> like any other, so "(a, b) = (b, a)"
+    parses; whether the swap it looks like is what it means, or whether the
+    parser refuses it as it refuses any other left side that is not a place,
+    is not decided here.
   - A constant is evaluable when a "const fn" is what it calls, and a const
     fn may use anything workable out at compile time — locals, mutation,
     loops, references to its own values, other const fns — the one rule

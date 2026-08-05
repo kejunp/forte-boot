@@ -33,6 +33,10 @@ pub struct Lexer {
     prev_ends_stmt: bool,
     prev_was_brace: bool,
 
+    /// Whether a `.` stands in front of the token being scanned, which is what
+    /// keeps `t.0.1` two tuple indexes rather than a float. See `read_number`.
+    prev_was_dot:   bool,
+
     // Generic argument list state.
     generic_depth:     usize,
     last_was_name:     bool,
@@ -67,6 +71,7 @@ struct State {
     hash_prefix:    bool,
     prev_ends_stmt: bool,
     prev_was_brace: bool,
+    prev_was_dot:   bool,
 
     generic_depth:     usize,
     last_was_name:     bool,
@@ -185,7 +190,10 @@ fn fits_in_generics(t: &TokType) -> bool {
 /// Characters that continue the previous line rather than starting a new
 /// statement, so no semicolon is inserted before them.
 fn starts_continuation(c: char) -> bool {
-    matches!(c, '.' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '&' | '|' | ',' | ':')
+    matches!(
+        c,
+        '.' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '&' | '|' | '^' | ',' | ':'
+    )
 }
 
 /// The ones that still continue a line ending in the `}` of a *block*.
@@ -399,6 +407,7 @@ impl Lexer {
             // Nothing precedes the first token, and a statement may start there.
             prev_ends_stmt: true,
             prev_was_brace: false,
+            prev_was_dot:   false,
 
             generic_depth:     0,
             last_was_name:     false,
@@ -454,6 +463,7 @@ impl Lexer {
             hash_prefix:    self.hash_prefix,
             prev_ends_stmt: self.prev_ends_stmt,
             prev_was_brace: self.prev_was_brace,
+            prev_was_dot:   self.prev_was_dot,
 
             generic_depth:     self.generic_depth,
             last_was_name:     self.last_was_name,
@@ -485,6 +495,7 @@ impl Lexer {
         self.hash_prefix = s.hash_prefix;
         self.prev_ends_stmt = s.prev_ends_stmt;
         self.prev_was_brace = s.prev_was_brace;
+        self.prev_was_dot = s.prev_was_dot;
 
         self.generic_depth = s.generic_depth;
         self.last_was_name = s.last_was_name;
@@ -539,7 +550,7 @@ impl Lexer {
             // The statement is over, so nothing it opened is still pending.
             self.pending_header = false;
             self.pending_entry_body = false;
-            return Tok { toktype: TokType::Semicolon, line, col };
+            return Tok { toktype: TokType::Semicolon, line, col, len: 0 };
         }
 
         // What stands in front of this token, which is what decides a `{`.
@@ -548,6 +559,11 @@ impl Lexer {
         let after_hash = self.hash_prefix;
         let value_only = !self.prev_ends_stmt && !(self.prev_was_brace && !self.in_entry_body());
 
+        // Where the token starts, so that its width can be had from how far the
+        // scan moves rather than from what it produced. Taken after the
+        // whitespace and any `->` are behind us, so it is the first character
+        // the token was written with.
+        let start = self.index;
         let mut tok = self.scan_token();
 
         // A `>` only closes a generic if one was open; that also makes it the
@@ -591,6 +607,9 @@ impl Lexer {
         self.prev_ends_stmt = matches!(tok.toktype, TokType::Semicolon | TokType::FatArrow);
         self.prev_was_brace =
             matches!(tok.toktype, TokType::LCurlyBracket | TokType::RCurlyBracket);
+        // Only the lone `.`: the dots of a range are their own token, so
+        // `0..0.5` keeps its float.
+        self.prev_was_dot = tok.toktype == TokType::Dot;
         // Set for the `{` of a struct, map or set literal, and reported to the
         // parser as `LCurlyValue` once the rest of the state is up to date.
         let mut opens_value = false;
@@ -620,7 +639,18 @@ impl Lexer {
                 }
             }
             // A written separator ends the statement, as an inserted one does.
-            TokType::Semicolon | TokType::Comma => {
+            TokType::Semicolon => {
+                self.pending_header = false;
+                self.pending_entry_body = false;
+            }
+            // A `,` ends one too, but only where it stands at the header's own
+            // bracket depth. The commas of a parameter list, of an argument
+            // list and of a tuple type are inside a bracket the header itself
+            // opened -- they separate nothing it has finished, and the body is
+            // still to come: `fn divmod(a: i32, b: i32): (i32, i32) {`. A
+            // shallower depth than the header's means the bracket it stood in
+            // has closed and the header went with it.
+            TokType::Comma if self.bracket_depth <= self.header_depth => {
                 self.pending_header = false;
                 self.pending_entry_body = false;
             }
@@ -673,6 +703,13 @@ impl Lexer {
         if opens_value {
             tok.toktype = TokType::LCurlyValue;
         }
+        // What the scan consumed is what was written: a `>` that split off a
+        // `>>` moved one character and is one wide, and an EOF moved none.
+        //
+        // The one place a width is worked out. Every `Tok` a scan builds leaves
+        // it at zero, because none of them knows where its own token began --
+        // that is `start` above, and it is only in scope here.
+        tok.len = self.index - start;
         tok
     }
 
@@ -809,9 +846,10 @@ impl Lexer {
             let tok = self.scan_token();
             prev_can_end = can_end_statement(&tok.toktype);
             // Kept up to date through the look so a `&&` inside the body reads
-            // the same here as it will when the body is really scanned. The
-            // rewind below puts it back.
+            // the same here as it will when the body is really scanned, and a
+            // `.0` the same. The rewind below puts them back.
             self.last_ends_operand = ends_an_operand(&tok.toktype);
+            self.prev_was_dot = tok.toktype == TokType::Dot;
             match tok.toktype {
                 TokType::LParen | TokType::LBracket | TokType::LCurlyBracket => depth += 1,
                 TokType::RParen | TokType::RBracket => depth = depth.saturating_sub(1),
@@ -938,7 +976,7 @@ impl Lexer {
 
         let c = match self.peek_char() {
             Some(c) => c,
-            None => return Tok { toktype: TokType::EOF, line, col },
+            None => return Tok { toktype: TokType::EOF, line, col, len: 0 },
         };
 
         if c.is_ascii_digit() {
@@ -972,7 +1010,7 @@ impl Lexer {
         let col = self.col;
         let c = match self.advance() {
             Some(c) => c,
-            None => return Tok { toktype: TokType::EOF, line, col },
+            None => return Tok { toktype: TokType::EOF, line, col, len: 0 },
         };
 
         let toktype = match c {
@@ -1037,6 +1075,16 @@ impl Lexer {
                 else { TokType::Pipe }
             }
 
+            // `^` is exclusive or on the bits and `^^` the same on two
+            // booleans. Neither `&`'s question nor `|`'s arises: nothing is
+            // written with a prefix `^`, so what stands in front of it decides
+            // nothing and a doubled one is always the logical operator.
+            '^' => {
+                if self.eat('^') { TokType::Xor }
+                else if self.eat('=') { TokType::CaretEquals }
+                else { TokType::Caret }
+            }
+
             '(' => TokType::LParen,
             ')' => TokType::RParen,
             '[' => TokType::LBracket,
@@ -1060,7 +1108,7 @@ impl Lexer {
             _ => TokType::Error(format!("Unexpected character '{}'", c)),
         };
 
-        Tok { toktype, line, col }
+        Tok { toktype, line, col, len: 0 }
     }
 
     /// Skips whitespace, reporting whether any of it was a line break.
@@ -1087,17 +1135,17 @@ impl Lexer {
         self.advance(); // opening quote
         while let Some(c) = self.advance() {
             if c == quote {
-                return Tok { toktype: TokType::StringLiteral(s), line, col };
+                return Tok { toktype: TokType::StringLiteral(s), line, col, len: 0 };
             } else if c == '\\' && !is_backtick {
                 match self.read_escape() {
                     Ok(ch) => s.push(ch),
-                    Err(e) => return Tok { toktype: TokType::Error(e), line, col },
+                    Err(e) => return Tok { toktype: TokType::Error(e), line, col, len: 0 },
                 }
             } else {
                 s.push(c);
             }
         }
-        Tok { toktype: TokType::Error("Unterminated string".to_string()), line, col }
+        Tok { toktype: TokType::Error("Unterminated string".to_string()), line, col, len: 0 }
     }
 
     fn read_char(&mut self) -> Tok {
@@ -1106,15 +1154,15 @@ impl Lexer {
         self.advance(); // opening quote
         let value = match self.advance() {
             Some('\'') => {
-                return Tok { toktype: TokType::Error("Empty character literal".to_string()), line, col };
+                return Tok { toktype: TokType::Error("Empty character literal".to_string()), line, col, len: 0 };
             }
             Some('\\') => match self.read_escape() {
                 Ok(c) => c,
-                Err(e) => return Tok { toktype: TokType::Error(e), line, col },
+                Err(e) => return Tok { toktype: TokType::Error(e), line, col, len: 0 },
             },
             Some(c) => c,
             None => {
-                return Tok { toktype: TokType::Error("Unterminated character literal".to_string()), line, col };
+                return Tok { toktype: TokType::Error("Unterminated character literal".to_string()), line, col, len: 0 };
             }
         };
 
@@ -1133,10 +1181,11 @@ impl Lexer {
                 toktype: TokType::Error("Character literal must contain exactly one character".to_string()),
                 line,
                 col,
+                len: 0,
             };
         }
         self.advance(); // closing quote
-        Tok { toktype: TokType::CharLiteral(value), line, col }
+        Tok { toktype: TokType::CharLiteral(value), line, col, len: 0 }
     }
 
     /// Decodes one escape sequence. The leading `\` is already consumed.
@@ -1215,6 +1264,11 @@ impl Lexer {
             }
         }
 
+        // A number written just after a `.` is a tuple index, and a whole one:
+        // the second `.` of `t.0.1` opens the next index rather than a decimal
+        // point, and there is no float a lone `.` can stand in front of.
+        let index = self.prev_was_dot;
+
         let mut is_float = false;
         let mut num_str = String::new();
         while let Some(c) = self.peek_char() {
@@ -1226,7 +1280,9 @@ impl Lexer {
                 // value. It cannot lead, since a word starting with `_` was
                 // read as an identifier long before this.
                 self.advance();
-            } else if c == '.' && !is_float && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit()) {
+            } else if c == '.' && !is_float && !index
+                && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit())
+            {
                 // Only the first '.' with a digit behind it belongs to the number;
                 // `1.foo` stays an int followed by a Dot.
                 is_float = true;
@@ -1241,33 +1297,38 @@ impl Lexer {
         // only appear here once `is_float` is set, so this catches a repeated
         // decimal point without touching `1..2`, where the dots are a range.
         if let Some(c) = self.peek_char() {
-            let bad_dot = c == '.' && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit());
+            let bad_dot = !index
+                && c == '.'
+                && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit());
             if bad_dot || c.is_alphabetic() {
                 self.consume_literal_tail();
                 return Tok {
                     toktype: TokType::Error(format!("Malformed number literal '{}'", num_str)),
                     line,
                     col,
+                    len: 0,
                 };
             }
         }
 
         if is_float {
             match num_str.parse::<f64>() {
-                Ok(v) => Tok { toktype: TokType::FloatLiteral(v), line, col },
+                Ok(v) => Tok { toktype: TokType::FloatLiteral(v), line, col, len: 0 },
                 Err(_) => Tok {
                     toktype: TokType::Error(format!("Invalid float literal '{}'", num_str)),
                     line,
                     col,
+                    len: 0,
                 },
             }
         } else {
             match num_str.parse::<i64>() {
-                Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col },
+                Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col, len: 0 },
                 Err(_) => Tok {
                     toktype: TokType::Error(format!("Integer literal '{}' out of range for i64", num_str)),
                     line,
                     col,
+                    len: 0,
                 },
             }
         }
@@ -1301,6 +1362,7 @@ impl Lexer {
                 toktype: TokType::Error(format!("Invalid digit in base-{} literal '0{}{}'", radix, prefix, digits)),
                 line,
                 col,
+                len: 0,
             };
         }
         if digits.is_empty() {
@@ -1308,14 +1370,16 @@ impl Lexer {
                 toktype: TokType::Error(format!("Expected digits after '0{}'", prefix)),
                 line,
                 col,
+                len: 0,
             };
         }
         match i64::from_str_radix(&digits, radix) {
-            Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col },
+            Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col, len: 0 },
             Err(_) => Tok {
                 toktype: TokType::Error(format!("Integer literal '0{}{}' out of range for i64", prefix, digits)),
                 line,
                 col,
+                len: 0,
             },
         }
     }
@@ -1340,11 +1404,12 @@ impl Lexer {
                 toktype: TokType::Error("Expected an identifier".to_string()),
                 line,
                 col,
+                len: 0,
             };
         }
 
         let toktype = keyword_of(&word).unwrap_or(TokType::Identifier(word));
-        Tok { toktype, line, col }
+        Tok { toktype, line, col, len: 0 }
     }
 
     /// Swallow the rest of a malformed literal so the next token starts clean.
