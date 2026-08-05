@@ -12,5 +12,5 @@ mod comments;
 /// resolved and typed, which is a thing only codegen holds. See docs/prose.txt
 /// on `@symbol`.
 pub fn preprocess(input: &str) -> String {
-    return comments::strip_comments(input);
+    comments::strip_comments(input)
 }
