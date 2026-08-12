@@ -1,10 +1,9 @@
-//! What the arms build, checked against the trees they are meant to make.
+// What the arms build, checked against the trees they are meant to make.
 
 use super::*;
 
-/// Parses `source` and gives back the parser -- which is the arena -- and
-/// the root. A tree is the two together: a node names its children by
-/// handle, so neither half says anything alone.
+// Parses `source` and gives back the parser -- which is the arena -- and the
+// root. A node names its children by handle, so neither half says much alone.
 fn tree(source: &str) -> (Parser, ASTNode) {
     let mut p = Parser::new(lexer::Lexer::new(source));
     let root = p.parse();
@@ -12,7 +11,7 @@ fn tree(source: &str) -> (Parser, ASTNode) {
     (p, root)
 }
 
-/// The one item of a file that has one.
+// The one item of a file that has one.
 fn only_item(source: &str) -> (Parser, ASTNode) {
     let (p, root) = tree(source);
     let items = match &root.kind {
@@ -24,8 +23,8 @@ fn only_item(source: &str) -> (Parser, ASTNode) {
     (p, item)
 }
 
-/// The statements of `fn main`'s body, for a test about statements rather
-/// than about what has to be written around them.
+// The statements of `fn main`'s body, for a test about statements rather than
+// about what has to be written around them.
 fn statements(body: &str) -> (Parser, Vec<ASTNodeId>) {
     let source = format!("fn main() {{\n{}\n}}\n", body);
     let (p, item) = only_item(&source);
@@ -94,9 +93,8 @@ fn precedence_is_spent_on_the_shape() {
     }
 }
 
-/// The bitwise pair, and where they sit among the rest: tighter than a
-/// comparison and looser than a shift, so the reading everyone means is
-/// the one the tree has.
+// The bitwise pair, and where they sit: tighter than a comparison and looser
+// than a shift.
 #[test]
 fn the_bitwise_operators_bind_between_a_shift_and_a_comparison() {
     let binary = |p: &Parser, id: ASTNodeId| match &p.get_node(id).kind {
@@ -181,8 +179,8 @@ fn the_bitwise_operators_bind_between_a_shift_and_a_comparison() {
     }
 }
 
-/// Every compound assignment reaches the tree as the operator it names.
-/// `^=` is the newest of them and the one the grammar was missing.
+// Every compound assignment reaches the tree as the operator it names. `^=` is
+// the newest, and the one the grammar was missing.
 #[test]
 fn a_compound_assignment_carries_its_operator() {
     for (source, op) in [
@@ -232,7 +230,7 @@ fn a_postfix_takes_everything_to_its_left() {
 
 #[test]
 fn a_declaration_carries_what_was_written_in_front_of_it() {
-    let (p, item) = only_item("@repr(C)\npublic const unsafe fn f(x: i32): i32 {\n    x\n}\n");
+    let (p, item) = only_item("%repr(C)\npublic const unsafe fn f(x: i32): i32 {\n    x\n}\n");
     match &item.kind {
         ASTNodeKind::Fn { attrs, vis, is_const, is_unsafe, name, params, ret, .. } => {
             assert_eq!(attrs.len(), 1);
@@ -425,11 +423,11 @@ fn a_node_stands_where_it_was_written() {
 }
 
 #[test]
-fn nothing_a_finished_tree_holds_is_scaffolding() {
+fn check_tree() {
     // Every node the root can reach is a node of the language: no `ASTMark`
     // survived the rule that took its word, and no hole was left unfilled.
     let source = "import a::b as c;\n\
-                  @attr(1)\n\
+                  %attr(1)\n\
                   public fn f<T: Ord>(this, x: *i32[2]): (bool, i32) {\n\
                       let y = -x.a as i64 .. 3;\n\
                       let t: (i32, str) = (1, \"a\");\n\
@@ -452,6 +450,8 @@ fn nothing_a_finished_tree_holds_is_scaffolding() {
                       struct S<T> { private v: T[] }\n\
                       trait W { fn w<T>(this, t: T): str where T: Ord; }\n\
                       impl W for S<i32> { private fn w(this): str { P { r: 1 } } }\n\
+                      struct H<~a, ~b: ~a, T: Ord + ~a> { v: &~a T[], w: *~b T }\n\
+                      fn h<~a, T>(x: &~a T, y: &Map<~a, T>): &~a T where T: ~a, ~a: ~b;\n\
                   }\n";
     let (p, root) = tree(source);
     let mut seen = vec![false; p.nodes.len()];
@@ -503,8 +503,8 @@ fn a_recovered_parse_still_builds_a_tree() {
     }
 }
 
-/// Every handle a node names. One arm per kind that holds any, so that a
-/// kind added to the tree is not walked past in silence.
+// Every handle a node names. One arm per kind that holds any, so a kind added
+// to the tree is not walked past in silence.
 fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
     let mut out = Vec::new();
     match kind {
@@ -573,12 +573,22 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::Run(id)
         | ASTNodeKind::ExprStmt(id)
         | ASTNodeKind::Unsafe(id) => out.push(*id),
-        ASTNodeKind::GenericParam { bounds, .. } => out.extend_from_slice(bounds),
+        ASTNodeKind::MacroDecl { attrs, params, body, .. } => {
+            out.extend_from_slice(attrs);
+            out.extend_from_slice(params);
+            out.push(*body);
+        }
+        ASTNodeKind::MacroCall { args, .. } => out.extend_from_slice(args),
+        ASTNodeKind::GenericParam { bounds, .. }
+        | ASTNodeKind::LifetimeParam { bounds, .. } => out.extend_from_slice(bounds),
         ASTNodeKind::WherePred { ty, bounds } => {
             out.push(*ty);
             out.extend_from_slice(bounds);
         }
-        ASTNodeKind::RefType { inner, .. } => out.push(*inner),
+        ASTNodeKind::RefType { life, inner, .. } => {
+            out.extend(life.iter().copied());
+            out.push(*inner);
+        }
         ASTNodeKind::Array { elem, len } => {
             out.push(*elem);
             out.push(*len);
@@ -670,6 +680,9 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::Infer
         | ASTNodeKind::Literal(_)
         | ASTNodeKind::Ident(_)
+        | ASTNodeKind::Lifetime(_)
+        | ASTNodeKind::MacroVar(_)
+        | ASTNodeKind::MacroParam { .. }
         | ASTNodeKind::This
         | ASTNodeKind::Name(_)
         | ASTNodeKind::Continue
@@ -677,4 +690,102 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::LitPat { .. } => {}
     }
     out
+}
+
+// A lifetime reaches the tree in the four places it is written: a parameter of
+// the declaration, an argument of a type, in front of a referent, and as a
+// bound. The `~` is the lexer's, so what the tree holds is the name alone.
+#[test]
+fn a_lifetime_reaches_the_tree_where_it_was_written() {
+    let (p, item) = only_item("fn longest<~a, T: ~a>(x: &~a str): &~a T;\n");
+    let (generics, params, ret) = match &item.kind {
+        ASTNodeKind::Fn { generics, params, ret, .. } => {
+            (generics.clone(), params.clone(), ret.expect("a return type"))
+        }
+        other => panic!("built {:?}", other),
+    };
+
+    // `<~a, T: ~a>`: a lifetime parameter, then a type parameter bounded by it.
+    assert_eq!(generics.len(), 2);
+    match &p.get_node(generics[0]).kind {
+        ASTNodeKind::LifetimeParam { name, bounds } => {
+            assert_eq!(name, "a");
+            assert!(bounds.is_empty());
+        }
+        other => panic!("the first parameter built {:?}", other),
+    }
+    match &p.get_node(generics[1]).kind {
+        ASTNodeKind::GenericParam { name, bounds } => {
+            assert_eq!(name, "T");
+            assert_eq!(bounds.len(), 1);
+            // A bound is a type or a lifetime, and this one is the lifetime.
+            assert_eq!(p.get_node(bounds[0]).kind, ASTNodeKind::Lifetime("a".to_string()));
+        }
+        other => panic!("the second parameter built {:?}", other),
+    }
+
+    // `x: &~a str`: the lifetime hangs off the reference, not off the referent.
+    let ty = match &p.get_node(params[0]).kind {
+        ASTNodeKind::Param { ty: Some(id), .. } => *id,
+        other => panic!("a parameter built {:?}", other),
+    };
+    match &p.get_node(ty).kind {
+        ASTNodeKind::RefType { op, life, inner } => {
+            assert_eq!(*op, ASTRefOp::Imm);
+            let life = life.expect("a written lifetime");
+            assert_eq!(p.get_node(life).kind, ASTNodeKind::Lifetime("a".to_string()));
+            assert_eq!(p.get_node(*inner).kind, ASTNodeKind::Prim(ASTPrimType::Str));
+        }
+        other => panic!("a reference type built {:?}", other),
+    }
+    assert!(matches!(p.get_node(ret).kind, ASTNodeKind::RefType { life: Some(_), .. }));
+}
+
+// A reference with no lifetime written is the usual one, and says so with a
+// `None` rather than with a name the parse invented.
+#[test]
+fn a_reference_with_no_lifetime_written_holds_none() {
+    let (p, item) = only_item("fn f(x: &str);\n");
+    let params = match &item.kind {
+        ASTNodeKind::Fn { params, .. } => params.clone(),
+        other => panic!("built {:?}", other),
+    };
+    let ty = match &p.get_node(params[0]).kind {
+        ASTNodeKind::Param { ty: Some(id), .. } => *id,
+        other => panic!("a parameter built {:?}", other),
+    };
+    assert!(matches!(p.get_node(ty).kind, ASTNodeKind::RefType { life: None, .. }));
+}
+
+// A lifetime is a type argument like any other, and a `where` predicate takes
+// one on either side of its colon.
+#[test]
+fn a_lifetime_is_an_argument_and_a_predicate() {
+    let (p, item) = only_item("struct Parser<~a> {\n    text: &~a str,\n}\n");
+    match &item.kind {
+        ASTNodeKind::Struct { generics, fields, .. } => {
+            assert_eq!(generics.len(), 1);
+            assert_eq!(fields.len(), 1);
+            assert!(matches!(
+                p.get_node(generics[0]).kind,
+                ASTNodeKind::LifetimeParam { .. }
+            ));
+        }
+        other => panic!("built {:?}", other),
+    }
+
+    let (p, item) = only_item("fn f<~a, ~b>(x: &~a i32) where ~a: ~b;\n");
+    let wheres = match &item.kind {
+        ASTNodeKind::Fn { wheres, .. } => wheres.clone(),
+        other => panic!("built {:?}", other),
+    };
+    assert_eq!(wheres.len(), 1);
+    match &p.get_node(wheres[0]).kind {
+        ASTNodeKind::WherePred { ty, bounds } => {
+            assert_eq!(p.get_node(*ty).kind, ASTNodeKind::Lifetime("a".to_string()));
+            assert_eq!(bounds.len(), 1);
+            assert_eq!(p.get_node(bounds[0]).kind, ASTNodeKind::Lifetime("b".to_string()));
+        }
+        other => panic!("a where predicate built {:?}", other),
+    }
 }

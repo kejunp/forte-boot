@@ -5,10 +5,12 @@ pub enum TokType {
     I16,
     I32,
     I64,
+    I128,
     U8,
     U16,
     U32,
     U64,
+    U128,
     F32,
     F64,
     Bool,
@@ -31,6 +33,8 @@ pub enum TokType {
     Import,
     Enum,
     Namespace,
+    // Declares a macro: `macro foo($x:expr) { .. }`.
+    Macro,
     // Marks a fn whose caller carries an obligation the checker cannot see,
     // and prefixes the statement — usually a block — that discharges one.
     Unsafe,
@@ -67,6 +71,23 @@ pub enum TokType {
     FloatLiteral(f64),
     StringLiteral(String),
     CharLiteral(char),
+
+    // A macro invocation's name, `@println`, without the `@`. One token for
+    // the same reason a lifetime is: `@` spells nothing else now that the
+    // attributes have moved to `%`, so a space could change no reading.
+    MacroName(String),
+    // An attribute's name, `%repr`, without the `%`. `%` is the remainder
+    // operator as well, and where it stands is what tells the two apart: an
+    // operand before it makes it the operator, and anything else makes it this.
+    AttrName(String),
+    // A macro's parameter where the body spells it, `$x`, without the `$`.
+    MacroParam(String),
+
+    // A lifetime, `~a`, carrying its name without the `~`. One token and not
+    // two: `~` spells nothing else in the language, so there is no reading of
+    // it a space could change, and gluing the name on is what keeps `~ a` from
+    // being a lifetime written oddly.
+    Lifetime(String),
 
     // Arithmetic operators
     Plus,
@@ -150,9 +171,8 @@ pub enum TokType {
     Semicolon,
     FatArrow,
     // `#` has one use left: `#{` makes a map or set literal hashed. Attributes
-    // are `@`.
+    // are `%name` and macros `@name`, and neither leaves a sigil of its own.
     HashTag,
-    At,
 
     // Special
     EOF,
@@ -163,16 +183,10 @@ pub enum TokType {
 pub struct Tok {
     pub line:    usize,
     pub col:     usize,
-    /// How many characters of the source the token was written with, so that a
-    /// diagnostic can underline the whole of it rather than its first column.
-    ///
-    /// Counted from the input and not from the spelling, because a token does
-    /// not always keep what it was written as: `0x10` and `16` are the same
-    /// `IntLiteral`, and a string literal has lost its quotes and its escapes.
-    ///
-    /// Zero where nothing was written -- end of file, and the separators the
-    /// lexer inserts at the end of a line. Those mark a place rather than a
-    /// span, and a reader is pointed at it with a single caret.
+    // How many characters the token was written with, so a diagnostic can
+    // underline the whole of it. Counted from the input and not the spelling:
+    // `0x10` and `16` are the same `IntLiteral`. Zero where nothing was written
+    // -- end of file, and inserted separators -- which is a place, not a span.
     pub len:     usize,
     pub toktype: TokType,
 }

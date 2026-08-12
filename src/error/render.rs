@@ -1,46 +1,33 @@
-//! Putting a diagnostic on the page.
-//!
-//! The one place in the compiler that knows what a report looks like. A phase
-//! hands over what it found and this decides the gutter, the carets and the
-//! order, so that a message from the lexer and a message from the type checker
-//! are read the same way.
-//!
-//! The shape of one:
-//!
-//! ```text
-//! error: expected `,`, `[` or `}`, found `;`
-//!  --> input.fc:2:11
-//!   |
-//! 2 |     x: i32;
-//!   |           ^ while parsing a field
-//!   |
-//!   = help: use `,` to separate entries
-//!
-//! note: unclosed `{` opened here
-//!  --> input.fc:1:10
-//!   |
-//! 1 | struct P {
-//!   |          ^
-//! ```
+// The one place that knows what a report looks like: a phase hands over what
+// it found, this decides the gutter, the carets and the order.
+//
+//     error: expected `,`, `[` or `}`, found `;`
+//      --> input.fc:2:11
+//       |
+//     2 |     x: i32;
+//       |           ^ while parsing a field
+//       |
+//       = help: use `,` to separate entries
+//
+//     note: unclosed `{` opened here
+//      --> input.fc:1:10
+//       |
+//     1 | struct P {
+//       |          ^
 
 use super::diagnostic::Diagnostic;
 use super::source::Source;
 use super::span::Span;
 
-/// How many columns a tab stands for. The source is quoted with its tabs
-/// expanded, so that a caret counted in characters lands under the character
-/// it belongs to however the line was indented.
+// How many columns a tab stands for. The source is quoted with tabs expanded,
+// so a caret counted in characters lands under the character it belongs to.
 const TAB_WIDTH: usize = 4;
 
-/// One diagnostic, laid out.
-///
-/// No trailing newline: several of these are printed one after another, and
-/// the blank line between them is the printer's doing rather than the
-/// diagnostic's.
+// One diagnostic, laid out. No trailing newline -- the blank line between two
+// of them is the printer's doing.
 pub fn diagnostic(d: &Diagnostic, source: &Source) -> String {
-    // Every line number the report will show, so that the bar stands in the
-    // same column throughout -- a note about a line further up must not step
-    // out of line with what it is a note about.
+    // The widest line number shown, so the bar stands in the same column
+    // throughout -- a note must not step out of line with its diagnostic.
     let widest = d
         .secondary
         .iter()
@@ -65,11 +52,8 @@ pub fn diagnostic(d: &Diagnostic, source: &Source) -> String {
     out.trim_end().to_string()
 }
 
-/// The `--> where` line, the quoted source, and the caret under it.
-///
-/// Shared by the diagnostic and each of its secondaries, because a secondary
-/// is a small diagnostic in its own right: the same three lines, with nothing
-/// but the caret's label to tell them apart.
+// The `--> where` line, the quoted source, and the caret under it. Shared with
+// the secondaries: a secondary is the same three lines, minus the label.
 fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> String {
     let mut out = format!(
         "{:w$}--> {}:{}:{}\n",
@@ -80,8 +64,8 @@ fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> S
         w = gutter
     );
 
-    // A span past the end of the source has nowhere to point. The line above
-    // has already said where it was, which is all that is left to say.
+    // A span past the end of the source has nowhere to point; the line above
+    // already said where it was.
     let text = match source.line(span.line) {
         Some(text) => text,
         None => return out,
@@ -89,8 +73,7 @@ fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> S
 
     let (shown, offset) = expand_tabs(&text, span.col);
     // What is left of the line to underline. A token can run past the end of
-    // one -- an unterminated string runs to the end of the file -- and the
-    // caret stops where the reader can still see it.
+    // one -- an unterminated string does -- so the caret stops where it shows.
     let rest = shown.chars().count().saturating_sub(offset);
     let width = span.len.clamp(1, rest.max(1));
 
@@ -98,8 +81,7 @@ fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> S
     caret.push_str(&"~".repeat(width - 1));
 
     out.push_str(&format!("{:w$} |\n", "", w = gutter));
-    // Trimmed, so that quoting a blank line -- which is what the end of a file
-    // is -- does not leave a bar with whitespace hanging off it.
+    // Trimmed, so quoting a blank line does not leave whitespace off the bar.
     let quoted = format!("{:>w$} | {}", span.line, shown, w = gutter);
     out.push_str(quoted.trim_end());
     out.push('\n');
@@ -111,15 +93,10 @@ fn snippet(source: &Source, span: Span, label: Option<&str>, gutter: usize) -> S
     out
 }
 
-/// The line as it will be shown, and how far along it a caret for `col` goes.
-///
-/// A tab is one character to the lexer and several columns on the page, so
-/// both have to be worked out together: the line is quoted with its tabs
-/// spelled out, and the offset is measured in what that quoting produced.
-///
-/// A column past the end of the line -- the end of the file, or a separator
-/// inserted after the last character -- points at the column after it, which
-/// is where the missing thing would have been written.
+// The line as it will be shown, and how far along it a caret for `col` goes.
+// A tab is one character to the lexer and several columns on the page, so both
+// are worked out together. A column past the end of the line points just after
+// it, where the missing thing would have been written.
 fn expand_tabs(text: &str, col: usize) -> (String, usize) {
     let mut shown = String::new();
     let mut offset = 0;
@@ -150,8 +127,8 @@ mod tests {
         s.chars().collect()
     }
 
-    /// The whole shape of one: the message, where it was, the line itself, and
-    /// a caret as wide as the token under the part of it that went wrong.
+    // The whole shape: message, where, the line, and a caret as wide as the
+    // token.
     #[test]
     fn renders_the_line_and_points_at_it() {
         let text = chars("fn main() {\n    let x = 1\n}\n");
@@ -168,7 +145,7 @@ error: expected `;`, found `let`
         );
     }
 
-    /// A warning is the same report under a different word.
+    // A warning is the same report under a different word.
     #[test]
     fn a_warning_says_so() {
         let text = chars("let unused = 1\n");
@@ -184,8 +161,8 @@ warning: `unused` is never read
         );
     }
 
-    /// A secondary is a snippet of its own, and the gutter is wide enough for
-    /// the largest line number shown so that the pair line up.
+    // A secondary is a snippet of its own, and the gutter is wide enough for
+    // the largest line number so the pair line up.
     #[test]
     fn a_secondary_is_shown_where_it_happened() {
         let text = chars("fn main() {\n    f(1, 2\n}\n");
@@ -208,8 +185,8 @@ note: unclosed `(` opened here
         );
     }
 
-    /// Remarks hang off the end in the order they were added, each under a bar
-    /// so that they read as part of the same block.
+    // Remarks hang off the end in order, each under a bar so they read as part
+    // of the same block.
     #[test]
     fn remarks_hang_off_the_end_in_order() {
         let text = chars("struct P {\n    x: i32;\n}\n");
@@ -231,7 +208,7 @@ error: expected `,`, found `;`
         );
     }
 
-    /// More than one place to look, each quoted under its own heading.
+    // More than one place to look, each quoted under its own heading.
     #[test]
     fn every_secondary_gets_a_snippet() {
         let text = chars("fn f() {}\nfn f() {}\nfn f() {}\n");
@@ -261,8 +238,8 @@ note: defined again here
         );
     }
 
-    /// The line the caret sits on is the line as shown, so a tab counts for
-    /// what it takes up on the page and not for the one character it is.
+    // The caret sits on the line as shown, so a tab counts for what it takes
+    // up on the page.
     #[test]
     fn a_tab_is_as_wide_as_it_looks() {
         let text = chars("fn f() {\n\tlet x = ;\n}\n");
@@ -281,8 +258,8 @@ error: expected an expression, found `;`
         );
     }
 
-    /// A token running past the end of its line -- an unterminated string runs
-    /// to the end of the file -- stops where the reader can still see it.
+    // A token running past the end of its line stops where it can still be
+    // seen.
     #[test]
     fn a_caret_stops_at_the_end_of_the_line() {
         let text = chars("let s = \"oops\n");
@@ -298,8 +275,8 @@ error: Unterminated string
         );
     }
 
-    /// The end of the file is a place and not a piece: one caret, in the
-    /// column after the last character written.
+    // The end of the file is a place, not a piece: one caret, in the column
+    // after the last character written.
     #[test]
     fn the_end_of_the_file_gets_one_caret() {
         let text = chars("fn main() {\n    let x = 1\n");
@@ -315,8 +292,7 @@ error: expected `}`, found end of file
         );
     }
 
-    /// A span pointing past the last line says where it was and quotes
-    /// nothing, rather than inventing a line to underline.
+    // A span past the last line says where it was and quotes nothing.
     #[test]
     fn a_span_off_the_end_quotes_nothing() {
         let text = chars("fn f() {}\n");

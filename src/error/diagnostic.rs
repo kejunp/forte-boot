@@ -1,14 +1,11 @@
-//! One thing the compiler has to say, whichever part of it is saying so.
+// One thing the compiler has to say, whichever part of it is saying so.
 
 use super::render;
 use super::source::Source;
 use super::span::Span;
 
-/// How much a diagnostic matters.
-///
-/// What it changes is the word a diagnostic leads with and whether the build
-/// carries on: an error means nothing further downstream can be trusted, and a
-/// warning means the code is taken as written and is worth a second look.
+// How much a diagnostic matters: the word it leads with, and whether the build
+// carries on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -16,7 +13,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// The word it is announced with.
+    // The word it is announced with.
     pub fn word(self) -> &'static str {
         match self {
             Severity::Error => "error",
@@ -25,24 +22,21 @@ impl Severity {
     }
 }
 
-/// Somewhere else the reader has to look, and what it has to do with the
-/// diagnostic that names it.
-///
-/// `text` says what the place is without saying where, because the snippet
-/// under it is what says where: it is finished with `here`, so "unclosed `(`
-/// opened" is what one has to read like.
+// Somewhere else the reader has to look. `text` says what the place is, not
+// where -- the snippet says where -- and is finished with `here`, so it reads
+// like "unclosed `(` opened".
 #[derive(Debug, Clone, PartialEq)]
 pub struct Label {
     pub text: String,
     pub span: Span,
 }
 
-/// A line hung under a diagnostic, after everything that quotes the source.
+// A line hung under a diagnostic, after everything that quotes the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remark {
-    /// What to do about it, where that is worth spelling out.
+    // What to do about it.
     Help,
-    /// Something a reader has to know that is not advice.
+    // Something a reader has to know that is not advice.
     Note,
 }
 
@@ -55,42 +49,31 @@ impl Remark {
     }
 }
 
-/// One thing the compiler has to say.
-///
-/// Built by whichever phase found the problem and laid out by `render`. A
-/// phase says what went wrong, where, and what else is worth looking at; it
-/// says nothing about gutters, carets or the order the parts are printed in,
-/// so that everything the compiler reports comes out looking the same.
-///
-/// Everything past the message and the span is optional, and the plain form --
-/// a message and one span -- is what most of them are.
+// Built by whichever phase found the problem and laid out by `render`: a phase
+// says nothing about gutters, carets or ordering. Everything past the message
+// and the span is optional, and most are just those two.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
     pub severity:  Severity,
-    /// What went wrong, in one line and with no position in it: the position
-    /// is `span`'s to give, and a rendering shows it where it belongs.
+    // One line, with no position in it: the position is `span`'s to give.
     pub message:   String,
-    /// What the message is about -- the piece of source it is against.
+    // The piece of source the message is against.
     pub span:      Span,
-    /// A word or two written beside the caret. What the message says at
-    /// length, this says in the margin, about the same piece of source.
+    // A word or two beside the caret, about the same piece of source.
     pub label:     Option<String>,
-    /// Other places worth showing, each quoted where it stands. A reader
-    /// cannot be pointed at two lines with one caret.
+    // Other places worth showing, each quoted where it stands.
     pub secondary: Vec<Label>,
-    /// The lines hung underneath, in the order they were added.
+    // The lines hung underneath, in the order they were added.
     pub remarks:   Vec<(Remark, String)>,
 }
 
 impl Diagnostic {
-    /// A diagnostic of `severity` about `span`. The builders below add the
-    /// rest, so that the usual one is a single expression:
-    ///
-    /// ```ignore
-    /// Diagnostic::error("expected `,`, found `;`".to_string(), span)
-    ///     .with_label("while parsing a field")
-    ///     .with_help("use `,` to separate entries")
-    /// ```
+    // A diagnostic of `severity` about `span`. The builders below add the rest,
+    // so the usual one is a single expression:
+    //
+    //     Diagnostic::error("expected `,`, found `;`".to_string(), span)
+    //         .with_label("while parsing a field")
+    //         .with_help("use `,` to separate entries")
     pub fn new(severity: Severity, message: String, span: Span) -> Diagnostic {
         Diagnostic {
             severity,
@@ -110,13 +93,13 @@ impl Diagnostic {
         Diagnostic::new(Severity::Warning, message, span)
     }
 
-    /// What to write beside the caret.
+    // What to write beside the caret.
     pub fn with_label(mut self, text: impl Into<String>) -> Diagnostic {
         self.label = Some(text.into());
         self
     }
 
-    /// Another place to quote, under a heading of its own.
+    // Another place to quote, under a heading of its own.
     pub fn with_secondary(mut self, span: Span, text: impl Into<String>) -> Diagnostic {
         self.secondary.push(Label { text: text.into(), span });
         self
@@ -132,13 +115,12 @@ impl Diagnostic {
         self
     }
 
-    /// Whether this is something that stops the build.
+    // Whether this is something that stops the build.
     pub fn is_error(&self) -> bool {
         self.severity == Severity::Error
     }
 
-    /// The message with the source under it, the way a reader wants it. See
-    /// `render` for what the layout is.
+    // The message with the source under it. See `render` for the layout.
     pub fn render(&self, source: &Source) -> String {
         render::diagnostic(self, source)
     }

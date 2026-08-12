@@ -1,14 +1,10 @@
-//! Everything a phase has to say, gathered up.
+// Everything a phase has to say, gathered up.
 
 use super::diagnostic::Diagnostic;
 use super::source::Source;
 
-/// The diagnostics a phase produced, in the order it produced them.
-///
-/// A phase does not stop at the first thing it turns down -- one mistake
-/// hiding the rest of the file is what a reader least wants -- so every one of
-/// them ends up here, and whether any of them was bad enough to stop the build
-/// is `has_errors`'s to answer rather than each phase's to track.
+// The diagnostics a phase produced, in order. A phase does not stop at the
+// first thing it turns down, so every one of them ends up here.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Diagnostics {
     items: Vec<Diagnostic>,
@@ -23,8 +19,8 @@ impl Diagnostics {
         self.items.push(diagnostic);
     }
 
-    /// Takes on everything another phase reported, leaving it empty. What the
-    /// lexer found and what the parser found are one report to a reader.
+    // Takes on everything another phase reported, leaving it empty: what the
+    // lexer found and what the parser found are one report to a reader.
     pub fn absorb(&mut self, other: &mut Diagnostics) {
         self.items.append(&mut other.items);
     }
@@ -41,14 +37,14 @@ impl Diagnostics {
         self.items.is_empty()
     }
 
-    /// Whether anything here stops the build. Warnings do not, so a report
-    /// that is not empty is not the same as a compilation that failed.
+    // Whether anything here stops the build. Warnings do not, so a report that
+    // is not empty is not the same as a compilation that failed.
     pub fn has_errors(&self) -> bool {
         self.items.iter().any(|d| d.is_error())
     }
 
-    /// All of them laid out, with a blank line between so that a run of them
-    /// does not read as one long message.
+    // All of them laid out, blank line between, so a run of them does not read
+    // as one long message.
     pub fn render(&self, source: &Source) -> String {
         self
             .items
@@ -79,7 +75,7 @@ mod tests {
         assert!(report.has_errors());
     }
 
-    /// Two phases, one report, in the order they ran.
+    // Two phases, one report, in the order they ran.
     #[test]
     fn one_report_takes_on_another() {
         let text: Vec<char> = "let x = 1\nlet y = 2\n".chars().collect();

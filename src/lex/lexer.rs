@@ -33,8 +33,8 @@ pub struct Lexer {
     prev_ends_stmt: bool,
     prev_was_brace: bool,
 
-    /// Whether a `.` stands in front of the token being scanned, which is what
-    /// keeps `t.0.1` two tuple indexes rather than a float. See `read_number`.
+    // Whether a `.` stands in front of the token being scanned, which keeps
+    // `t.0.1` two tuple indexes rather than a float. See `read_number`.
     prev_was_dot:   bool,
 
     // Generic argument list state.
@@ -44,8 +44,8 @@ pub struct Lexer {
     last_was_type_end: bool,
 }
 
-/// Everything `next_token` mutates, so that a lookahead can be rolled back.
-/// The input itself never changes, so it stays out of the snapshot.
+// Everything `next_token` mutates, so a lookahead can be rolled back. The input
+// never changes, so it stays out of the snapshot.
 #[derive(Clone, Copy)]
 struct State {
     index: usize,
@@ -79,23 +79,19 @@ struct State {
     last_was_type_end: bool,
 }
 
-/// What a look inside a `{` says about the kind of body it opens. See
-/// `scan_brace_body`.
+// What a look inside a `{` says about the body it opens. See `scan_brace_body`.
 enum BraceScan {
-    /// A `,` or `:` turned up between its entries: a map or a set.
+    // A `,` or `:` turned up between its entries: a map or a set.
     Collection,
-    /// A `;` or a keyword no expression can start with: statements.
+    // A `;` or a keyword no expression can start with: statements.
     Block,
-    /// Neither — `{}` or `{ x }`, which read equally well as both.
+    // Neither — `{}` or `{ x }`, which read equally well as both.
     Undecided,
 }
 
-/// Whether a token ends an operand — a value or a type — and so stands where an
-/// *infix* operator may follow.
-///
-/// This is what tells the two readings of `&&` apart: an operand in front of it
-/// makes it the logical operator, and no operand makes it two prefix `&`. See
-/// `read_operator`.
+// Whether a token ends an operand — a value or a type — and so stands where an
+// infix operator may follow. This tells the two readings of `&&` apart: an
+// operand in front makes it the logical operator, none makes it two prefix `&`.
 fn ends_an_operand(t: &TokType) -> bool {
     matches!(
         t,
@@ -111,23 +107,24 @@ fn ends_an_operand(t: &TokType) -> bool {
             | TokType::Null
             // A wildcard names a binding, so it stands where a name stands.
             | TokType::Underscore
+            // `$x` stands where a name stands too, in whichever of the three
+            // positions its fragment lets it.
+            | TokType::MacroParam(_)
             | TokType::RParen
             | TokType::RBracket
             | TokType::RCurlyBracket
             // A type name ends a type, which is an operand for this purpose:
             // the `&&` of a bound list follows one.
-            | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
-            | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
+            | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64 | TokType::I128
+            | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64 | TokType::U128
             | TokType::F32 | TokType::F64
             | TokType::Bool | TokType::Char | TokType::Str | TokType::Never
     )
 }
 
-/// Whether a token can legally end a statement, making it a candidate for a
-/// separator to be inserted after it at a newline.
-///
-/// Everything that ends an operand does, and three keywords and a `..` besides,
-/// which end a statement without being anything an operator could take.
+// Whether a token can end a statement, making it a candidate for an inserted
+// separator at a newline. Everything that ends an operand does, plus three
+// keywords and a `..` that no operator could take.
 fn can_end_statement(t: &TokType) -> bool {
     ends_an_operand(t)
         || matches!(
@@ -142,13 +139,10 @@ fn can_end_statement(t: &TokType) -> bool {
         )
 }
 
-/// Tokens that can legally appear inside a `<...>` type argument list.
-///
-/// `<` is ambiguous — `Vec<i32>` opens a generic, `a < b` is a comparison — and
-/// a lexer cannot tell them apart. So the lexer optimistically opens a generic
-/// context after a name and abandons it the moment something turns up that no
-/// type argument could contain. Only `>>` splitting and semicolon insertion
-/// depend on the guess, so a wrong one stays cheap.
+// Tokens that can appear inside a `<...>` type argument list. `<` is ambiguous
+// — `Vec<i32>` opens a generic, `a < b` compares — so the lexer opens a generic
+// context after a name and abandons it at the first token no type argument could
+// contain. Only `>>` splitting and semicolon insertion depend on the guess.
 fn fits_in_generics(t: &TokType) -> bool {
     matches!(
         t,
@@ -157,6 +151,11 @@ fn fits_in_generics(t: &TokType) -> bool {
             // Trait bounds, e.g. `<T: Show + Clone>`.
             | TokType::Colon
             | TokType::Plus
+            // A lifetime parameter or argument, e.g. `<~a>`, `<~a, T>`, and the
+            // `~a` of a `&~a i32` nested in one.
+            | TokType::Lifetime(_)
+            // A macro's parameter standing in for a type: `Vec<$t>`.
+            | TokType::MacroParam(_)
             // An inferred type argument, e.g. `Vec<_>`.
             | TokType::Underscore
             // A qualified type name, e.g. `<limits::Kind>`. A type path is all
@@ -178,8 +177,8 @@ fn fits_in_generics(t: &TokType) -> bool {
             // here: a `<` in front of one was a comparison.
             | TokType::Ampersand
             | TokType::Star
-            | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64
-            | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64
+            | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64 | TokType::I128
+            | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64 | TokType::U128
             | TokType::F32 | TokType::F64
             | TokType::Bool | TokType::Char | TokType::Str | TokType::Never
             // `null` names a type as well as a value: `Map<str, null>`.
@@ -187,8 +186,8 @@ fn fits_in_generics(t: &TokType) -> bool {
     )
 }
 
-/// Characters that continue the previous line rather than starting a new
-/// statement, so no semicolon is inserted before them.
+// Characters that continue the previous line rather than starting a new
+// statement, so no semicolon is inserted before them.
 fn starts_continuation(c: char) -> bool {
     matches!(
         c,
@@ -196,45 +195,27 @@ fn starts_continuation(c: char) -> bool {
     )
 }
 
-/// The ones that still continue a line ending in the `}` of a *block*.
-///
-/// `if`, `while`, `for` and `match` are expressions, so a block's `}` can close
-/// either a statement or an operand, and an operator on the next line is
-/// ambiguous between them:
-///
-/// ```text
-/// match x { ... }
-/// -1
-/// ```
-///
-/// A block expression is never an operand, so a block's `}` at the end of a
-/// line ends a statement and the `-1` stands alone — the only reading the
-/// grammar has. Splicing the two together with `->` only moves where the parse
-/// fails. What survives here is punctuation that separates rather than
-/// operates — a leading `,` in an entry body, a `:` — which no expression
-/// could have continued anyway.
-///
-/// A literal's `}` — a struct's, a map's, a set's — closes a value, not a
-/// statement, so none of this applies to it and a chained `.norm()` on the next
-/// line still continues the line. `push_brace` is what tells the two apart.
+// The ones that still continue a line ending in the `}` of a *block*. A block
+// expression is never an operand, so a block's `}` ends a statement and the `-1`
+// of `match x { ... }` / newline / `-1` stands alone. What survives here is
+// punctuation that separates rather than operates — a leading `,`, a `:`.
+//
+// A literal's `}` closes a value, not a statement, so none of this applies to it
+// and a chained `.norm()` on the next line still continues the line.
+// `push_brace` tells the two apart.
 fn continues_after_brace(c: char) -> bool {
     matches!(c, ',' | ':')
 }
 
-/// Keywords whose header runs up to the `{` that opens their body.
-///
-/// The header is what makes a `{` decidable. Inside one, the first `{` at the
-/// bracket *and* brace depth the keyword was seen at opens the body, and almost
-/// nothing else can be there — which is what the grammar buys by banning a
-/// struct literal from the top level of a header (section 5.1). Outside one, a
-/// `{` straight after a type name is a struct literal.
-///
-/// The exception a collection literal makes to that is in `push_brace`: it may
-/// stand at the top level of a header, so a body of statements gives up a brace
-/// that can only be a literal.
-///
-/// `else` is here with an empty header: the `{` after it is its body, since
-/// nothing can stand between the two.
+// Keywords whose header runs up to the `{` that opens their body. The header is
+// what makes a `{` decidable: inside one, the first `{` at the bracket and brace
+// depth the keyword was seen at opens the body, which is what the grammar buys
+// by banning a struct literal from the top level of a header (section 5.1).
+// Outside one, a `{` straight after a type name is a struct literal.
+//
+// Collection literals are the exception, handled in `push_brace`: one may stand
+// at the top level of a header. `else` is here with an empty header, since
+// nothing can stand between it and its `{`.
 fn heads_a_body(t: &TokType) -> bool {
     matches!(
         t,
@@ -251,6 +232,9 @@ fn heads_a_body(t: &TokType) -> bool {
             | TokType::Impl
             // Its body holds items, so it is a statement body like a fn's.
             | TokType::Namespace
+            // A macro's body is a block, and its `{` is claimed the way a fn's
+            // is -- across the commas of its own parameter list.
+            | TokType::Macro
             // The one whose body is optional: `unsafe` prefixes any statement
             // at all, and only the `{` of a block is a body. `brace_follows`
             // is what decides, at the one place this is asked.
@@ -258,14 +242,11 @@ fn heads_a_body(t: &TokType) -> bool {
     )
 }
 
-/// Keywords that can only begin a statement, so a `{` holding one holds
-/// statements. Inside a brace they can only appear at its top level, and only
-/// before the first `;` if they appear at all — which is exactly as far as
-/// `scan_brace_body` looks.
-///
-/// The control-flow keywords are deliberately absent: `if`, `while`, `for` and
-/// `match` are expressions, so one of them may just as well be an element of a
-/// set as the start of a statement.
+// Keywords that can only begin a statement, so a `{` holding one holds
+// statements. Inside a brace they appear only at its top level and only before
+// the first `;`, which is as far as `scan_brace_body` looks. The control-flow
+// keywords are absent on purpose: they are expressions, so one may be an element
+// of a set as easily as the start of a statement.
 fn starts_statement(t: &TokType) -> bool {
     matches!(
         t,
@@ -287,20 +268,21 @@ fn starts_statement(t: &TokType) -> bool {
             // It prefixes a statement, so it is the start of one.
             | TokType::Unsafe
             // An attribute only ever prefixes a declaration.
-            | TokType::At
+            | TokType::AttrName(_)
+            // `macro` declares one, so it begins a declaration like `fn`.
+            | TokType::Macro
     )
 }
 
-/// Keywords that continue the previous statement, e.g. the `else` in
-/// `}` / newline / `else {`. No statement begins with one of these, so a line
-/// that starts with one is always a continuation — including a cast split
-/// across lines, `let n = x` / newline / `as i64`.
+// Keywords that continue the previous statement, e.g. the `else` in `}` /
+// newline / `else {`. No statement begins with one, so a line that starts with
+// one is always a continuation.
 fn continues_statement(word: &str) -> bool {
     // `where` is here so a signature may put its bounds on the next line.
     matches!(word, "else" | "elif" | "as" | "in" | "where")
 }
 
-/// Base prefixes accepted after a leading `0`, e.g. `0xFF`, `0b1010`.
+// Base prefixes accepted after a leading `0`, e.g. `0xFF`, `0b1010`.
 fn radix_of(c: char) -> Option<u32> {
     match c {
         'x' | 'X' => Some(16),
@@ -312,7 +294,7 @@ fn radix_of(c: char) -> Option<u32> {
     }
 }
 
-/// Reserved words. Anything not listed here lexes as an `Identifier`.
+// Reserved words. Anything not listed here lexes as an `Identifier`.
 fn keyword_of(word: &str) -> Option<TokType> {
     let tok = match word {
         // Types
@@ -320,10 +302,12 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "i16" => TokType::I16,
         "i32" => TokType::I32,
         "i64" => TokType::I64,
+        "i128" => TokType::I128,
         "u8" => TokType::U8,
         "u16" => TokType::U16,
         "u32" => TokType::U32,
         "u64" => TokType::U64,
+        "u128" => TokType::U128,
         "f32" => TokType::F32,
         "f64" => TokType::F64,
         "bool" => TokType::Bool,
@@ -344,6 +328,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "import" => TokType::Import,
         "enum" => TokType::Enum,
         "namespace" => TokType::Namespace,
+        "macro" => TokType::Macro,
         "unsafe" => TokType::Unsafe,
 
         // Control flow
@@ -503,14 +488,10 @@ impl Lexer {
         self.last_was_type_end = s.last_was_type_end;
     }
 
-    /// Returns the token `next_token` would return, without consuming it.
-    ///
-    /// Lexing is context-sensitive — semicolon insertion and `>>` splitting
-    /// both depend on state the scanner updates as it goes — so the token is
-    /// produced by running the real scanner and rewinding it afterwards, not by
-    /// a separate lookahead path that could drift out of step. Takes `&mut
-    /// self` for that reason; peeking is otherwise free of side effects, and
-    /// repeated peeks return the same token.
+    // The token `next_token` would return, without consuming it. Lexing is
+    // context-sensitive, so this runs the real scanner and rewinds rather than
+    // taking a lookahead path that could drift out of step — hence `&mut self`.
+    // Peeking is otherwise free of side effects, and repeats give the same token.
     pub fn peek(&mut self) -> Tok {
         let saved = self.save();
         let tok = self.next_token();
@@ -650,7 +631,15 @@ impl Lexer {
             // still to come: `fn divmod(a: i32, b: i32): (i32, i32) {`. A
             // shallower depth than the header's means the bracket it stood in
             // has closed and the header went with it.
-            TokType::Comma if self.bracket_depth <= self.header_depth => {
+            //
+            // A generic parameter list is that same bracket written `<..>`,
+            // which `bracket_depth` does not count: the commas of `struct
+            // Pair<A, B> {` separate parameters of the header itself, so the
+            // brace after them is still its body. `generic_depth` is settled
+            // above, before this runs.
+            TokType::Comma
+                if self.bracket_depth <= self.header_depth && self.generic_depth == 0 =>
+            {
                 self.pending_header = false;
                 self.pending_entry_body = false;
             }
@@ -675,27 +664,24 @@ impl Lexer {
             _ => {}
         }
 
-        // An attribute runs from the `@` to the name after it, or to the `)`
-        // closing that name's arguments. The `(` has to be glued on, as the `[`
-        // of the old `#[...]` was: a space ends the attribute at the name and
-        // leaves the parenthesis to the parser to complain about.
-        if tok.toktype == TokType::At {
+        // `%repr` is one token, so an attribute with no arguments needs nothing
+        // tracked: the token ends no operand and no separator can follow it.
+        // What still needs tracking is the `)` of `%repr(C)`, which does end
+        // one -- so the wait is opened only by a name with a glued `(`, as the
+        // `[` of the old `#[...]` was glued. A space there ends the attribute at
+        // its name and leaves the parenthesis for the parser to complain about.
+        if matches!(tok.toktype, TokType::AttrName(_)) && self.peek_char() == Some('(') {
             self.in_attribute = true;
             self.attr_bracket_depth = self.bracket_depth;
         } else if self.in_attribute {
-            match &tok.toktype {
-                // Only the attribute's own name closes it — a name among its
-                // arguments is deeper, and `@repr(C)` ends at the `)`.
-                TokType::Identifier(_)
-                    if self.bracket_depth == self.attr_bracket_depth
-                        && self.peek_char() != Some('(') =>
-                {
-                    self.in_attribute = false;
-                }
-                TokType::RParen if self.bracket_depth == self.attr_bracket_depth => {
-                    self.in_attribute = false;
-                }
-                _ => {}
+            if tok.toktype == TokType::RParen && self.bracket_depth == self.attr_bracket_depth {
+                self.in_attribute = false;
+                // The `)` of `%repr(C)` closes the attribute and not an
+                // operand, so the `%` of the next one in the list is an
+                // attribute too. Left alone, that `)` would make it the
+                // remainder operator -- see `read_operator`, which asks
+                // exactly this.
+                self.last_ends_operand = false;
             }
         }
         // Everything above reads the brace as the `{` it was scanned as; only
@@ -713,32 +699,26 @@ impl Lexer {
         tok
     }
 
-    /// Records what kind of body a `{` opens. There are four:
-    ///
-    ///   - the body of a header — the first `{` at the bracket depth an `if`,
-    ///     `fn`, `match` or other body-heading keyword was seen at. Nothing
-    ///     else can be there, because the grammar keeps a struct literal out of
-    ///     the top level of a header;
-    ///   - a struct literal, when no header claims the brace and a type name
-    ///     ends immediately before it: `Point {`, `Vec<i32> {`;
-    ///   - a map or set literal — `{1: 2}`, `{1, 2}`, and anything after a
-    ///     glued `#`. See `opens_collection`;
-    ///   - a block otherwise.
-    ///
-    /// Bit `n` of `entry_braces` is set when the brace at depth `n` holds
-    /// comma-separated entries rather than statements — a struct, enum or match
-    /// body, and every literal. Nothing is inserted inside one of those: the
-    /// commas are written. Bit `n` of `value_braces` narrows that to the
-    /// literals, whose `}` closes a value and so ends no line by itself either.
-    ///
-    /// A bitmask keeps the snapshot `Copy`, so a `peek` costs no allocation;
-    /// past 64 levels of nesting the kind is no longer tracked and a body
-    /// reverts to statements, which no real source reaches.
-    ///
-    /// Returns whether the brace opened a value, which is what the parser is
-    /// told: a literal's `{` is `LCurlyValue` and a block's or a body's is
-    /// `LCurlyBracket`. The grammar is unambiguous given the two, and has no
-    /// way to tell them apart without.
+    // Records what kind of body a `{` opens. There are four:
+    //
+    //   - a header's body — the first `{` at the bracket depth the heading
+    //     keyword was seen at, since the grammar keeps a struct literal out of
+    //     the top level of a header;
+    //   - a struct literal, where a type name ends right before it: `Point {`;
+    //   - a map or set literal — `{1: 2}`, `{1, 2}`, anything after a glued `#`;
+    //   - a block otherwise.
+    //
+    // Bit `n` of `entry_braces` is set when the brace at depth `n` holds
+    // comma-separated entries rather than statements; nothing is inserted inside
+    // one, as the commas are written. Bit `n` of `value_braces` narrows that to
+    // the literals, whose `}` closes a value and so ends no line either.
+    //
+    // A bitmask keeps the snapshot `Copy`, so a `peek` costs no allocation; past
+    // 64 levels of nesting a body reverts to statements.
+    //
+    // Returns whether the brace opened a value: a literal's `{` is `LCurlyValue`
+    // and a block's or a body's is `LCurlyBracket`, which is what the grammar
+    // needs to tell them apart.
     fn push_brace(&mut self, after_type_name: bool, after_hash: bool, value_only: bool) -> bool {
         let at_header = self.pending_header
             && self.bracket_depth == self.header_depth
@@ -786,27 +766,19 @@ impl Lexer {
         literal || collection
     }
 
-    /// Whether a `{` that no header and no type name claimed opens a map or a
-    /// set rather than a block.
-    ///
-    /// Nothing in front of the brace can say: a literal and a block stand in
-    /// the same places. So the lexer looks *inside* instead, and what it finds
-    /// usually settles it — statements are separated by `;` and entries by
-    /// `,`, and neither separator is legal in the other's body.
-    ///
-    /// `{}` and `{ x }` contain neither, and there `value_only` decides: where
-    /// only a value can stand — after `=`, `(`, `,`, `return`, an operator — it
-    /// is a literal, so `{}` is the empty map and `{ x }` a set of one, with no
-    /// trailing comma asked for. Where a statement could stand instead — at the
-    /// start of one, after a `=>`, inside another block — it is a block, since
-    /// that is what braces are there.
-    ///
-    /// The cost is that a block used as a value has to hold a statement
-    /// boundary — a `;`, a line break, or a keyword only a statement starts
-    /// with — which every block worth writing does, since a block of one
-    /// expression is that expression. `{ f() }` after an `=` is the set of one
-    /// that it looks like. The empty map can still be said in either position
-    /// by writing the `:` out, `{:}`, as the empty set is `{,}`.
+    // Whether a `{` that no header and no type name claimed opens a map or a set
+    // rather than a block. Nothing in front of the brace can say, so the lexer
+    // looks inside: statements are separated by `;` and entries by `,`, and
+    // neither separator is legal in the other's body.
+    //
+    // `{}` and `{ x }` hold neither, and there `value_only` decides — where only
+    // a value can stand it is a literal, and where a statement could stand it is
+    // a block.
+    //
+    // The cost is that a block used as a value has to hold a statement boundary,
+    // which every block worth writing does. `{ f() }` after an `=` is the set of
+    // one it looks like; the empty map is `{:}` in either position, the empty
+    // set `{,}`.
     fn opens_collection(&mut self, value_only: bool) -> bool {
         match self.scan_brace_body() {
             BraceScan::Collection => true,
@@ -815,23 +787,18 @@ impl Lexer {
         }
     }
 
-    /// Reads ahead over the body of the `{` just scanned, stopping at the first
-    /// token that tells the two kinds apart, and rewinds.
-    ///
-    /// Only the brace's own level counts: the `,` of `{ f(a, b) }` is the call's
-    /// and the `:` of `{ Point { x: 1 } }` is the literal's, so both are skipped
-    /// and the brace is left `Undecided`.
-    ///
-    /// A line break that would end a statement counts as a `;`, since that is
-    /// what it is about to become. It has to: a block written in this language
-    /// need contain no separator at all, and `{ f()` / newline / `g() }` is two
-    /// statements however it is punctuated. Between entries a newline means
-    /// nothing, and the `,` or `:` of a real literal is met before any newline
-    /// that could be read this way.
-    ///
-    /// The scan runs to the end of the body in the worst case, which makes
-    /// nested literals quadratic in principle. In practice it stops at the
-    /// first separator, a token or two in.
+    // Reads ahead over the body of the `{` just scanned, stopping at the first
+    // token that tells the two kinds apart, and rewinds. Only the brace's own
+    // level counts: the `,` of `{ f(a, b) }` is the call's, so it is skipped and
+    // the brace left `Undecided`.
+    //
+    // A line break that would end a statement counts as a `;`, since that is what
+    // it is about to become: a block need contain no separator at all, and
+    // `{ f()` / newline / `g() }` is two statements. Between entries a newline
+    // means nothing, and a real literal's `,` or `:` comes first anyway.
+    //
+    // The scan runs to the end of the body in the worst case, so nested literals
+    // are quadratic in principle; in practice it stops a token or two in.
     fn scan_brace_body(&mut self) -> BraceScan {
         let saved = self.save();
         let mut depth = 0usize;
@@ -872,22 +839,22 @@ impl Lexer {
         verdict
     }
 
-    /// Whether the innermost open brace holds comma-separated entries.
+    // Whether the innermost open brace holds comma-separated entries.
     fn in_entry_body(&self) -> bool {
         self.brace_depth > 0
             && self.brace_depth <= 64
             && self.entry_braces & (1u64 << (self.brace_depth - 1)) != 0
     }
 
-    /// Whether the innermost open brace closes a value — a struct, map or set
-    /// literal's — rather than a statement.
+    // Whether the innermost open brace closes a value — a struct, map or set
+    // literal's — rather than a statement.
     fn in_value_body(&self) -> bool {
         self.brace_depth > 0
             && self.brace_depth <= 64
             && self.value_braces & (1u64 << (self.brace_depth - 1)) != 0
     }
 
-    /// Decides whether to synthesize a separator at the current position.
+    // Decides whether to synthesize a separator at the current position.
     fn wants_separator(&self, crossed_newline: bool) -> bool {
         if !self.last_can_end {
             return false;
@@ -915,12 +882,10 @@ impl Lexer {
         }
     }
 
-    /// Whether what stands at the current position starts a statement rather
-    /// than continuing the one before it. Asked at a line break, of the line
-    /// below it; end of input is left to the caller.
-    ///
-    /// `closed_block` says whether the token just read was the `}` of a block,
-    /// which narrows what may still continue the line.
+    // Whether what stands at the current position starts a statement rather than
+    // continuing the one before it. Asked at a line break, of the line below;
+    // end of input is the caller's. `closed_block` says whether the token just
+    // read was a block's `}`, which narrows what may still continue the line.
     fn breaks_statement(&self, closed_block: bool) -> bool {
         match self.peek_char() {
             None => false,
@@ -933,17 +898,20 @@ impl Lexer {
             // of an if branch and `as` still follows a block it casts.
             Some(c) if c.is_alphabetic() || c == '_' => !continues_statement(&self.peek_word()),
             Some(c) if closed_block => !continues_after_brace(c),
+            // `%` spells the remainder operator and an attribute both. Glued to
+            // a name it is the attribute, which begins a declaration and so
+            // breaks the line; with anything else after it, it is the operator
+            // continuing one. See `read_operator`, which settles the same
+            // question from the other side.
+            Some('%') => matches!(self.peek_char_at(1), Some(n) if n.is_alphabetic() || n == '_'),
             Some(c) if starts_continuation(c) => false,
             Some(_) => true,
         }
     }
 
-    /// Whether a `{` is the next thing in the input, whitespace aside.
-    ///
-    /// A newline counts as whitespace here: `unsafe` cannot end a statement, so
-    /// nothing is inserted after it and a brace on the line below is still the
-    /// body it opens. Comments are blanked to spaces before the lexer sees the
-    /// source, so none can hide between the two.
+    // Whether a `{` is next in the input, whitespace aside. A newline counts as
+    // whitespace: `unsafe` cannot end a statement, so a brace on the line below
+    // is still the body it opens. Comments are already blanked to spaces.
     fn brace_follows(&self) -> bool {
         let mut i = self.index;
         while let Some(&c) = self.input.get(i) {
@@ -955,7 +923,7 @@ impl Lexer {
         false
     }
 
-    /// Reads the word at the current position without consuming it.
+    // Reads the word at the current position without consuming it.
     fn peek_word(&self) -> String {
         let mut word = String::new();
         let mut i = self.index;
@@ -990,11 +958,14 @@ impl Lexer {
             '"' => self.read_str(false),
             '`' => self.read_str(true),
             '\'' => self.read_char(),
+            '~' => self.read_lifetime(),
+            '@' => self.read_sigil_name('@'),
+            '$' => self.read_sigil_name('$'),
             _ => self.read_operator(),
         }
     }
 
-    /// Consumes `expected` if it is next, reporting whether it did.
+    // Consumes `expected` if it is next, reporting whether it did.
     fn eat(&mut self, expected: char) -> bool {
         if self.peek_char() == Some(expected) {
             self.advance();
@@ -1004,7 +975,7 @@ impl Lexer {
         }
     }
 
-    /// Reads one operator or delimiter, longest match first.
+    // Reads one operator or delimiter, longest match first.
     fn read_operator(&mut self) -> Tok {
         let line = self.line;
         let col = self.col;
@@ -1020,7 +991,18 @@ impl Lexer {
             '-' => if self.eat('=') { TokType::MinusEquals } else { TokType::Minus },
             '*' => if self.eat('=') { TokType::StarEquals } else { TokType::Star },
             '/' => if self.eat('=') { TokType::SlashEquals } else { TokType::Slash },
-            '%' => TokType::Percent,
+            '%' => {
+                // The same question `*` answers: an operand in front makes it
+                // the operator, and nothing in front makes it the other thing.
+                // `a % b` and `a%b` are remainders; a `%` beginning a line, or
+                // following a `;` or a `{`, is an attribute's name.
+                if !self.last_ends_operand
+                    && matches!(self.peek_char(), Some(n) if n.is_alphabetic() || n == '_')
+                {
+                    return self.finish_sigil_name(line, col);
+                }
+                TokType::Percent
+            }
 
             '=' => {
                 if self.eat('=') { TokType::EqualsEquals }
@@ -1103,7 +1085,6 @@ impl Lexer {
             }
             ';' => TokType::Semicolon,
             '#' => TokType::HashTag,
-            '@' => TokType::At,
 
             _ => TokType::Error(format!("Unexpected character '{}'", c)),
         };
@@ -1111,7 +1092,7 @@ impl Lexer {
         Tok { toktype, line, col, len: 0 }
     }
 
-    /// Skips whitespace, reporting whether any of it was a line break.
+    // Skips whitespace, reporting whether any of it was a line break.
     fn skip_whitespace(&mut self) -> bool {
         let mut crossed_newline = false;
         while let Some(c) = self.peek_char() {
@@ -1188,7 +1169,87 @@ impl Lexer {
         Tok { toktype: TokType::CharLiteral(value), line, col, len: 0 }
     }
 
-    /// Decodes one escape sequence. The leading `\` is already consumed.
+    // Reads a lifetime, `~a`. The `~` is the whole of what says so, since it
+    // spells nothing else in the language -- which is what buys the reading
+    // Rust's `'a` has to pay a lookahead for, `'a'` being a char literal and
+    // `'a` not. A char literal above is read exactly as it always was.
+    //
+    // The name follows an identifier's rules, so `~_` is the one with no name
+    // worth giving and `~1` is not a lifetime at all.
+    // Reads `@name`, `$name` and the `%name` of an attribute. The sigil is
+    // already known to be one of those and is consumed here; what each becomes
+    // is `finish_sigil_name`'s, which the `%` of `read_operator` reaches
+    // directly, having had to answer a question the other two never face.
+    fn read_sigil_name(&mut self, sigil: char) -> Tok {
+        let line = self.line;
+        let col = self.col;
+        self.advance(); // the sigil
+
+        let starts = matches!(self.peek_char(), Some(c) if c.is_alphabetic() || c == '_');
+        if !starts {
+            let what = if sigil == '@' { "A macro is `@` and a name, as in `@println`" }
+                       else { "A macro parameter is `$` and a name, as in `$x`" };
+            return Tok { toktype: TokType::Error(what.to_string()), line, col, len: 0 };
+        }
+        let name = self.read_name();
+        let toktype = if sigil == '@' {
+            TokType::MacroName(name)
+        } else {
+            TokType::MacroParam(name)
+        };
+        Tok { toktype, line, col, len: 0 }
+    }
+
+    // The `%name` of an attribute, its `%` already consumed and a name known to
+    // follow. `line` and `col` are the sigil's, so a message points at the whole.
+    fn finish_sigil_name(&mut self, line: usize, col: usize) -> Tok {
+        let name = self.read_name();
+        Tok { toktype: TokType::AttrName(name), line, col, len: 0 }
+    }
+
+    // The identifier characters at the current position, which every sigil above
+    // takes for its name.
+    fn read_name(&mut self) -> String {
+        let mut name = String::new();
+        while let Some(c) = self.peek_char() {
+            if c.is_alphanumeric() || c == '_' {
+                name.push(c);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        name
+    }
+
+    fn read_lifetime(&mut self) -> Tok {
+        let line = self.line;
+        let col = self.col;
+        self.advance(); // the `~`
+
+        let starts = matches!(self.peek_char(), Some(c) if c.is_alphabetic() || c == '_');
+        if !starts {
+            return Tok {
+                toktype: TokType::Error("A lifetime is `~` and a name, as in `~a`".to_string()),
+                line,
+                col,
+                len: 0,
+            };
+        }
+
+        let mut name = String::new();
+        while let Some(c) = self.peek_char() {
+            if c.is_alphanumeric() || c == '_' {
+                name.push(c);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Tok { toktype: TokType::Lifetime(name), line, col, len: 0 }
+    }
+
+    // Decodes one escape sequence. The leading `\` is already consumed.
     fn read_escape(&mut self) -> Result<char, String> {
         match self.advance() {
             Some('n') => Ok('\n'),
@@ -1384,8 +1445,8 @@ impl Lexer {
         }
     }
 
-    /// Reads an identifier or a keyword. Assumes the current char is a valid
-    /// identifier start (alphabetic or `_`).
+    // Reads an identifier or a keyword. Assumes the current char is a valid
+    // identifier start (alphabetic or `_`).
     fn read_word(&mut self) -> Tok {
         let line = self.line;
         let col = self.col;
@@ -1412,8 +1473,8 @@ impl Lexer {
         Tok { toktype, line, col, len: 0 }
     }
 
-    /// Swallow the rest of a malformed literal so the next token starts clean.
-    /// Stops at `..` so one bad literal doesn't eat the range operator behind it.
+    // Swallow the rest of a malformed literal so the next token starts clean.
+    // Stops at `..` so one bad literal doesn't eat the range operator behind it.
     fn consume_literal_tail(&mut self) {
         while let Some(c) = self.peek_char() {
             if c == '.' && self.peek_char_at(1) == Some('.') {

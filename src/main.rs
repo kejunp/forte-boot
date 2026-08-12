@@ -1,11 +1,15 @@
 mod error;
+mod expand;
 mod lex;
 mod parse;
 mod prep;
+mod tir;
 
 use lex::lexer::Lexer;
 use lex::tokens::TokType;
 use error::Source;
+use expand::Expander;
+use tir::lower::Lowerer;
 use parse::parser::Parser;
 use prep::preprocess;
 
@@ -31,30 +35,22 @@ fn dump_prep(source: &str) {
     println!("source:\n{}\n", source);
     println!("preprocessed:\n{}\n", prepped);
 
-    // Both passes rewrite in place -- a comment is blanked rather than deleted
-    // and an `_` becomes a `U` -- so every character keeps its line and column.
+    // The pass rewrites in place -- a comment is blanked rather than deleted --
+    // so every character keeps its line and column.
     dump_tokens(&prepped);
     println!();
 }
 
-/// Parses `source` and shows what it had to say about it.
-///
-/// This is where a source is held and where one is quoted, which is the same
-/// place on purpose. Every phase below reports a `Span` -- which piece of the
-/// source it is about -- and none of them knows what the text is or what it is
-/// called. Only here are the two put together.
-///
-/// That split is what a preprocessor makes necessary. The lexer has no case
-/// for the `/` that opens a comment, so what it reads is a copy with the
-/// comments blanked out; a phase quoting the text it was handed would show a
-/// reader a line they did not write. Blanking keeps every character where it
-/// was -- that is why a comment is blanked rather than deleted -- so a span
-/// taken from the stripped copy lands in the same place in the written one,
-/// and quoting the second needs nothing moved.
-///
-/// A parse that recovers reports more than one thing, and every one of them is
-/// printed: the point of recovering is that a second mistake need not wait for
-/// the first to be fixed.
+// Parses `source` and shows what it had to say about it. A source is held and
+// quoted in the same place on purpose: every phase reports a `Span` and none of
+// them knows what the text is or what it is called.
+//
+// The preprocessor is what makes that split necessary. The lexer reads a copy
+// with the comments blanked out, and a phase quoting the text it was handed
+// would show a reader a line they did not write. Blanking keeps every character
+// where it was, so a span from the stripped copy lands in the written one.
+//
+// A parse that recovers reports more than one thing, and all of them print.
 fn dump_parse(path: &str, source: &str) {
     let prepped = preprocess(source);
     debug_assert_eq!(
@@ -64,14 +60,40 @@ fn dump_parse(path: &str, source: &str) {
     );
 
     let mut parser = Parser::new(Lexer::new(&prepped));
-    parser.parse();
-    if parser.errors().is_empty() {
-        println!("{}: parsed\n", path);
+    let root = parser.parse();
+    let written: Vec<char> = source.chars().collect();
+    if !parser.errors().is_empty() {
+        println!("{}\n", parser.errors().render(&Source::new(path, &written)));
         return;
     }
 
-    let written: Vec<char> = source.chars().collect();
-    println!("{}\n", parser.errors().render(&Source::new(path, &written)));
+    // Macros are spent before anything else looks at the tree. A parse that
+    // failed does not reach here: what expansion would make of a tree the
+    // parser recovered through says more about the recovery than the source.
+    let mut expander = Expander::new(&mut parser);
+    let root = expander.expand(&root);
+    if !expander.errors().is_empty() {
+        println!("{}\n", expander.errors().render(&Source::new(path, &written)));
+        return;
+    }
+
+    // The tree the rest of the compiler would read. Lowering is the last pass
+    // that cares how any of it was written.
+    let mut lowerer = Lowerer::new(&parser);
+    lowerer.lower(&root);
+    if !lowerer.errors().is_empty() {
+        println!("{}\n", lowerer.errors().render(&Source::new(path, &written)));
+        return;
+    }
+    let tir = lowerer.finish();
+    println!(
+        "{}: lowered -- {} items, {} expressions, {} types, {} patterns\n",
+        path,
+        tir.items.len(),
+        tir.exprs.len(),
+        tir.types.len(),
+        tir.pats.len()
+    );
 }
 
 fn main() {
@@ -127,8 +149,9 @@ fn main() {
     // separators come back with them.
     dump("let v = {\n    f()\n    g()\n}\n{\n    h()\n    k()\n}\n");
 
-    // `::` reaches into a type, `.` into a value or a module.
-    dump("let c = shapes.Color::Red\n");
+    // `::` reaches a namespace, a module or a type; `.` reaches a value and
+    // nothing else. All three meet in one name here.
+    dump("let c = shapes::Color::Red.name\n");
 
     // A `}` ends the line it sits on, so the `-1` is a statement of its own —
     // and `->` is how to say it was not.
@@ -168,12 +191,12 @@ fn main() {
     dump("fn divmod(a: i32, b: i32): (i32, i32) {\n    (a / b, a % b)\n}\n");
     dump("let p: (i32, str) = (1, `one`)\nlet n = p.0\nlet d = q.0.1\n");
 
-    // An attribute is `@name` with its arguments, and a prefix of what it
+    // An attribute is `%name` with its arguments, and a prefix of what it
     // annotates — so no separator is inserted at the end of the list.
-    dump("@inline\n@repr(C)\npublic fn f();\n");
+    dump("%inline\n%repr(C)\npublic fn f();\n");
 
     // An impl makes methods for a struct; anything else that wants a name in
-    // front of it goes in a namespace, reached with a `.` like a module.
+    // front of it goes in a namespace, reached with a `::` like a module.
     dump("namespace limits {\n    public const MAX: i32 = 255\n}\nlet n = limits::MAX\n");
 
     // `null` is a type and its one value, so it is what a loop nobody broke
@@ -183,6 +206,21 @@ fn main() {
     // `|` is a token of its own now: pattern alternation and a closure's
     // parameters. `||` splits into two of them where no operand precedes it.
     dump("let f = |x: i32| x * 2\nlet g = || 0\nlet ok = a || b\n");
+
+    // A lifetime is `~a`, one token: `~` spells nothing else, so nothing has
+    // to be told apart from the `'a'` of a character literal.
+    dump("fn longest<~a>(x: &~a str, y: &~a str): &~a str;\nstruct Parser<~a> {\n    text: &~a str,\n}\n");
+
+    // It stands where a type parameter stands, bounds included, and a `~_` is
+    // the one with no name worth giving.
+    dump("fn f<~a, ~b: ~a, T: Show + ~a>(x: &~a T) where T: ~a;\nlet p: &~_ i32 = &x\n");
+
+    // A macro is declared with a word and invoked with a sigil. `$x` is one
+    // token, as `%name` and `~a` are.
+    dump("macro twice($x:expr) {\n    $x\n    $x\n}\nlet n = @twice(f())\n");
+
+    // `%` is the remainder operator too, and where it stands tells them apart.
+    dump("let r = a % b\n%inline\nfn f();\n");
 
     // A signature carries `const`, its own generic parameters and a `where`
     // clause, and bounds are joined with `+`.
@@ -200,9 +238,9 @@ fn main() {
     // suffix finally has a spelling.
     dump("let view: &i32[]\nlet refs: (&i32)[8]\n");
 
-    // The five attributes. `@symbol` is the one the mangler makes necessary:
-    // nothing outside the language can predict `name_type_type_...`.
-    dump("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n@must_use\n@noinline\nfn parse(s: str): i32;\n");
+    // The five attributes. `%symbol` is the one the mangler makes necessary:
+    // nothing outside the language can predict `3add3i323i32`.
+    dump("%symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n%must_use\n%noinline\nfn parse(s: str): i32;\n");
 
     // `never` is the empty type — no values, so an expression of it agrees
     // with anything beside it. `null` is its opposite: one value, no news.
@@ -241,6 +279,18 @@ fn main() {
     // One mistake does not hide the next: the parse recovers and goes on, and
     // both are reported against their own lines.
     dump_parse("two.fc", "fn a() { let x = ; }\nfn b() { let y = ; }\n");
+
+    // A macro is spent before anything else sees the tree, and what it says
+    // when it cannot be is a diagnostic like any other.
+    dump_parse("macro.fc", "macro twice($x:expr) {\n    $x\n    $x\n}\nfn main() {\n    @twice(f());\n}\n");
+    dump_parse("nomacro.fc", "fn main() {\n    @nope(1);\n}\n");
+    dump_parse("arity.fc", "macro one($x:expr) {\n    $x\n}\nfn main() {\n    @one(1, 2);\n}\n");
+    dump_parse("frag.fc", "macro n($x:ident) {\n    $x\n}\nfn main() {\n    @n(1 + 2);\n}\n");
+
+    // The closed set of attributes is checked while the TIR is built: a name
+    // the compiler does not know is an error naming what was probably meant.
+    dump_parse("attr.fc", "%inlien\nfn f();\n");
+    dump_parse("target.fc", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");
 }
 
 
@@ -260,7 +310,7 @@ fn lex_types(source: &str) -> Vec<TokType> {
     }
 }
 
-/// Every token's column and width, which is what a diagnostic underlines.
+// Every token's column and width, which is what a diagnostic underlines.
 #[cfg(test)]
 fn lex_spans(source: &str) -> Vec<(usize, usize)> {
     let mut lexer = Lexer::new(source);
@@ -274,9 +324,8 @@ fn lex_spans(source: &str) -> Vec<(usize, usize)> {
     }
 }
 
-/// A token knows how wide it was written, which is not something its type can
-/// answer: `0x10` and `16` are the same literal, and a string has lost both its
-/// quotes and its escapes by the time it is one.
+// A token knows how wide it was written, which its type cannot answer: `0x10`
+// and `16` are the same literal, and a string has lost its quotes and escapes.
 #[test]
 fn a_token_knows_how_wide_it_was_written() {
     // The inserted separator at the end is a place and not a piece: no width.
@@ -357,9 +406,9 @@ fn lexes_trait_and_cast_keywords() {
     );
 }
 
-/// A struct, enum or match body holds entries, and the commas between them are
-/// the writer's. A newline inside one inserts nothing, exactly as inside a
-/// `(...)`; the `;` of a statement is the only separator the lexer synthesises.
+// A struct, enum or match body holds entries, and the commas between them are
+// the writer's. A newline inside one inserts nothing, exactly as inside a
+// `(...)`; the `;` of a statement is the only separator the lexer synthesises.
 #[test]
 fn entry_bodies_insert_nothing() {
     assert_eq!(
@@ -416,9 +465,9 @@ fn entry_bodies_insert_nothing() {
     );
 }
 
-/// The body of a match arm is a block of statements, so the two kinds of body
-/// nest: inside the arm's block a newline ends a statement, while in the match
-/// body around it a newline does nothing and the arm's comma is written.
+// The body of a match arm is a block of statements, so the two kinds of body
+// nest: inside the arm's block a newline ends a statement, while in the match
+// body around it a newline does nothing and the arm's comma is written.
 #[test]
 fn brace_kinds_nest() {
     assert_eq!(
@@ -453,8 +502,8 @@ fn brace_kinds_nest() {
     );
 }
 
-/// A function body holds statements, even though its declaration may sit inside
-/// a trait or impl, and semicolons still end them.
+// A function body holds statements, even though its declaration may sit inside
+// a trait or impl, and semicolons still end them.
 #[test]
 fn fn_body_stays_a_statement_body() {
     assert_eq!(
@@ -506,8 +555,8 @@ fn fn_body_stays_a_statement_body() {
     );
 }
 
-/// The float types are keywords, and like the other primitives they can end a
-/// declaration — so a newline after one inserts a semicolon.
+// The float types are keywords, and like the other primitives they can end a
+// declaration — so a newline after one inserts a semicolon.
 #[test]
 fn lexes_float_types() {
     assert_eq!(
@@ -541,7 +590,7 @@ fn lexes_float_types() {
     );
 }
 
-/// The `>>` closing nested generics must split, while a real shift must not.
+// The `>>` closing nested generics must split, while a real shift must not.
 #[test]
 fn splits_nested_generic_close() {
     assert_eq!(
@@ -579,8 +628,8 @@ fn splits_nested_generic_close() {
     );
 }
 
-/// A `<` that turns out to be a comparison must not leave a generic context
-/// open, or the next `>>` would wrongly split.
+// A `<` that turns out to be a comparison must not leave a generic context
+// open, or the next `>>` would wrongly split.
 #[test]
 fn comparison_does_not_open_generics() {
     // A literal may appear in a type argument (an array size), so it is the
@@ -612,7 +661,7 @@ fn comparison_does_not_open_generics() {
     );
 }
 
-/// A generic type closes a declaration, so a newline after `>` ends it.
+// A generic type closes a declaration, so a newline after `>` ends it.
 #[test]
 fn generic_close_ends_statement() {
     assert_eq!(
@@ -635,8 +684,8 @@ fn generic_close_ends_statement() {
     );
 }
 
-/// Ranges glue straight onto integer literals, so `..` has to win over the
-/// number lexer's "junk after a literal" check.
+// Ranges glue straight onto integer literals, so `..` has to win over the
+// number lexer's "junk after a literal" check.
 #[test]
 fn lexes_range_operators() {
     assert_eq!(
@@ -711,7 +760,7 @@ fn lexes_for_in_header() {
     );
 }
 
-/// An open range ends a statement; a bounded one ends at its upper bound.
+// An open range ends a statement; a bounded one ends at its upper bound.
 #[test]
 fn range_terminates_statement() {
     assert_eq!(
@@ -767,15 +816,14 @@ fn range_terminates_statement() {
     );
 }
 
-/// Ranges must not cost the diagnostic for a genuinely doubled decimal point.
+// Ranges must not cost the diagnostic for a genuinely doubled decimal point.
 #[test]
 fn still_rejects_doubled_decimal_point() {
     assert!(matches!(lex_types("1.2.3")[0], TokType::Error(_)));
 }
 
-/// A number written after a `.` is the index of a tuple member, so it is a
-/// whole one however many dots follow it: `t.0.1` reaches into the tuple in
-/// the first member, and there is no float for the second `.` to belong to.
+// A number after a `.` is a tuple index, so it is whole however many dots
+// follow: `t.0.1` reaches into the tuple in the first member.
 #[test]
 fn a_dot_before_a_number_makes_it_an_index() {
     assert_eq!(
@@ -812,7 +860,7 @@ fn a_dot_before_a_number_makes_it_an_index() {
     );
 }
 
-/// No statement starts with `as`, so a cast may hang off the previous line.
+// No statement starts with `as`, so a cast may hang off the previous line.
 #[test]
 fn cast_continues_across_newline() {
     assert_eq!(
@@ -829,9 +877,9 @@ fn cast_continues_across_newline() {
     );
 }
 
-/// Blanking rather than deleting only pays off if the output lines up with the
-/// input character for character: that is what lets a diagnostic quote the
-/// source as it was written while the parse runs on the preprocessed copy.
+// Blanking rather than deleting only pays off if the output lines up with the
+// input character for character, which is what lets a diagnostic quote the
+// source as written while the parse runs on the preprocessed copy.
 #[test]
 fn preprocessing_preserves_length_and_lines() {
     let cases = [
@@ -864,10 +912,9 @@ fn preprocessing_preserves_length_and_lines() {
         );
     }
 }
-/// Peeking must leave the scanner exactly where it was: a peek before every
-/// `next_token` has to yield the same stream as no peeks at all — line and
-/// column included — even where lexing depends on scanner state, as semicolon
-/// insertion and `>>` splitting do.
+// Peeking must leave the scanner exactly where it was: a peek before every
+// `next_token` yields the same stream as no peeks at all, line and column
+// included, even where lexing depends on scanner state.
 #[test]
 fn peek_does_not_consume() {
     let sources = [
@@ -906,10 +953,9 @@ fn peek_does_not_consume() {
     }
 }
 
-/// if, while, for and match are expressions, so the separator rules have to
-/// leave a control-flow form usable as a value: no semicolon before the `else`
-/// that continues it, none before the `}` that makes it a block's trailing
-/// expression, and one after it when the next line starts a new statement.
+// if, while, for and match are expressions, so a control-flow form has to stay
+// usable as a value: no semicolon before the `else` that continues it, none
+// before the `}` that makes it a trailing expression, one after it otherwise.
 #[test]
 fn control_flow_lexes_as_an_expression() {
     // Bound to a name: `else` continues the line, and the closing `}` ends the
@@ -988,9 +1034,9 @@ fn control_flow_lexes_as_an_expression() {
     );
 }
 
-/// A `break` may carry the loop's value, but only on its own line: `break` can
-/// end a statement, so a newline after it inserts the semicolon and whatever
-/// follows is a statement of its own — the same treatment `return` gets.
+// A `break` may carry the loop's value, but only on its own line: `break` can
+// end a statement, so a newline after it inserts the semicolon and whatever
+// follows is a statement of its own — the same treatment `return` gets.
 #[test]
 fn break_carries_a_value_on_its_own_line() {
     assert_eq!(
@@ -1019,8 +1065,8 @@ fn break_carries_a_value_on_its_own_line() {
     );
 }
 
-/// `::` reaches into a type, `:` annotates one, and `.` reaches into a value or
-/// a module. All three can meet in one line.
+// `::` reaches into a namespace, a module or a type, `:` annotates one, and `.`
+// reaches into a value and nothing else. All three can meet in one line.
 #[test]
 fn lexes_path_separator() {
     assert_eq!(
@@ -1037,7 +1083,10 @@ fn lexes_path_separator() {
             TokType::Semicolon,
         ]
     );
-    // Through a module, into the type, then into the value it produces.
+    // The two separators interleave in any order, and the lexer keeps them
+    // apart wherever they meet. This one is no longer a program a checker
+    // would take -- a module is reached with `::` now -- but which of them
+    // means what is settled above the lexer, and it emits both regardless.
     assert_eq!(
         lex_types("shapes.Color::Red.name"),
         vec![
@@ -1069,11 +1118,10 @@ fn lexes_path_separator() {
     );
 }
 
-/// A `{` opens one of three things, and the lexer has to know which: a header's
-/// body, a struct literal, or a block. A header claims the first `{` at its own
-/// bracket depth — which is sound because the grammar bans a struct literal from
-/// the top level of a header — and a `{` straight after a type name anywhere
-/// else is a literal.
+// A `{` opens a header's body, a struct literal or a block, and the lexer has to
+// know which. A header claims the first `{` at its own bracket depth, which is
+// sound because the grammar bans a struct literal from a header's top level; a
+// `{` straight after a type name anywhere else is a literal.
 #[test]
 fn struct_literal_is_not_a_block() {
     // A literal is a value, so nothing is inserted inside it: the commas
@@ -1248,9 +1296,9 @@ fn struct_literal_is_not_a_block() {
     );
 }
 
-/// A *block's* `}` at the end of a line ends the statement, even when the next
-/// line opens with an operator that could have continued it. Any other closer
-/// still lets one through, so a method chain hanging off `)` keeps working.
+// A *block's* `}` at the end of a line ends the statement, even when the next
+// line opens with an operator that could have continued it. Any other closer
+// still lets one through, so a method chain hanging off `)` keeps working.
 #[test]
 fn close_brace_ends_the_line() {
     assert_eq!(
@@ -1340,10 +1388,10 @@ fn close_brace_ends_the_line() {
     );
 }
 
-/// `[...]` is an array, `{...}` with colons a map, `{...}` without a set, and a
-/// glued `#` makes either one hashed. All of them are values: their entries are
-/// separated by written commas, and their `}` closes a value rather than a
-/// statement.
+// `[...]` is an array, `{...}` with colons a map, `{...}` without a set, and a
+// glued `#` makes either one hashed. All of them are values: their entries are
+// separated by written commas, and their `}` closes a value rather than a
+// statement.
 #[test]
 fn lexes_collection_literals() {
     assert_eq!(
@@ -1448,8 +1496,8 @@ fn lexes_collection_literals() {
     );
 }
 
-/// `{}` and `{ x }` hold neither separator, so the position decides: a value is
-/// wanted after an `=`, and a block is what stands at the start of a statement.
+// `{}` and `{ x }` hold neither separator, so the position decides: a value is
+// wanted after an `=`, and a block is what stands at the start of a statement.
 #[test]
 fn empty_and_singleton_braces_follow_the_position() {
     // After an `=`, `{}` is the empty map and `{ x }` a set of one: both close a
@@ -1504,10 +1552,9 @@ fn empty_and_singleton_braces_follow_the_position() {
     );
 }
 
-/// A struct literal may not stand at the top level of a header, which is what
-/// lets a header claim the `{` in front of it. A collection literal may, so a
-/// header gives up a brace that can only be one — and keeps waiting for the
-/// body, which is the next brace at its own depth.
+// A struct literal may not stand at the top level of a header, which lets a
+// header claim the `{` in front of it. A collection literal may, so a header
+// gives up a brace that can only be one and waits for the next at its depth.
 #[test]
 fn header_gives_up_a_literal_brace() {
     assert_eq!(
@@ -1615,8 +1662,8 @@ fn header_gives_up_a_literal_brace() {
     );
 }
 
-/// A `;` or a keyword that only a statement can start with settles a brace as a
-/// block, wherever it stands.
+// A `;` or a keyword that only a statement can start with settles a brace as a
+// block, wherever it stands.
 #[test]
 fn statements_still_make_a_block() {
     assert_eq!(
@@ -1681,7 +1728,7 @@ fn statements_still_make_a_block() {
     );
 }
 
-/// Every open form: from, to, to-inclusive, and full.
+// Every open form: from, to, to-inclusive, and full.
 #[test]
 fn lexes_open_ranges() {
     let range_only = |src| {
@@ -1711,8 +1758,8 @@ fn lexes_open_ranges() {
     );
 }
 
-/// A lone `_` is its own token: the match-all pattern, and the name of a
-/// binding whose value is deliberately unused.
+// A lone `_` is its own token: the match-all pattern, and the name of a
+// binding whose value is deliberately unused.
 #[test]
 fn lexes_wildcard() {
     // The wildcard arm of a match.
@@ -1794,16 +1841,11 @@ fn lexes_wildcard() {
     );
 }
 
-/// A name reaches the parser as it was written. Nothing rewrites one on the
-/// way, and an `_` in a name is a character of that name.
-///
-/// It was not always so, and the two places it was tried are both wrong. Over
-/// the source text, a rewrite cannot tell a name from a digit separator, the
-/// inside of a string, or the `_` that is the wildcard. On identifier tokens
-/// it can, but a symbol's name is settled from a declaration that has been
-/// resolved and typed -- which parameter types it takes, which namespace it
-/// sits in -- and none of that is known here. That belongs to codegen; this
-/// test is what says so if it drifts back.
+// A name reaches the parser as it was written: nothing rewrites one on the way,
+// and an `_` in a name is a character of that name. Both places a rewrite was
+// tried are wrong -- over the source text it cannot tell a name from a digit
+// separator, and on tokens the declaration is not yet resolved or typed. That
+// belongs to codegen, and this test says so if it drifts back.
 #[test]
 fn a_name_comes_through_as_it_was_written() {
     assert_eq!(
@@ -1825,8 +1867,8 @@ fn a_name_comes_through_as_it_was_written() {
     assert_eq!(lex_types("const"), vec![TokType::Const]);
 }
 
-/// Reserved as a whole word only. An underscore that starts a longer word is
-/// just a character of that word, exactly as it was before.
+// Reserved as a whole word only. An underscore that starts a longer word is
+// just a character of that word, exactly as it was before.
 #[test]
 fn wildcard_is_a_whole_word_only() {
     for word in ["_x", "__", "_1", "_foo_bar", "x_"] {
@@ -1839,9 +1881,9 @@ fn wildcard_is_a_whole_word_only() {
     }
 }
 
-/// A `_` names a binding, so it closes a declaration as a name does. It may
-/// stand *inside* a type argument list as an inferred argument, but it names no
-/// type of its own, so it opens no generic context and heads no struct literal.
+// A `_` names a binding, so it closes a declaration as a name does. Inside a
+// type argument list it is an inferred argument, but it names no type of its
+// own: it opens no generic context and heads no struct literal.
 #[test]
 fn wildcard_behaves_like_a_name_but_not_a_type() {
     // `let _` is as complete as `let x`, so the newline ends it.
@@ -1887,7 +1929,7 @@ fn wildcard_behaves_like_a_name_but_not_a_type() {
     );
 }
 
-/// A `_` among digits separates them and is dropped from the value.
+// A `_` among digits separates them and is dropped from the value.
 #[test]
 fn wildcard_separates_digits() {
     assert_eq!(lex_types("1_000_000")[0], TokType::IntLiteral(1_000_000));
@@ -1904,7 +1946,7 @@ fn wildcard_separates_digits() {
     );
 }
 
-/// `const` is a declaration of its own, and a keyword only as a whole word.
+// `const` is a declaration of its own, and a keyword only as a whole word.
 #[test]
 fn lexes_const_declaration() {
     assert_eq!(
@@ -1949,8 +1991,8 @@ fn lexes_const_declaration() {
     }
 }
 
-/// Nothing but a statement starts with `const`, so a brace holding one holds
-/// statements — the `:` of the type annotation must not make it a map.
+// Nothing but a statement starts with `const`, so a brace holding one holds
+// statements — the `:` of the type annotation must not make it a map.
 #[test]
 fn const_makes_a_brace_a_block() {
     assert_eq!(
@@ -1974,8 +2016,8 @@ fn const_makes_a_brace_a_block() {
     );
 }
 
-/// A lone `&` is a token now — an immutable reference — and the longer
-/// operators still win over it.
+// A lone `&` is a token now — an immutable reference — and the longer
+// operators still win over it.
 #[test]
 fn lexes_reference_operators() {
     assert_eq!(
@@ -2009,9 +2051,9 @@ fn lexes_reference_operators() {
     );
 }
 
-/// `&&` is the logical operator only where an operand ends in front of it.
-/// Where none does it is two prefix `&`, so a reference to a reference can be
-/// written as one expects.
+// `&&` is the logical operator only where an operand ends in front of it.
+// Where none does it is two prefix `&`, so a reference to a reference can be
+// written as one expects.
 #[test]
 fn splits_a_prefix_ampersand_pair() {
     // Nothing at all in front of it.
@@ -2097,10 +2139,8 @@ fn splits_a_prefix_ampersand_pair() {
     );
 }
 
-/// `^` needs none of that deciding. Nothing is written with a prefix `^`, so
-/// what stands in front of one settles nothing: a single `^` is always the
-/// bitwise operator and a doubled one always the logical one, in every place
-/// where a `&&` would have had to be split.
+// `^` needs none of that deciding: nothing is written with a prefix `^`, so a
+// single one is always bitwise and a doubled one always logical.
 #[test]
 fn a_caret_is_never_split() {
     assert_eq!(
@@ -2166,14 +2206,14 @@ fn a_caret_is_never_split() {
     }
 }
 
-/// The widths of the new pair, which is what a diagnostic underlines.
+// The widths of the new pair, which is what a diagnostic underlines.
 #[test]
 fn the_carets_are_as_wide_as_they_are_written() {
     assert_eq!(lex_spans("a ^ b"), vec![(1, 1), (3, 1), (5, 1), (6, 0)]);
     assert_eq!(lex_spans("a ^^ b"), vec![(1, 1), (3, 2), (6, 1), (7, 0)]);
 }
 
-/// ...and an operand in front of it keeps it whole, wherever that operand ends.
+// ...and an operand in front of it keeps it whole, wherever that operand ends.
 #[test]
 fn an_operand_keeps_the_ampersand_pair_whole() {
     for (source, left) in [
@@ -2243,8 +2283,8 @@ fn an_operand_keeps_the_ampersand_pair_whole() {
     );
 }
 
-/// `*` is prefix and infix both, and where it stands is the whole of what tells
-/// a mutable reference from a product.
+// `*` is prefix and infix both, and where it stands is the whole of what tells
+// a mutable reference from a product.
 #[test]
 fn star_is_prefix_and_infix() {
     assert_eq!(
@@ -2279,8 +2319,8 @@ fn star_is_prefix_and_infix() {
     );
 }
 
-/// A reference is a type like any other: it heads a parameter, and the lexer
-/// keeps its generic context open across one.
+// A reference is a type like any other: it heads a parameter, and the lexer
+// keeps its generic context open across one.
 #[test]
 fn lexes_reference_types() {
     assert_eq!(
@@ -2354,8 +2394,8 @@ fn lexes_reference_types() {
     );
 }
 
-/// A fixed array and a view are ordinary types: they end a declaration at the
-/// `]` that closes them, and they stand in a type argument list like any other.
+// A fixed array and a view are ordinary types: they end a declaration at the
+// `]` that closes them, and they stand in a type argument list like any other.
 #[test]
 fn lexes_array_and_view_types() {
     // `T[8]` owns its eight, and the `]` closes the statement.
@@ -2457,8 +2497,8 @@ fn lexes_array_and_view_types() {
     );
 }
 
-/// `null` names a type as well as a value, so it stands in a type argument
-/// list, ends a declaration there, and `void` is an ordinary identifier again.
+// `null` names a type as well as a value, so it stands in a type argument
+// list, ends a declaration there, and `void` is an ordinary identifier again.
 #[test]
 fn null_is_a_type_and_a_literal() {
     assert_eq!(
@@ -2517,8 +2557,8 @@ fn null_is_a_type_and_a_literal() {
     );
 }
 
-/// Every loop takes a `break` with a value, and a bare `break` still ends its
-/// own statement at a line break.
+// Every loop takes a `break` with a value, and a bare `break` still ends its
+// own statement at a line break.
 #[test]
 fn every_loop_breaks_with_a_value() {
     assert_eq!(
@@ -2560,8 +2600,8 @@ fn every_loop_breaks_with_a_value() {
     );
 }
 
-/// A namespace body holds items, so it is a statement body: separators are
-/// inserted inside it as they are at file scope.
+// A namespace body holds items, so it is a statement body: separators are
+// inserted inside it as they are at file scope.
 #[test]
 fn lexes_namespace_declaration() {
     assert_eq!(
@@ -2611,8 +2651,8 @@ fn lexes_namespace_declaration() {
     );
 }
 
-/// A qualified name reaches through a namespace with `::`, and it may do so
-/// inside a type argument list without abandoning the generic context.
+// A qualified name reaches through a namespace with `::`, and it may do so
+// inside a type argument list without abandoning the generic context.
 #[test]
 fn namespace_paths_use_the_scope_separator() {
     assert_eq!(
@@ -2654,17 +2694,16 @@ fn namespace_paths_use_the_scope_separator() {
     );
 }
 
-/// An attribute is a prefix of the declaration it annotates, so no separator is
-/// inserted at the end of one however many lines the list runs to.
+// An attribute is a prefix of the declaration it annotates, so no separator is
+// inserted at the end of one however many lines the list runs to. `%name` is
+// one token: the sigil is spent by the lexer and never reaches the parser.
 #[test]
 fn lexes_attributes() {
     assert_eq!(
-        lex_types("@inline\n@repr(C)\npublic fn f();"),
+        lex_types("%inline\n%repr(C)\npublic fn f();"),
         vec![
-            TokType::At,
-            TokType::Identifier("inline".to_string()),
-            TokType::At,
-            TokType::Identifier("repr".to_string()),
+            TokType::AttrName("inline".to_string()),
+            TokType::AttrName("repr".to_string()),
             TokType::LParen,
             TokType::Identifier("C".to_string()),
             TokType::RParen,
@@ -2678,15 +2717,14 @@ fn lexes_attributes() {
     );
     // The statement in front of a list still ends: `@` is no continuation.
     assert_eq!(
-        lex_types("let x = 1\n@inline\nfn f();"),
+        lex_types("let x = 1\n%inline\nfn f();"),
         vec![
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
             TokType::IntLiteral(1),
             TokType::Semicolon,
-            TokType::At,
-            TokType::Identifier("inline".to_string()),
+            TokType::AttrName("inline".to_string()),
             TokType::Fn,
             TokType::Identifier("f".to_string()),
             TokType::LParen,
@@ -2697,14 +2735,17 @@ fn lexes_attributes() {
     // Only a declaration follows one, so a brace holding an attribute holds
     // statements — not a set of one.
     assert_eq!(
-        lex_types("let v = {\n@inline\nfn f();\n}")[3],
+        lex_types("let v = {\n%inline\nfn f();\n}")[3],
         TokType::LCurlyBracket
     );
-    assert_eq!(lex_types("let v = {\n@inline\nfn f();\n}")[4], TokType::At);
+    assert_eq!(
+        lex_types("let v = {\n%inline\nfn f();\n}")[4],
+        TokType::AttrName("inline".to_string())
+    );
 }
 
-/// `|` is a token of its own — pattern alternation, and a closure's parameter
-/// list — split from `||` by whether an operand ends in front of it.
+// `|` is a token of its own — pattern alternation, and a closure's parameter
+// list — split from `||` by whether an operand ends in front of it.
 #[test]
 fn splits_a_prefix_pipe_pair() {
     assert_eq!(
@@ -2776,8 +2817,8 @@ fn splits_a_prefix_pipe_pair() {
     );
 }
 
-/// A signature may carry `const`, its own generic parameters and a `where`
-/// clause, and the clause may start on a line of its own.
+// A signature may carry `const`, its own generic parameters and a `where`
+// clause, and the clause may start on a line of its own.
 #[test]
 fn lexes_const_fn_impl_generics_and_where() {
     assert_eq!(
@@ -2874,8 +2915,8 @@ fn lexes_const_fn_impl_generics_and_where() {
     );
 }
 
-/// `move` marks a closure that captures by value, and the `||` after it still
-/// splits into two `|`, since a keyword ends no operand.
+// `move` marks a closure that captures by value, and the `||` after it still
+// splits into two `|`, since a keyword ends no operand.
 #[test]
 fn lexes_move_closures() {
     assert_eq!(
@@ -2904,8 +2945,8 @@ fn lexes_move_closures() {
     );
 }
 
-/// Parentheses group a type, which is what gives an array of references a
-/// spelling. They may stand in a type argument without abandoning the context.
+// Parentheses group a type, which is what gives an array of references a
+// spelling. They may stand in a type argument without abandoning the context.
 #[test]
 fn lexes_grouped_types() {
     assert_eq!(
@@ -2955,15 +2996,14 @@ fn lexes_grouped_types() {
     );
 }
 
-/// Each of the five attributes lexes, arguments and all, and none of them ends
-/// the statement its declaration begins.
+// Each of the five attributes lexes, arguments and all, and none of them ends
+// the statement its declaration begins.
 #[test]
 fn lexes_the_five_attributes() {
     assert_eq!(
-        lex_types("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;"),
+        lex_types("%symbol(\"malloc\")\nfn malloc(n: u64): *u8;"),
         vec![
-            TokType::At,
-            TokType::Identifier("symbol".to_string()),
+            TokType::AttrName("symbol".to_string()),
             TokType::LParen,
             TokType::StringLiteral("malloc".to_string()),
             TokType::RParen,
@@ -2980,17 +3020,14 @@ fn lexes_the_five_attributes() {
             TokType::Semicolon,
         ]
     );
-    // `@noinline` is a word of its own: `never` names the empty type now, so
-    // `@inline(never)` would put a keyword where an IDENTIFIER belongs.
+    // `%noinline` is a word of its own: `never` names the empty type now, so
+    // `%inline(never)` would put a keyword where an IDENTIFIER belongs.
     assert_eq!(
-        lex_types("@must_use\n@noinline\n@test\nfn f();"),
+        lex_types("%must_use\n%noinline\n%test\nfn f();"),
         vec![
-            TokType::At,
-            TokType::Identifier("must_use".to_string()),
-            TokType::At,
-            TokType::Identifier("noinline".to_string()),
-            TokType::At,
-            TokType::Identifier("test".to_string()),
+            TokType::AttrName("must_use".to_string()),
+            TokType::AttrName("noinline".to_string()),
+            TokType::AttrName("test".to_string()),
             TokType::Fn,
             TokType::Identifier("f".to_string()),
             TokType::LParen,
@@ -3000,10 +3037,9 @@ fn lexes_the_five_attributes() {
     );
     // `must_use` is a word with a `_` in it, not the wildcard and a name.
     assert_eq!(
-        lex_types("@deprecated(\"use clamp\")\nlet x = 1\n"),
+        lex_types("%deprecated(\"use clamp\")\nlet x = 1\n"),
         vec![
-            TokType::At,
-            TokType::Identifier("deprecated".to_string()),
+            TokType::AttrName("deprecated".to_string()),
             TokType::LParen,
             TokType::StringLiteral("use clamp".to_string()),
             TokType::RParen,
@@ -3016,8 +3052,8 @@ fn lexes_the_five_attributes() {
     );
 }
 
-/// `never` is a type name like any other: it ends a declaration, stands in a
-/// type argument, and is a whole word only.
+// `never` is a type name like any other: it ends a declaration, stands in a
+// type argument, and is a whole word only.
 #[test]
 fn lexes_the_never_type() {
     assert_eq!(
@@ -3081,9 +3117,8 @@ fn lexes_the_never_type() {
     }
 }
 
-/// `unsafe` marks a fn whose caller has something to prove, and prefixes the
-/// statement that answers for it. Its two places are the only two, and it is a
-/// whole word like every other keyword.
+// `unsafe` marks a fn whose caller has something to prove, and prefixes the
+// statement that answers for it. Those two places are the only two.
 #[test]
 fn lexes_unsafe() {
     // On a signature it stands after the visibility and in front of the `fn`.
@@ -3157,9 +3192,9 @@ fn lexes_unsafe() {
     }
 }
 
-/// `unsafe` heads a body only where a `{` really follows it. That is what keeps
-/// the one-line form from swallowing the brace of whatever it prefixes, and it
-/// is the whole of the difference between the two forms.
+// `unsafe` heads a body only where a `{` really follows it. That is what keeps
+// the one-line form from swallowing the brace of whatever it prefixes, and it
+// is the whole of the difference between the two forms.
 #[test]
 fn unsafe_claims_only_a_brace_that_follows_it() {
     // With a brace: a statement body, so the newlines inside it insert.

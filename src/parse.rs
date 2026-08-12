@@ -2,9 +2,8 @@ pub mod ast_nodes;
 pub mod parser;
 pub mod tables;
 
-/// Runs the generated tables over a token stream and says whether they accept
-/// it. No tree is built: this is the tables' own test, and what it tests is
-/// that the grammar and the lexer agree about the language.
+// Runs the tables over a token stream and says whether they accept it. No tree
+// is built: this tests that the grammar and the lexer agree about the language.
 #[cfg(test)]
 fn recognise(source: &str) -> Result<(), String> {
     use crate::lex::lexer::Lexer;
@@ -41,16 +40,15 @@ fn accepts(source: &str) {
     }
 }
 
-/// A statement is not an item, so the snippets that are statements are given a
-/// function to stand in.
+// A statement is not an item, so these snippets get a function to stand in.
 #[cfg(test)]
 fn accepts_body(body: &str) {
     accepts(&format!("fn main() {{\n{}\n}}\n", body));
 }
 
-/// Every declaration a file can hold, in the spellings the lexer's own tests
-/// use. The two halves have to agree: the grammar decides what a `{` may be
-/// only because the lexer has already decided what this one is.
+// Every declaration a file can hold, in the lexer tests' own spellings: the
+// grammar decides what a `{` may be only because the lexer already said what
+// this one is.
 #[test]
 fn parses_declarations() {
     accepts("let x = 25;");
@@ -70,8 +68,8 @@ fn parses_declarations() {
     accepts("impl Show for str {\n    fn show(this): str { return this }\n}\n");
     accepts("impl<T> Show for T[] {\n    fn show(this): str;\n}\n");
     accepts("namespace limits {\n    public const MAX: i32 = 255\n}\n");
-    accepts("@inline\n@repr(C)\npublic fn f();\n");
-    accepts("@symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n");
+    accepts("%inline\n%repr(C)\npublic fn f();\n");
+    accepts("%symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n");
     accepts("const fn square(n: i32): i32 { n * n }\n");
     accepts("public unsafe fn write(dst: *u8[], n: u64);\n");
     accepts("fn panic(m: str): never;\n");
@@ -79,7 +77,7 @@ fn parses_declarations() {
     accepts("fn f() {\n    let x = 1\n    g(x)\n}\n");
 }
 
-/// The statement and expression forms, from the same source.
+// The statement and expression forms, from the same source.
 #[test]
 fn parses_statements() {
     accepts_body("let x: i32 = 25;");
@@ -100,7 +98,7 @@ fn parses_statements() {
     accepts_body("let w: *i32[] = *a[1..3]\nlet all = s[..]");
     accepts_body("let view: &i32[]\nlet refs: (&i32)[8]");
     accepts_body("let grid: i32[ROWS][ROWS]\nlet v: Vec<_> = f()");
-    accepts_body("let c = shapes.Color::Red\nlet n = limits::MAX");
+    accepts_body("let c = shapes::Color::Red.name\nlet n = limits::MAX");
     // A primitive has methods like anything else, and "5." is not a float.
     accepts_body("let n = 5.abs()\nlet f = 5.0 + 1.0");
     accepts_body("let found = for x in xs {\n    if p(x) { break x }\n}");
@@ -108,13 +106,16 @@ fn parses_statements() {
     accepts_body("return");
 }
 
-/// A `{` is a block or a value, and the lexer says which. Every one of these
-/// turns on it.
+// A `{` is a block or a value, and the lexer says which.
 #[test]
 fn parses_braces_of_both_kinds() {
     // A literal, and a block whose statements sit in the same place.
     accepts_body("let p = Point {\n    x: 1,\n    y: 2,\n}");
-    accepts_body("let p = shapes.Point { x: 1 }");
+    accepts_body("let p = shapes::Point { x: 1 }");
+    // The brace hangs off whatever the separators built, and does not care
+    // which of them built it -- that a `.` chain is not how a module is
+    // reached is settled above the grammar, which takes either.
+    accepts_body("let p = cfg.shapes.Point { x: 1 }");
     accepts_body("let v = {\n    f()\n    g()\n}\n{\n    h()\n    k()\n}");
     accepts_body("let x = {\n    let a = 1\n    a\n}");
     accepts_body("let x = {\n    f();\n    g()\n}");
@@ -151,8 +152,8 @@ fn parses_match_and_patterns() {
     accepts_body("match x {\n    1 => a\n}\n-1");
 }
 
-/// Tuples: a type, a literal, a pattern and the `.0` that reaches into one.
-/// The comma is what makes each of them, so the group of one still groups.
+// Tuples: a type, a literal, a pattern and the `.0` that reaches into one. The
+// comma makes each of them, so the group of one still groups.
 #[test]
 fn parses_tuples() {
     accepts("fn divmod(a: i32, b: i32): (i32, i32) {\n    (a / b, a % b)\n}\n");
@@ -190,9 +191,9 @@ fn parses_unsafe() {
     accepts_body("unsafe fn write(n: u64) {\n    f()\n}");
 }
 
-/// `&` and `|` between two operands. Both characters already spelled other
-/// things -- a reference, a closure's parameters, a pattern's alternatives --
-/// and every one of those has to go on reading as it did.
+// `&` and `|` between two operands. Both already spelled other things -- a
+// reference, a closure's parameters, a pattern's alternatives -- and each of
+// those has to go on reading as it did.
 #[test]
 fn parses_the_bitwise_operators() {
     accepts_body("let m = a & b\nlet n = a | b\nlet o = a ^ b");
@@ -221,14 +222,127 @@ fn parses_the_bitwise_operators() {
     assert!(recognise("fn main() {\n    a &&= b\n}\n").is_err());
 }
 
+// `Copy` and `Drop` are traits the compiler knows by name, and neither needs a
+// rule of its own: an empty impl body and a one-method impl are both written
+// already. Nothing here is new grammar -- this pins that down so it stays true.
+#[test]
+fn copy_and_drop_need_no_grammar_of_their_own() {
+    // `Drop` holds the one method, whose receiver writes to what it releases.
+    accepts("impl Drop for Buf {\n    fn drop(this: *Buf) {\n        unsafe free(this.p)\n    }\n}\n");
+    accepts("impl Drop for Buf {\n    fn drop(this: *Buf);\n}\n");
+    // `Copy` holds nothing, so its body is empty.
+    accepts("impl Copy for Point {}\n");
+    accepts("trait Copy {}\n");
+    accepts("trait Drop {\n    fn drop(this: *This);\n}\n");
+    // Both compose with everything an impl already takes: parameters, a
+    // `where` clause, and the lifetimes of section 3.
+    accepts("impl<T> Drop for Vec<T> {\n    fn drop(this: *Vec<T>);\n}\n");
+    accepts("impl<T> Copy for Pair<T> where T: Copy {}\n");
+    accepts("impl<~a> Drop for Parser<~a> {\n    fn drop(this: *Parser<~a>);\n}\n");
+    accepts("impl<~a, T> Drop for Held<~a, T> where T: ~a {\n    fn drop(this: *Held<~a, T>);\n}\n");
+}
+
+// A macro is declared with a keyword and invoked with `@`. Its parameters are
+// `$name:fragment`, and the fragment is an IDENTIFIER the checker knows rather
+// than a keyword the grammar does.
+#[test]
+fn parses_macros() {
+    accepts("macro twice($x:expr) {\n    $x\n    $x\n}\n");
+    accepts("macro nothing() {\n    f()\n}\n");
+    accepts("macro pair($a:expr, $b:expr) {\n    ($a, $b)\n}\n");
+    // A macro is a declaration, so it takes attributes and a visibility, and
+    // stands inside a namespace or a block like any other.
+    accepts("%deprecated(\"use log\")\npublic macro shout($m:expr) {\n    print($m)\n}\n");
+    accepts("namespace m {\n    macro one($x:expr) {\n        $x\n    }\n}\n");
+    accepts_body("macro inner($x:expr) {\n    $x\n}\nlet n = 1");
+    // The invocation is an operand, so it stands wherever a value does.
+    accepts_body("let n = @twice(f())");
+    accepts_body("@log(\"started\")");
+    accepts_body("f(@twice(x), 1)");
+    accepts_body("let n = @nothing() + 1");
+    // A `$x` stands in the three places its fragment might let it: an operand,
+    // a type, and a pattern.
+    accepts("macro m($x:expr, $t:ident, $p:ident) {\n    let v: $t = $x\n    match v {\n        $p => 1,\n        _ => 2,\n    }\n}\n");
+    accepts("macro g($t:ident) {\n    let v: Vec<$t> = empty()\n}\n");
+    // A fragment is an IDENTIFIER here, so the grammar takes any word; which
+    // words are fragments is the expander's, and `banana` is its error.
+    accepts("macro b($x:banana) {\n    $x\n}\n");
+    // A macro needs a name after its sigil, and its parameters need fragments.
+    assert!(recognise("fn main() {\n    let n = @(1)\n}\n").is_err());
+    assert!(recognise("macro m($x) {\n    $x\n}\n").is_err());
+}
+
+// `%` spells the remainder operator and an attribute both, and where it stands
+// is the whole of what tells them apart -- the rule `*` already follows.
+#[test]
+fn percent_is_an_attribute_and_an_operator() {
+    accepts_body("let r = a % b\nlet s = a%b\nlet t = 7 % 2");
+    accepts("%inline\nfn f();\n");
+    // After a statement ends, a `%` glued to a name is the attribute.
+    accepts("let x = 1\n%inline\nfn f();\n");
+    // A declaration inside a block takes no attributes -- `<statement>` is a
+    // bare `<declaration>`, where an `<item>` carries the list -- so what is
+    // checked here is only that the lexer hands the attribute over.
+    accepts("let v = a % b\n%inline\nfn g();\n");
+}
+
+// A declaration may take more than one generic parameter. The commas between
+// them sit in a `<..>` that `bracket_depth` does not count, so the header has
+// to keep waiting for its body across them -- exactly as it does across the
+// commas of a parameter list.
+#[test]
+fn a_header_survives_the_commas_of_its_generic_parameters() {
+    accepts("struct Pair<A, B> {\n    l: A,\n    r: B,\n}\n");
+    accepts("enum Either<A, B> {\n    L(A),\n    R(B),\n}\n");
+    accepts("trait Into<A, B> {\n    fn into(this): B;\n}\n");
+    accepts("impl<A, B> Into<A, B> for Pair<A, B> {\n    fn into(this): B;\n}\n");
+    accepts("fn zip<A, B>(a: A, b: B): (A, B) {\n    (a, b)\n}\n");
+    // Three of them, and one carrying bounds, still leave the brace alone.
+    accepts("struct T3<A, B, C> {\n    a: A,\n}\n");
+    accepts("struct Ord2<A: Ord, B: Ord + Show> {\n    a: A,\n}\n");
+    // And a nested argument list inside the parameters is still not the body.
+    accepts("struct Held<A, B> {\n    m: Map<A, Vec<B>>,\n}\n");
+}
+
+// A lifetime is `~a`: one token, since `~` spells nothing else. It stands as a
+// parameter, as a type argument, in front of what a reference refers to, and on
+// either side of a `where` predicate's colon.
+#[test]
+fn parses_lifetimes() {
+    accepts("fn longest<~a>(x: &~a str, y: &~a str): &~a str;\n");
+    accepts("struct Parser<~a> {\n    text: &~a str,\n}\n");
+    accepts("struct Pair<~a, ~b, T> {\n    l: &~a T,\n    r: &~b T,\n}\n");
+    // Bounds, both kinds, inline and in a `where`.
+    accepts("fn f<~a, ~b: ~a, T: Show + ~a>(x: &~a T);\n");
+    accepts("fn f<~a, T>(x: &~a T) where T: ~a, ~a: ~b;\n");
+    accepts("impl<~a> Show for Parser<~a> {\n    fn show(this: &~a Parser<~a>): str;\n}\n");
+    // A mutable reference names one the same way, and a view is a reference.
+    accepts_body("let w: *~a i32 = *a\nlet v: &~a i32[] = &a");
+    // Nested arguments still close: the `>>` splits with a lifetime inside.
+    accepts_body("let m: Map<~a, Vec<&~b str>> = empty()");
+    accepts_body("let n: Vec<Vec<~a>> = empty()");
+    // `~_` is the one with no name worth giving.
+    accepts_body("let p: &~_ i32 = &x");
+    // A lifetime is not a value, and `~` alone is not a lifetime.
+    assert!(recognise("fn main() {\n    let x = ~a\n}\n").is_err());
+    assert!(recognise("fn f<~>(x: i32);\n").is_err());
+}
+
+// The `~` of a lifetime takes nothing away from a char literal, which is what
+// the spelling was chosen for: `'a'` needs no lookahead to stay itself.
+#[test]
+fn a_lifetime_leaves_char_literals_alone() {
+    accepts_body("let c = 'a'\nlet d = '\\n'");
+    accepts("fn f<~a>(c: char, s: &~a str): char { 'x' }\n");
+}
+
 #[test]
 fn parses_wildcards_and_discards() {
     accepts_body("let _ = f()\nfor _ in 0..3 {}\nlet _foo = 1");
     accepts("fn f(_: i32) {}\n");
 }
 
-/// What the grammar is not: the cases where a reading had to be given up to
-/// keep the tables free of conflicts.
+// The readings given up to keep the tables free of conflicts.
 #[test]
 fn rejects_what_the_grammar_gave_up() {
     // A cast names no type arguments; parenthesise to say it.
@@ -242,7 +356,7 @@ fn rejects_what_the_grammar_gave_up() {
     accepts_body("let f = || { break }");
 }
 
-/// The message an error carries: where it is, what was wanted, what was there.
+// The message an error carries: where, what was wanted, what was there.
 #[test]
 fn says_what_it_expected() {
     // A state that permits one thing says which thing.
@@ -269,20 +383,25 @@ fn says_what_it_expected() {
     );
 }
 
-/// A token the lexer could not read is not a terminal, so no state has an
-/// action for it. What it says of itself is the whole message: an `expected ..`
-/// would be about a token that was never there.
+// A token the lexer could not read is not a terminal, so no state has an action
+// for it. What it says of itself is the whole message.
 #[test]
 fn says_what_the_lexer_could_not_read() {
     assert_eq!(
-        recognise("fn f() {\n    let x = $\n}\n").unwrap_err(),
-        "2:13: Unexpected character '$'"
+        recognise("fn f() {\n    let x = ?\n}\n").unwrap_err(),
+        "2:13: Unexpected character '?'"
     );
     assert_eq!(
         recognise("fn f() {\n    let s = \"oops\n}\n").unwrap_err(),
         "2:13: Unterminated string"
     );
 }
+
+
+
+
+
+
 
 
 

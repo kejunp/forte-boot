@@ -74,13 +74,20 @@ anything.
 <declaration>. A <var_decl> at file scope is a global. A <const_decl> is the
 compile-time constant, and stands there and in a block alike (section 2).
 
-<attribute>. One "@" per attribute — "@inline", "@repr(C)",
-"@derive(Show, Clone)" — and a list of them is a list, written one after
+<attribute>. One "%" per attribute — "%inline", "%repr(C)",
+"%derive(Show, Clone)" — and a list of them is a list, written one after
 another with nothing between:
 
-    @inline
-    @cold
+    %inline
+    %cold
     public fn panic(m: str): null
+
+The sigil and the name are one token, so nothing separates them and no space
+may: what the parser is handed is the name, and the "%" is spent before it
+gets there. That character spells the remainder operator as well, and where
+it stands is the whole of what tells the two apart — an operand in front of
+it makes it the operator, and nothing in front makes it an attribute. It is
+the rule "*" already follows, "a * b" being a product and "*b" a reference.
 
 An attribute is a prefix of the declaration it annotates and not a statement
 of its own, so the lexer inserts no separator at the end of one however many
@@ -88,8 +95,8 @@ lines the list runs to. The arguments' "(" is glued to the name, as the "["
 of the older "#[...]" spelling was; a space there ends the attribute at the
 name and leaves the parenthesis for the parser to complain about.
 
-That leaves "#" with one use instead of two: "#{" makes a map or set literal
-hashed (section 5), and nothing else in the language begins with it.
+That leaves "#" with one use: "#{" makes a map or set literal hashed
+(section 5). "@" has one too, and it is a macro (below).
 
 The set of them is closed: the compiler knows every attribute there is, and
 one it does not know is an error where it is written rather than something
@@ -97,33 +104,42 @@ ignored. No library defines one, and adding one is a change to the compiler —
 which is what buys a misspelling an error naming what was meant. These are
 the six:
 
-  @symbol("malloc")     Gives a fn the exact symbol name it is compiled to,
+  %symbol("malloc")     Gives a fn the exact symbol name it is compiled to,
                         in place of the mangled one. A name is otherwise
-                        mangled to "name_type_type_..." so that two functions
-                        may share it, and nothing outside the language can
-                        predict the result — so this is what a call out to C,
-                        or a call in from it, is written with. Takes one
-                        STRING_LITERAL.
-  @must_use             Says the value a fn returns may not be dropped: an
-                        <expr_stmt> that discards it is an error. Worth
+                        mangled by writing each part as its length and then
+                        its characters — "add" of two i32 is "3add3i323i32" —
+                        so that two functions may share a name. The length is
+                        what makes it unambiguous, and it is why nothing has
+                        to be escaped on the way in: an "_" inside a name is
+                        a character like any other, where a separator between
+                        the parts would have had to reserve one. Nothing
+                        outside the language can predict the result, so this
+                        is what a call out to C, or a call in from it, is
+                        written with. Takes one STRING_LITERAL.
+  %must_use             Says the value a fn returns may not be thrown away:
+                        an <expr_stmt> that discards it is an error. The word
+                        is not "dropped", which section 2 spends on releasing
+                        a value that owns something -- a thrown-away value is
+                        released too, and the complaint is that nobody read
+                        it first. Worth
                         having because "null" belongs to every type
                         (section 3), so a result nobody looked at is exactly
                         what a missed failure looks like. "let _ = f()" is
                         how to say the value really was meant to go.
-  @inline               A hint, and the one thing here a backend may ignore.
-  @noinline             The other direction, and the more useful of the two:
+  %inline               A hint, and the one thing here a backend may ignore.
+  %noinline             The other direction, and the more useful of the two:
                         it is a promise about what a stack trace will show.
-                        A word of its own rather than "@inline(never)",
+                        A word of its own rather than "%inline(never)",
                         since "never" names the empty type (section 3) and an
                         <attr_arg> takes an IDENTIFIER.
-  @deprecated("...")    Warns wherever the thing it marks is used, and says
+  %deprecated("...")    Warns wherever the thing it marks is used, and says
                         in its own words what to use instead. It goes on any
                         declaration.
-  @test                 Marks a fn as a test: no parameters, "null" returned,
+  %test                 Marks a fn as a test: no parameters, "null" returned,
                         collected and run on its own rather than compiled
                         into an ordinary build.
 
-"@repr", "@derive" and "@cfg" are the names to expect next, and none of them
+"%repr", "%derive" and "%cfg" are the names to expect next, and none of them
 is reserved: each needs something the language has not got — a layout story,
 traits with code behind them, and a configuration to ask about.
 
@@ -174,7 +190,7 @@ where every argument is a constant that the call folds away.
 
 <fn_sig>, "unsafe". An "unsafe fn" is one whose caller has something to
 prove that the checker cannot — that a run really holds the number of
-elements it was said to hold, that what a "@symbol" names on the other side
+elements it was said to hold, that what a "%symbol" names on the other side
 does what its declaration here claims, whatever the function happens to
 need. What the obligation is is written where the function is documented and
 nowhere the compiler can read it; the word only says that there is one. So
@@ -234,6 +250,58 @@ underscores, and bind as one. Nor is it an expression — it may not stand on
 the right of anything, so a value is discarded by binding it, "let _ = f()",
 and not by assigning to it: "_ = f()" is not an assignment.
 
+<macro_decl>. A macro is declared with a word and invoked with a sigil, which
+is the opposite way round from everything else and is the point: the
+declaration reads as the declaration it is, and the use is marked wherever it
+stands.
+
+    macro twice($x:expr) {
+        $x
+        $x
+    }
+
+    let n = @twice(f())
+
+A parameter is "$name:fragment". The "$" and the name are one token, as the
+"%" of an attribute is and the "~" of a lifetime; the fragment is the word
+after the colon, and it says what kind of thing the argument must be. The
+fragments are an IDENTIFIER to the grammar rather than a keyword, and the set
+of them is closed the way the attributes are: the compiler knows every one
+there is, and a misspelling is an error naming what was meant rather than a
+fragment nobody defined. There are three:
+
+  expr      Any expression, and so no restriction at all.
+  ident     A bare name. It is what a parameter standing in for a type asks
+            for, a name being a named type wherever one is written.
+  lit       A literal.
+
+Three and not Rust's dozen, because an argument is an <expression> and these
+are the three an expression can be. There is no "ty": "@m(i32)" does not
+parse at all, a primitive being no <primary>, so a fragment that could only
+ever be handed a name would be "ident" under another spelling. What that
+costs is that no macro takes a primitive type as an argument, which is the
+one thing the shape of an argument list rules out.
+
+Where "$x" may stand is what its fragment decides, and the grammar admits it
+in three places — an operand, a base type, a pattern — leaving which of the
+three to the checker. That is the same division <const_expr> is written with:
+the shape is the grammar's and the rule about it is not.
+
+An invocation is an operand, "@twice(f())", and so stands wherever a value
+does, a statement included — an expression is a statement already, so nothing
+is written twice to say it. It is not an item: a macro cannot make a
+declaration, and the pipeline is what that buys, expansion running before
+`sema` looks at names but after the items are the ones the file was written
+with (section 8).
+
+Expanding is copying: the body's block, with each "$x" replaced by the
+argument that stood against it, and the argument copied afresh at each use so
+that a parameter written twice is the expression twice. A macro may invoke
+another and may invoke itself, and nothing here proves either stops, so a
+depth stands in for the proof and a program that runs past it is refused.
+Nothing survives the pass — a declaration is dropped where it was written,
+there being no macro of any kind past this point.
+
 <impl_decl>. What an impl is written about is a <type>, and any type will do:
 a struct, an enum, an array, a reference, a primitive. "impl i32" and "impl
 Show for str" are both said, and nothing marks a primitive out as the language
@@ -243,6 +311,40 @@ does not hold one kind of type apart from another.
 members are <fn_decl>s and there is no other kind: no constant, no type, no
 field. Whatever else wants to be grouped under a name is grouped by
 <namespace_decl> below, which is the thing for it.
+
+Two trait names mean something to the compiler, and neither needs a rule of
+its own to be written. "Copy" says the type is copied rather than moved
+(above, <var_decl>) and holds nothing:
+
+    impl Copy for Point {}
+
+"Drop" says what releasing one comes to, and holds the one method:
+
+    impl Drop for Buf {
+        fn drop(this: *Buf) {
+            unsafe free(this.p)
+        }
+    }
+
+The receiver is a "*Buf" because releasing writes to what it releases, and
+that is the ordinary spelling for it — nothing about the declaration is
+special, which is the point of putting it in a trait rather than in a form of
+its own. What is special is the name, and that is a rule for the checker, as
+the closed set of attributes is.
+
+When it runs is the whole of what it is for. A value that moves has one owner
+at a time, so the end of that owner is the one place a release belongs: a
+local at the end of its block, a temporary at the end of its statement, a
+field when the value holding it goes, and nothing at all where the value was
+moved away first. Fields go in the order they were declared and locals in the
+reverse of it, which is the order that lets a later one still refer to an
+earlier one.
+
+What is left for the checker rather than settled here: whether "drop" may be
+called by hand, whether a type with a "Drop" may be returned from a "const
+fn", and what happens to the rest of a value when a "drop" of one of its
+fields fails to finish. A release that runs while something still refers to
+the value is the aliasing rule's business (section 3) and is refused there.
 
 <namespace_decl>. A namespace is a name put in front of a list of items. It
 holds whatever a file holds — a fn, a struct, an enum, a constant, another
@@ -269,6 +371,70 @@ lands on a value.
 Nesting falls out of the rule — a namespace is an <item> like any other — and
 "public" is needed at both levels to escape both, since a public member of a
 private namespace is reachable only from inside it.
+
+<var_decl>. "let" binds a name that is read and never written, "var" one
+that may be assigned again. That is the whole of the difference, and it says
+nothing about when the value is worked out — a <const_decl> is what says
+that. It is the same distinction "&" and "*" draw over a borrowed place
+(section 3), so the two pairs are one rule learned once: the left of each is
+read-only and the right of each is not.
+
+Mutability is the root binding's, and writing reaches through whatever is
+reached from it. A field or an element of a "var" may be assigned and one of
+a "let" may not, so there is no marking a single field of a "let" writable,
+and none weakening one of a "var" either:
+
+    let  origin = Point { x: 0, y: 0 }
+    var  cursor = Point { x: 0, y: 0 }
+    cursor.x = 1                     // a place the writer may write to
+    origin.x = 1                     // refused: its root is a "let"
+
+What a "let" fixes is the binding and not the referent. A "let" of reference
+type refers to one place for its life, and whether anything may be written
+through it is the reference's own business — "&" says no and "*" says yes.
+So "let p: *i32" never re-aims and still writes into what it refers to, which
+is the pair section 5 lays out beside its "var" counterpart.
+
+Both halves after the name are optional, which is what the <const_decl> below
+is contrasted with. The type is inferred from the initializer where one is
+written and written out where none is, "let grid: i32[ROWS][ROWS]"; a
+<var_decl> with neither is a shape the grammar admits and the checker has to
+answer for, as is a "let" read before it is given a value.
+
+What "let b = a" does to a is move it. The value goes to the new name and the
+old one is done with: reading a after that is refused where it is written,
+and so is passing it, returning it or assigning through it. The same is true
+of every other place a value is handed over — an argument, a return, the
+right of an assignment, a field of a literal being built — since all of them
+are one thing said in four places, and a value that has gone has gone
+whichever of them took it.
+
+    let a = Buf { .. }
+    let b = a                    // a is done with
+    f(a)                         // refused: a was moved to b
+
+Copying is what a type asks for, and it asks with "impl Copy for Point {}" —
+a trait with nothing in it, known to the compiler by its name as the six
+attributes are. The primitives copy without asking, and so do "null", a
+reference, and a fixed array or tuple every part of which copies; everything
+else moves until it says otherwise. A type cannot have both a "Copy" and a
+"Drop" (section 2, <impl_member>): a value that has something to release is
+a value there had better be one of.
+
+That default is the other way round from the language's first draft, and the
+reason is what a move buys rather than what a copy costs. A value that moves
+has one owner at a time, which is what makes releasing it at the end of that
+owner's life a thing the compiler can do rather than a thing a reader has to
+remember — and a copy of a thing that owns something is two owners and one
+release too few. Which values those are is the checker's to work out, as
+everything else about a reference is.
+
+Nothing is written to move. "move" is a closure's capture mode (section 5)
+and stays one; a move here is what the type already meant, and the line that
+does it looks like the line that copies. The cost is Rust's cost, said
+plainly: whether "let b = a" ends a's life is a fact about a's type and not
+about the line, so a reader who does not know the type does not know what
+the line did.
 
 <const_decl>. A constant is a name for a value the compiler works out for
 itself: "const MAX: i32 = 1 << 20". Both halves are required where a
@@ -363,6 +529,33 @@ read, called, indexed and reached into exactly as that place is, so "&" and
 distinction "let" and "var" draw over a binding, drawn instead over a
 borrowed place.
 
+How many of each may stand at once is the other half of what the two say. A
+place is reached either through one "*" and nothing else, or through any
+number of "&" and no "*" — one mutable reference or many immutable ones, and
+never both. That exclusion is what makes "&" worth more than a promise not to
+write: a reader may take it that nothing moves under it while it holds the
+reference, which is a fact about the program rather than about the manners of
+whoever else is holding one.
+
+It is a rule about places and not about names, so it reaches wherever a
+reference is taken and not only where one is spelled out. A "this: *Point"
+receiver holds a mutable reference to the whole point for the length of the
+call, so nothing reads that point while the method runs; a closure that
+captures a name by "*" holds one for as long as the closure lives (section
+5); and "f(&p, *p)" asks for both at once and is refused. The rule is the
+checker's, and unlike the lifetime a signature leaves out — which is always
+answered, and only ever answered too conservatively (below) — an aliasing
+refusal lands on the line that asked for both, which is also the line with
+nothing to write to argue it (section 8).
+
+Two things it does not settle, both of them the checker's rather than the
+grammar's. A field is a place of its own, so whether "*p.x" and "&p.y" may be
+held together turns on how finely a struct is tracked once a reference has
+been taken into it. And a view refers to a run rather than to one place, so
+whether two mutable views of one array may be held when their ranges do not
+meet is a question about what can be proved of ranges, not about what "*"
+means.
+
 The two compose with everything a type does: "&Point", "*i32", "Vec<&str>",
 "&Map<str, *Node>". A reference binds looser than an array suffix, so
 "&i32[]" is a reference to a run of i32 — the view of <array_suffix> below —
@@ -388,14 +581,81 @@ that two readings want, split on context the lexer already has. The one
 reading given up is the conjunction of an open range, "1.. && x", and a range
 is not a truth value anyway.
 
+<lifetime>. How long a reference is good for has a name where one is worth
+giving: "~a", the "~" and the name being a single token. That character
+spells nothing else in the language, which is the whole of why the reading
+works — Rust's "'a" has to be told from the "'a'" of a character literal by
+looking past the name, and this has nothing to look past. "~_" is the one
+with no name worth giving, and says a lifetime belongs here that nothing
+else refers to.
+
+A lifetime stands in the four places a type parameter stands in: among the
+parameters of a declaration, "<~a, T>"; among its arguments, "Parser<~a>";
+in front of what a reference refers to, "&~a str"; and on either side of the
+colon of a bound, "T: ~a" and "~a: ~b". There is one list of parameters and
+one of bounds rather than a list apiece, so whether the two may be
+interleaved, and what a lifetime may be bounded by, are rules for the
+checker. A <cast_type> takes none: nothing has needed to say one there.
+
+    fn longest<~a>(x: &~a str, y: &~a str): &~a str
+
+    struct Parser<~a> {
+        text: &~a str,
+    }
+
+Writing one is not the usual case and is not meant to become one. A reference
+with no lifetime in front of it is what nearly every reference is, and the
+checker works it out from the shapes of the declarations around it — which is
+what it did for every reference back when there was no way to say one. What
+writing it adds is not an answer the checker was missing but a sharper one
+than it would have reached on its own, said once in a signature and held to
+by every caller.
+
+What is worked out where nothing is written is one rule, and it never fails.
+Every reference in a signature with no lifetime of its own gets one, and a
+reference in the return type gets the shortest-lived of the ones the
+parameters brought in. No signature is ever refused for want of a lifetime
+and none ever has to be written: the shortest of them outlives nothing the
+others do not, so the answer the rule reaches is always a sound one.
+
+    fn pick(x: &str, y: &str): &str
+
+    // The result is good for as long as the shorter-lived of x and y,
+    // whichever of them that turns out to be at each call.
+
+What the rule costs is precision, and it spends it at the call rather than at
+the declaration. A "pick" that only ever gives back x is held to y as well,
+so a caller whose y dies first is refused — the program that cannot be proved
+is turned down where it is used and not where the thing that could not be
+proved was written. That is the one place in the language a reader is sent
+somewhere other than the line in front of them, and it is the price of never
+having to write an annotation to get a signature accepted.
+
+Writing a lifetime is how the precision comes back. It is never required and
+is only ever a sharpening: "fn first<~a>(x: &~a str, y: &str): &~a str" says
+the result outlives y, which the rule alone would not have said, and every
+caller is held to that instead of to the shorter of the two. That is what
+"~a" is for in a language that can always do without it, and it is the same
+bargain as a type annotation on a "let" whose type was never in doubt.
+
+A method is where the loss shows most. "fn name(this: &Point, sep: &str):
+&str" ties its result to sep as well as to this, though what a method gives
+back is almost always the receiver's. Rust spends a whole elision rule on
+that one case; this spends none, and the method that wants it says so. One
+rule that always answers, and a way to say better, is the trade — against
+three rules that answer more often than not and a refusal when they do not.
+
 <array_suffix>. Two suffixes, and what separates them is ownership.
 
 "T[8]" is a raw fixed-size array: eight T laid end to end and nothing else —
 no header, no indirection, and no length stored beside them, the length being
-in the type. So it is a value like any other. "let b = a" copies all eight of
-them, and so does handing one to a function or returning it; its size is
-known, so it may be a local, a field, a parameter or a return type. "T[8]"
-and "T[9]" are different types, and neither of them is "T[]".
+in the type. So it is a value like any other, and it goes where one goes: all
+eight of them at once, whether "let b = a" moves them or copies them (section
+2, <var_decl>), and the same when one is handed to a function or returned.
+An array copies exactly when its element does, so an "i32[8]" copies and a
+"Buf[8]" moves. Its size is known, so it may be a local, a field, a parameter
+or a return type. "T[8]" and "T[9]" are different types, and neither of them
+is "T[]".
 
 "T[]" is a run of T whose length the type does not give. That makes it a type
 of no known size, and nothing can hold one: no local, no field, no parameter
@@ -421,7 +681,11 @@ references is written at all: "(&i32)[8]".
 An <array_literal> is a fixed array, so "[1, 2, 3]" is an "i32[3]". The
 language has no owned array that grows: "T[8]" owns and does not grow, a view
 neither owns nor grows, and anything else is a library's to provide (section
-8).
+8). A library can now write one, which it could not before: a struct holding
+a view and a length, moved rather than copied so that it has one owner, with
+a "Drop" that releases what it allocated (section 2). That is what moves and
+"Drop" were added for, and every container the language does not have is the
+same shape.
 
 <type_bounds>. Several bounds on one parameter are joined with "+", which is
 the one thing that character does: "<T: Show + Clone>". The "&" and "*" beside
@@ -452,7 +716,8 @@ trailing comma of "(i32,)" is refused, as no list of types in this language
 takes one. Nor is "()" a type. The value that carries no information is
 "null" (above), and an empty tuple would be a second name for it.
 
-A tuple is a value like a fixed array is: it is copied whole, its size is
+A tuple is a value like a fixed array is: it goes whole, copying where every
+member copies and moving otherwise (section 2, <var_decl>), its size is
 known, and it may be a local, a field, a parameter or a return type. The
 suffixes compose with it as they do with anything — "(i32, str)[8]" is eight
 pairs — and so does a reference: "&(i32, str)" reads one.
@@ -582,14 +847,18 @@ per name, each taking the least the body asks of it. Reading one takes a "&"
 of it and assigning to one takes a "*", which is the same pair everything
 else uses and carries the same consequences: two closures that only read a
 name may both hold it, and one that writes to it may share it with nothing.
-A <move_opt> overrules all of that at once — "move |x| n + x" takes a copy of
-every name it captures, so the closure owns what it holds and outlives the
-frame it was made in.
+A <move_opt> overrules all of that at once — "move |x| n + x" takes every
+name it captures by value, so the closure owns what it holds and outlives the
+frame it was made in. By value is a copy where the name's type copies and a
+move where it does not (section 2, <var_decl>), which is the same rule every
+other handing-over follows; the keyword names the capture mode and not the
+transfer, and a "move" closure over a name that moves is a name the frame is
+done with.
 
     var n = 0
     let show = || print(n)      // captures &n
     let bump = || n = n + 1     // captures *n
-    let own  = move || n + 1    // captures a copy
+    let own  = move || n + 1    // captures n by value
 
 This is the one place a reference is taken without being written, so it is
 also the one place the rules of section 3 apply to something the writer did
@@ -689,12 +958,12 @@ no home of its own, which the compiler gives one. Both are rules for the
 checker, as is everything about how long the reference stays good.
 
 <postfix_op>. Those are, in order: a field or method access, the "." of a
-tuple member, a "::" reaching into a namespace or a type, a call, an index or
-slice, and the brace of a struct literal. The separators and the brace are
-the ones worth naming as suffixes at all: either separator may follow the
-other, so neither belongs to the name it reaches through, and the brace hangs
-off whatever the two of them built — which is the whole of what makes
-"shapes.Point { x: 1 }" sayable.
+tuple member, a "::" reaching into a namespace, a module or a type, a call,
+an index or slice, and the brace of a struct literal. The separators and the
+brace are the ones worth naming as suffixes at all: either separator may
+follow the other, so neither belongs to the name it reaches through, and the
+brace hangs off whatever the two of them built — which is the whole of what
+makes "shapes::Point { x: 1 }" sayable.
 
 A tuple member is counted rather than named, so what follows the "." is the
 number: "p.0" is the first of them and "p.1" the second. It is the same "."
@@ -716,17 +985,21 @@ single value is an ordinary place of type T and asks for none of that:
 of them are the language's separators, and each reaches into a different
 thing:
 
-  "."   into a value or a module — a field, a method, "io.read".
-  "::"  into a namespace or a type — "limits::MAX", "Color::Red". An enum
-        variant is what it reaches in a type, and the only thing: an impl
-        holds methods, and a method is reached through a value with a "."
-        like any other member (section 2).
+  "."   into a value, and into nothing else — a field, a method, "p.norm()".
+  "::"  into a namespace, a module or a type — "limits::MAX",
+        "shapes::circle", "Color::Red". A module is an import, which is a
+        namespace someone else wrote (section 8), so it is reached the way
+        one is and needs no separator of its own. An enum variant is what
+        "::" reaches in a type, and the only thing: an impl holds methods,
+        and a method is reached through a value with a "." like any other
+        member (section 2).
   ":"   neither — it annotates.
 
 So "shapes::Color::Red.name" walks a namespace, then a type, then a value.
 The rule behind the first two is that "::" walks what the compiler knows the
-name of and "." walks what is there at run time — which leaves a module on
-the wrong side of it, and section 8 has that question open.
+name of and "." walks what is there at run time. A module is known by name
+at compile time like everything else on that side, which is what settles it
+onto "::" and leaves "." meaning one thing only.
 
 <struct_literal_tail>. A "{" that opens neither a body nor a block, and a
 place a separator is never synthesised (section 7, rule b). Every comma here
@@ -1086,12 +1359,26 @@ answer is not obvious from the rules alone.
     meaning only "into a value at run time". Settled. What it does not say is
     where a path is looked up, or whether a name that is not a legal
     identifier can be imported at all.
-  - <attribute> is "@name" with its arguments, one per "@", the set of them
+  - A macro is declared "macro foo($x:expr) { .. }" and invoked "@foo(..)",
+    the word declaring and the sigil using (section 2). Settled. "@" spells
+    nothing else now that the attributes have moved to "%", so an invocation
+    needs no lookahead to be one; "%" does spell something else, and is told
+    from the remainder operator the way "*" is told from a reference -- by
+    whether an operand ends in front of it. What is left is the whole of what
+    a macro means: when it expands, what a fragment admits, whether a body may
+    name anything its arguments did not bring in, and whether the closed set of
+    fragments is the right set. An argument is an expression, so no macro can
+    be handed a primitive type -- "@m(i32)" does not parse -- and that is the
+    one thing the shape of an argument list rules out. There is no repetition
+    and no second arm: "$($x:expr),*" is not written, so a macro takes the
+    parameters it declares and no more. What is settled is when it expands,
+    which is before anything reads a name: a macro is spent on the AST, and
+    what "sema" is given has none left in it.
+  - <attribute> is "%name" with its arguments, one per "%", the set of them
     is closed, and an unknown one is an error (section 1). Settled. The six
-    are @symbol, @must_use, @inline, @noinline, @deprecated and @test;
-    "@repr",
-    "@derive" and "@cfg" wait on features that do not exist. Nothing says
-    which declarations each of the five may sit on, beyond what its own
+    are %symbol, %must_use, %inline, %noinline, %deprecated and %test;
+    "%repr", "%derive" and "%cfg" wait on features that do not exist. Nothing
+    says which declarations each of the six may sit on, beyond what its own
     description implies.
   - Every loop takes a "break x" and yields "null" where none is given
     (section 5.1), and "null" belongs to every type, so the operand of a
@@ -1152,15 +1439,42 @@ answer is not obvious from the rules alone.
     What it leaves is the asymmetry: reading walks a chain of references to
     the bottom and writing does not, so the two are transparent to different
     depths and only the reader of a long chain has to notice.
-  - How long a reference stays good is never written down. There are no
-    lifetime parameters and nothing standing in for them: the checker works
-    it out from the shapes of the declarations it is given, and a program
-    where a reference could outlive what it refers to is refused where it is
-    written. Settled. The cost is the ordinary cost of inference without
-    annotations — a program the checker cannot prove safe is rejected even
-    where a person can see that it is, and there is nothing to write to
-    argue the point. Which programs those are is a property of the checker
-    and not of this grammar.
+  - How long a reference stays good has a spelling, "~a", and never needs
+    one: a return borrows for the shortest-lived of what the parameters
+    brought in, which is always sound, so inference answers every signature
+    and refuses none (section 3). Settled, and it is the one place the
+    language is further from Rust than it looks. Rust has three elision
+    rules that answer most signatures and refuse the rest until a person
+    writes the answer; this has one that answers all of them, conservatively,
+    and lets a person write a better one. Nothing has to be annotated to
+    compile.
+    The cost is where the refusal lands. Too conservative a signature is
+    turned down at the call and not at the declaration, so the message points
+    at a use and the fix belongs somewhere else — the one place in the
+    language a reader is sent off the line in front of them. A method feels
+    it most, its result being tied to every parameter where it almost always
+    meant the receiver; Rust's third rule is exactly that case, and is not
+    here. What is left is whether the trade is the right one, and it is the
+    only piece of this that a body of real programs would settle rather than
+    an argument.
+    The spelling is the other thing that is not Rust's. "~" spells nothing
+    else in the language, where "'" already spells a character literal, so
+    "~a" needs none of the lookahead "'a" against "'a'" would have wanted.
+  - A place is reached through one "*" or through any number of "&", and
+    never both at once (section 3). Settled. It is Rust's rule and it buys
+    what Rust buys with it: an "&" is a guarantee that nothing moves
+    underneath, so what may be cached, reordered or handed to another thread
+    follows from the type rather than from a convention. The cost is harder
+    than the lifetime entry's, and for the reason that entry is easy: there
+    a signature is always answerable and "~a" only sharpens the answer, while
+    here a program refused for aliasing is refused with nothing to write at
+    all — a "~a" says which references are the same one, and the language has
+    no way to say which are not. The two are otherwise one question asked
+    twice, since a reference that outlives its referent and one that aliases
+    a "*" are both a place reached two ways at once. What is left is how
+    finely a place is tracked: whether two fields of one struct, or two
+    mutable views of one array whose ranges do not meet, are one place or
+    two.
   - An array of references is "(&i32)[8]", a <grouped_type> being what says
     which of the two a reference and a suffix make (section 3). Settled. The
     same parentheses make a tuple when a comma is inside them and group when
@@ -1203,11 +1517,26 @@ answer is not obvious from the rules alone.
     says whether the checker should warn when a binding shadows a constant of
     the same name, which is where the surprise would show up.
   - A closure captures a name by "&" where it reads one and by "*" where it
-    assigns to one, worked out per name, and a "move" closure captures a copy
-    of every name instead (section 5). Settled. What follows from it is the
+    assigns to one, worked out per name, and a "move" closure captures every
+    name by value instead (section 5). Settled. What follows from it is the
     lifetime question above, sharpened: a closure that captures by reference
     cannot outlive what it captured, and "move" is the only thing that lets
-    one be returned.
+    one be returned. The keyword predates values that move and keeps its
+    meaning beside them: it says how a name is captured, where a move says
+    what happens to the value once it is.
+  - A value moves unless its type says "impl Copy", and a type says what
+    releasing it comes to with "impl Drop" (section 2). Settled. Neither
+    needs a rule of its own -- an empty impl and a one-method impl are both
+    written already, and it is the two names the compiler knows, as it knows
+    the six attributes. Moving by default is the way round that makes a
+    release something the compiler can place rather than something a reader
+    has to remember, and it is what finally lets a library write the growing
+    container section 3 says is a library's to write. The cost is Rust's
+    cost twice over: whether a line moves or copies is a fact about a type
+    and not about the line, and every program written before this one was
+    settled meant something slightly different. What is left is whether
+    "drop" may be called by hand, what a "Drop" means for a "const fn", and
+    how much of a value survives a "drop" that does not finish.
   - "unsafe" is a modifier on a <fn_decl> and a prefix on a <statement>, and
     those are its only two places (sections 2 and 4). Settled — the statement
     form is one rule because a block is already a statement, so the braces

@@ -1,15 +1,11 @@
-//! The word a `Mark` carried, read back as the operator it stands for.
-//!
-//! BNF spells `<additive_op> -> +` as a rule of its own, so the word reaches
-//! the rule that wants it as a node rather than as an operator. These take it
-//! back out.
+// BNF spells `<additive_op> -> +` as a rule of its own, so the word arrives as
+// a node rather than an operator. These take it back out.
+//
+// Each panics on the wrong mark: the grammar settles which mark reaches which
+// rule, so anything else is these arms disagreeing with the tables.
 
 use super::*;
 
-/// The operator an `ASTMark` carried, and the same for the rest of the words.
-/// Each panics where the mark is not the one the rule above it asked for: the
-/// grammar settles which mark reaches which rule, so anything else is these
-/// arms disagreeing with the tables, not a source being wrong.
 pub(super) fn bin_of(mark: ASTMark) -> ASTBinOp {
     match mark {
         ASTMark::Bin(op) => op,

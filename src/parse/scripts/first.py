@@ -18,6 +18,10 @@ TOKEN_CLASSES = {
     'FLOAT_LITERAL',
     'STRING_LITERAL',
     'CHAR_LITERAL',
+    'LIFETIME',
+    'ATTR_NAME',
+    'MACRO_NAME',
+    'MACRO_PARAM',
 }
 
 # Never spelled in the grammar's own notation; supplied by the lexer at the end

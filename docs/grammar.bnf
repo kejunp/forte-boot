@@ -18,6 +18,7 @@
                           | "private"
 
 <declaration>           ::= <fn_decl>
+                          | <macro_decl>
                           | <struct_decl>
                           | <enum_decl>
                           | <trait_decl>
@@ -29,7 +30,8 @@
 <attribute_list>        ::= <empty>
                           | <attribute_list> <attribute>
 
-<attribute>             ::= "@" <attr_item>
+<attribute>             ::= ATTR_NAME
+                          | ATTR_NAME "(" <attr_arg_list_opt> ")"
 
 <attr_item>             ::= IDENTIFIER
                           | IDENTIFIER "(" <attr_arg_list_opt> ")"
@@ -74,6 +76,21 @@
 # separator follows the body of a function as it follows any other statement.
 <fn_body>               ::= <block> <semi_opt>
                           | ";"
+
+# A macro takes a parameter list of `$name:fragment` and a block. The fragment
+# is an IDENTIFIER here and not a keyword: the set of them is closed, as the
+# attributes are, and the compiler knowing the names is what makes a misspelling
+# an error naming what was meant.
+<macro_decl>            ::= "macro" IDENTIFIER "(" <macro_param_list_opt> ")"
+                            <block> <semi_opt>
+
+<macro_param_list_opt>  ::= <empty>
+                          | <macro_param_list>
+
+<macro_param_list>      ::= <macro_param>
+                          | <macro_param_list> "," <macro_param>
+
+<macro_param>           ::= MACRO_PARAM ":" IDENTIFIER
 
 <return_type_opt>       ::= <empty>
                           | ":" <type>
@@ -203,10 +220,17 @@
 <type>                  ::= <ref_type>
                           | <base_type> <array_suffix_list>
 
-<ref_type>              ::= <ref_op> <type>
+# A reference may name how long it is good for. Left out, the checker works it
+# out — which is what it did for every reference before there was a way to say.
+<ref_type>              ::= <ref_op> <lifetime_opt> <type>
 
 <ref_op>                ::= "&"
                           | "*"
+
+<lifetime>              ::= LIFETIME
+
+<lifetime_opt>          ::= <empty>
+                          | <lifetime>
 
 <array_suffix_list>     ::= <empty>
                           | <array_suffix_list> <array_suffix>
@@ -218,6 +242,7 @@
                           | <named_type>
                           | <grouped_type>
                           | <tuple_type>
+                          | MACRO_PARAM
                           | "_"
 
 <grouped_type>          ::= "(" <type> ")"
@@ -236,8 +261,8 @@
 <generic_args_opt>      ::= <empty>
                           | <generic_args>
 
-<primitive_type>        ::= "i8"   | "i16"  | "i32"  | "i64"
-                          | "u8"   | "u16"  | "u32"  | "u64"
+<primitive_type>        ::= "i8"   | "i16"  | "i32"  | "i64"  | "i128"
+                          | "u8"   | "u16"  | "u32"  | "u64"  | "u128"
                           | "f32"  | "f64"
                           | "bool" | "char" | "str"  | "null"
                           | "never"
@@ -250,13 +275,30 @@
 <generic_param_list>    ::= <generic_param>
                           | <generic_param_list> "," <generic_param>
 
+# A lifetime parameter is written among the type parameters and not in a list
+# of its own. Whether the two may be interleaved is a rule for the checker, as
+# is what a lifetime may be bounded by — the grammar has one <type_bounds> and
+# lets it hold either, since `~a: ~b` and `T: ~a` are both written.
 <generic_param>         ::= IDENTIFIER
                           | IDENTIFIER ":" <type_bounds>
+                          | <lifetime>
+                          | <lifetime> ":" <type_bounds>
 
-<type_bounds>           ::= <named_type>
-                          | <type_bounds> "+" <named_type>
+<type_bounds>           ::= <type_bound>
+                          | <type_bounds> "+" <type_bound>
 
-<generic_args>          ::= "<" <type_list> ">"
+<type_bound>            ::= <named_type>
+                          | <lifetime>
+
+# A type argument list takes lifetimes too, so `Parser<~a>` and `Map<~a, T>`
+# are said. <type_list> is left alone: a tuple and a payload take types only.
+<generic_args>          ::= "<" <generic_arg_list> ">"
+
+<generic_arg_list>      ::= <generic_arg>
+                          | <generic_arg_list> "," <generic_arg>
+
+<generic_arg>           ::= <type>
+                          | <lifetime>
 
 <where_clause_opt>      ::= <empty>
                           | "where" <where_pred_list>
@@ -265,6 +307,7 @@
                           | <where_pred_list> "," <where_pred>
 
 <where_pred>            ::= <type> ":" <type_bounds>
+                          | <lifetime> ":" <type_bounds>
 
 <block>                 ::= "{" <statement_list> <block_tail_opt> "}"
 
@@ -445,11 +488,18 @@
 <primary>               ::= <literal>
                           | "this"
                           | IDENTIFIER
+                          | <macro_call>
+                          | MACRO_PARAM
                           | <array_literal>
                           | <map_literal>
                           | <set_literal>
                           | <grouping>
                           | <tuple_expr>
+
+# The arguments are expressions, whatever fragment the parameter asked for:
+# a type and an expression cannot both stand in one list without the tables
+# having to guess which was written. What a fragment admits is the checker's.
+<macro_call>            ::= MACRO_NAME "(" <arg_list_opt> ")"
 
 <grouping>              ::= "(" <expression> ")"
 
@@ -571,6 +621,7 @@
 # to match or a binding to make is a question about what is in scope, which the
 # parser has no business answering and no way to.
 <pattern>               ::= "_"
+                          | MACRO_PARAM
                           | <literal_pattern>
                           | <range_pattern>
                           | <variant_pattern>

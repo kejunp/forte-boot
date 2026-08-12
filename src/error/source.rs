@@ -1,14 +1,7 @@
-//! The text a diagnostic quotes from, and what it is called.
+// The text a diagnostic quotes from, and what it is called.
 
-/// A source to be quoted: its name, and the characters it is made of.
-///
-/// Borrowed rather than owned, because by the time anything is being reported
-/// the text is already being held by whichever phase read it, and a diagnostic
-/// wants to quote it rather than to keep it. Building one costs nothing, so a
-/// phase makes one where it reports and forgets it afterward.
-///
-/// Characters and not bytes: a column counts characters, and the two agree
-/// only for as long as a source stays ASCII.
+// Borrowed, not owned: the phase that read the text still holds it, and this
+// only quotes. Characters and not bytes, because a column counts characters.
 pub struct Source<'a> {
     path: &'a str,
     text: &'a [char],
@@ -19,17 +12,13 @@ impl<'a> Source<'a> {
         Source { path, text }
     }
 
-    /// What to call it in a `--> path:line:col`.
+    // What to call it in a `--> path:line:col`.
     pub fn path(&self) -> &str {
         self.path
     }
 
-    /// The `line`th line, counted from one and without its newline.
-    ///
-    /// `None` where there is no such line. That is a diagnostic pointing past
-    /// the end of the source rather than a diagnostic that is wrong: a file
-    /// ending in a newline has an empty last line, and the end of the file is
-    /// the column after the last character written.
+    // The `line`th line, counted from one and without its newline. `None` where
+    // there is no such line. A file ending in a newline has an empty last line.
     pub fn line(&self, line: usize) -> Option<String> {
         if line == 0 {
             return None;
@@ -77,7 +66,7 @@ mod tests {
         assert_eq!(source.line(0), None);
     }
 
-    /// A source whose last line was never ended still has that line.
+    // A source whose last line was never ended still has that line.
     #[test]
     fn a_file_that_ends_without_a_newline_still_ends_somewhere() {
         let text = chars("one\ntwo");

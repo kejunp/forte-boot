@@ -1,8 +1,6 @@
-//! Types, which are their own small language.
-//!
-//! One arm per rule of the grammar, in the tables' own order within each
-//! group, each under the production it answers. `None` where the rule belongs
-//! to another of these -- `build` tries each in turn. See build.rs.
+// Types, which are their own small language.
+// One arm per rule, in the tables' order; `None` where the rule belongs to
+// another group. See build.rs.
 
 use super::*;
 
@@ -15,58 +13,74 @@ impl Parser {
         Some(match rule_id {
             // ---- Types ---------------------------------------------------
             // <base_type> -> <primitive_type>
-            41 => self.pass(c[0]),
-            // <base_type> -> <named_type>
             42 => self.pass(c[0]),
-            // <base_type> -> <grouped_type>
+            // <base_type> -> <named_type>
             43 => self.pass(c[0]),
-            // <base_type> -> <tuple_type>
+            // <base_type> -> <grouped_type>
             44 => self.pass(c[0]),
+            // <base_type> -> <tuple_type>
+            45 => self.pass(c[0]),
+            // <base_type> -> MACRO_PARAM
+            46 => self.pass(c[0]),
             // <base_type> -> _
             // The leaf is a pattern's wildcard; in a type the same `_` is a
             // type left to be worked out.
-            45 => self.at(ASTNodeKind::Infer, c[0]),
+            47 => self.at(ASTNodeKind::Infer, c[0]),
 
             // ---- Types, continued ----------------------------------------
             // <type> -> <ref_type>
-            324 => self.pass(c[0]),
+            348 => self.pass(c[0]),
             // <type> -> <base_type> <array_suffix_list>
-            325 => self.fold_suffixes(c[0], c[1]),
+            349 => self.fold_suffixes(c[0], c[1]),
             // <type_annotation_opt> -> ε
-            326 => self.here(ASTNodeKind::Empty),
+            350 => self.here(ASTNodeKind::Empty),
             // <type_annotation_opt> -> : <type>
-            327 => self.pass(c[1]),
-            // <type_bounds> -> <named_type>
-            328 => self.one(c[0]),
-            // <type_bounds> -> <type_bounds> + <named_type>
-            329 => self.grew(c[0], c[2]),
+            351 => self.pass(c[1]),
+            // <type_bound> -> <named_type>
+            352 => self.pass(c[0]),
+            // <type_bound> -> <lifetime>
+            353 => self.pass(c[0]),
+            // <type_bounds> -> <type_bound>
+            354 => self.one(c[0]),
+            // <type_bounds> -> <type_bounds> + <type_bound>
+            355 => self.grew(c[0], c[2]),
             // <type_list> -> <type>
-            330 => self.one(c[0]),
+            356 => self.one(c[0]),
             // <type_list> -> <type_list> , <type>
-            331 => self.grew(c[0], c[2]),
+            357 => self.grew(c[0], c[2]),
 
             // ---- Primitive types -----------------------------------------
             // The leaf is already a `Prim`, except for `null`, whose token is
             // the literal: the one value of the type spells the type too.
             // <primitive_type> -> i8 .. never
-            266..=278 | 280 => self.pass(c[0]),
+            288..=302 | 304 => self.pass(c[0]),
             // <primitive_type> -> null
-            279 => self.at(ASTNodeKind::Prim(ASTPrimType::Null), c[0]),
+            303 => self.at(ASTNodeKind::Prim(ASTPrimType::Null), c[0]),
 
             // ---- References ----------------------------------------------
             // <ref_op> -> &
-            291 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
+            315 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
             // <ref_op> -> *
-            292 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
-            // <ref_type> -> <ref_op> <type>
-            293 => {
+            316 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
+            // <ref_type> -> <ref_op> <lifetime_opt> <type>
+            317 => {
                 let op = ref_of(self.mark(c[0]));
-                self.at(ASTNodeKind::RefType { op, inner: c[1] }, c[0])
+                let life = self.opt(c[1]);
+                self.at(ASTNodeKind::RefType { op, life, inner: c[2] }, c[0])
             }
+
+            // ---- Lifetimes -----------------------------------------------
+            // The `~` is the lexer's; what reaches here is the name alone.
+            // <lifetime> -> LIFETIME
+            196 => self.pass(c[0]),
+            // <lifetime_opt> -> ε
+            197 => self.here(ASTNodeKind::Empty),
+            // <lifetime_opt> -> <lifetime>
+            198 => self.pass(c[0]),
             // <return_type_opt> -> ε
-            294 => self.here(ASTNodeKind::Empty),
+            318 => self.here(ASTNodeKind::Empty),
             // <return_type_opt> -> : <type>
-            295 => self.pass(c[1]),
+            319 => self.pass(c[1]),
 
             // ---- Array and run suffixes ----------------------------------
             // Both are built around a HOLE: what they are a suffix of is not
@@ -87,11 +101,11 @@ impl Parser {
             // in a list that could be of one.
             // <tuple_expr> -> ( <expression> , <expression_seq> )
             // <tuple_expr> -> ( <expression> , <expression_seq> , )
-            320 | 321 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
+            344 | 345 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
             // <tuple_pattern> -> ( <pattern> , <pattern_list> )
-            322 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
+            346 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
             // <tuple_type> -> ( <type> , <type_list> )
-            323 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
+            347 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
 
             _ => return None,
         })

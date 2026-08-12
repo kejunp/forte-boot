@@ -23,8 +23,8 @@ LEX_ERROR = 'LEX_ERROR'
 # it. Generation fails on a terminal missing from here, so a new piece of syntax
 # cannot reach the tables before the lexer knows how to produce it.
 TOKENS = {
-    'i8': 'I8', 'i16': 'I16', 'i32': 'I32', 'i64': 'I64',
-    'u8': 'U8', 'u16': 'U16', 'u32': 'U32', 'u64': 'U64',
+    'i8': 'I8', 'i16': 'I16', 'i32': 'I32', 'i64': 'I64', 'i128': 'I128',
+    'u8': 'U8', 'u16': 'U16', 'u32': 'U32', 'u64': 'U64', 'u128': 'U128',
     'f32': 'F32', 'f64': 'F64',
     'bool': 'Bool', 'char': 'Char', 'str': 'Str', 'never': 'Never',
 
@@ -32,6 +32,7 @@ TOKENS = {
     'struct': 'Struct', 'trait': 'Trait', 'impl': 'Impl',
     'public': 'Public', 'private': 'Private', 'import': 'Import',
     'enum': 'Enum', 'namespace': 'Namespace', 'unsafe': 'Unsafe',
+    'macro': 'Macro',
 
     'if': 'If', 'elif': 'Elif', 'else': 'Else', 'while': 'While',
     'for': 'For', 'in': 'In', 'return': 'Return', 'break': 'Break',
@@ -65,11 +66,13 @@ TOKENS = {
     # is ambiguous without it. See `push_brace`.
     'VALUE_LCURLY': 'LCurlyValue',
     ':': 'Colon', '::': 'ColonColon', ',': 'Comma', '.': 'Dot',
-    ';': 'Semicolon', '=>': 'FatArrow', '#': 'HashTag', '@': 'At',
+    ';': 'Semicolon', '=>': 'FatArrow', '#': 'HashTag',
 
     'IDENTIFIER': 'Identifier', 'INT_LITERAL': 'IntLiteral',
     'FLOAT_LITERAL': 'FloatLiteral', 'STRING_LITERAL': 'StringLiteral',
-    'CHAR_LITERAL': 'CharLiteral',
+    'CHAR_LITERAL': 'CharLiteral', 'LIFETIME': 'Lifetime',
+    'ATTR_NAME': 'AttrName', 'MACRO_NAME': 'MacroName',
+    'MACRO_PARAM': 'MacroParam',
 
     END_OF_FILE: 'EOF',
     LEX_ERROR: 'Error',
@@ -77,7 +80,8 @@ TOKENS = {
 
 # TokType variants that carry a value, so their patterns need a placeholder.
 PAYLOAD = {'Identifier', 'IntLiteral', 'FloatLiteral', 'StringLiteral',
-           'CharLiteral', 'Error'}
+           'CharLiteral', 'Lifetime', 'AttrName', 'MacroName',
+           'MacroParam', 'Error'}
 
 # How a terminal is named in an error message. A terminal the grammar spells
 # outright is quoted as it is written; the rest stand for a whole class of
@@ -88,6 +92,10 @@ DESCRIPTIONS = {
     'FLOAT_LITERAL': 'a float literal',
     'STRING_LITERAL': 'a string literal',
     'CHAR_LITERAL': 'a character literal',
+    'LIFETIME': 'a lifetime',
+    'ATTR_NAME': 'an attribute',
+    'MACRO_NAME': 'a macro',
+    'MACRO_PARAM': 'a macro parameter',
     # Two terminals are both written `{`, and the message has to say which one
     # was wanted: the lexer has already decided, and that decision is the whole
     # difference between them.
@@ -527,25 +535,20 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("use crate::lex::tokens::TokType;")
     w("")
 
-    w("/// A state of the automaton, and what a parser's stack is made of.")
-    w("///")
-    w(f"/// The width is the generator's to pick -- {len(states)} states wanted this")
-    w("/// one -- so a grammar that outgrows it widens everything that holds a state")
-    w("/// at once, and nothing downstream says a width of its own.")
+    w("// A state of the automaton, and what a parser's stack is made of. The")
+    w(f"// width is the generator's to pick -- {len(states)} states wanted this one --")
+    w("// so nothing downstream says a width of its own.")
     w(f"pub type State = {state_ty};")
     w("")
 
-    w("/// An index into `RULES`. The same width as a `State` today and no relation")
-    w("/// to one: the two are separate names so that a reduce cannot be read as a")
-    w("/// shift, nor either be passed where the other belongs.")
+    w("// An index into `RULES`. The same width as a `State` today and no relation")
+    w("// to one: separate names so a reduce cannot be read as a shift.")
     w(f"pub type RuleId = {rule_ty};")
     w("")
 
-    w("/// A terminal of the grammar: a token with whatever it carries dropped.")
-    w("///")
-    w("/// The order is the tables' own, and the rows are sorted in it so that a")
-    w("/// lookup can bisect. It is alphabetical by name, which means nothing to the")
-    w("/// grammar and is only there to be stable as the language grows.")
+    w("// A terminal of the grammar: a token with whatever it carries dropped. The")
+    w("// order is the tables' own and the rows are sorted in it, so a lookup can")
+    w("// bisect. Alphabetical by name, which is only there to stay stable.")
     w("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]")
     w("pub enum Terminal {")
     for t in terminal_order:
@@ -553,12 +556,10 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// The terminal a token stands for, with its value dropped.")
-    w("///")
-    w("/// Total: every token the lexer can hand over is a terminal, the one it")
-    w("/// could not read included. No state has an action for that one, so it is")
-    w("/// turned down wherever it appears -- see `action_for`, which says why in")
-    w("/// the lexer's own words rather than the tables'.")
+    w("// The terminal a token stands for, with its value dropped. Total: every")
+    w("// token the lexer can hand over is a terminal, the one it could not read")
+    w("// included. No state has an action for that one -- see `action_for`, which")
+    w("// says why in the lexer's own words.")
     w("pub fn terminal_of(tok: &TokType) -> Terminal {")
     w("    match tok {")
     for t in terminal_order:
@@ -569,20 +570,20 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// What each terminal is called in an error message, by `Terminal as usize`.")
+    w("// What each terminal is called in an error message, by `Terminal as usize`.")
     w(f"static TERMINAL_NAMES: [&str; {len(terminal_order)}] = [")
     for t in terminal_order:
         w(f"    {describe(t)},")
     w("];")
     w("")
 
-    w("/// What a terminal is called in an error message.")
+    w("// What a terminal is called in an error message.")
     w("pub fn name_of(terminal: Terminal) -> &'static str {")
     w("    TERMINAL_NAMES[terminal as usize]")
     w("}")
     w("")
 
-    w("/// A non-terminal, ordered and sorted on the same terms as a `Terminal`.")
+    w("// A non-terminal, ordered and sorted on the same terms as a `Terminal`.")
     w("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]")
     w("pub enum NonTerminal {")
     for nt in non_terminal_order:
@@ -590,8 +591,8 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// What the table holds. The error case is not one of these: it is every")
-    w("/// terminal a state's row leaves out, which is most of them.")
+    w("// What the table holds. The error case is not one of these: it is every")
+    w("// terminal a state's row leaves out, which is most of them.")
     w("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
     w("enum Entry {")
     w("    Shift(State),")
@@ -605,12 +606,12 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("    Shift(State),")
     w("    Reduce(RuleId),")
     w("    Accept,")
-    w("    /// No action: the message says what the state would have taken instead.")
+    w("    // No action: the message says what the state would have taken instead.")
     w("    Error(String),")
     w("}")
     w("")
 
-    w("/// One production: what it builds, and how many symbols it pops.")
+    w("// One production: what it builds, and how many symbols it pops.")
     w("pub struct Rule {")
     w("    pub lhs: NonTerminal,")
     w("    pub len: usize,")
@@ -632,7 +633,7 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
         rows[state].append((terminal_id[lookahead],
                             f"(Terminal::{TOKENS[lookahead]}, {rendered})"))
 
-    w("/// Per state, the terminals with an action, in `Terminal` order.")
+    w("// Per state, the terminals with an action, in `Terminal` order.")
     w("static ACTION: [&[(Terminal, Entry)]; NUM_STATES] = [")
     for state in range(len(states)):
         entries = ', '.join(entry for _, entry in sorted(rows[state]))
@@ -645,7 +646,7 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
         goto_rows[state].append((non_terminal_id[nt],
                                  f"(NonTerminal::{variant(nt)}, {successor})"))
 
-    w("/// Per state, the non-terminals with a transition, sorted the same way.")
+    w("// Per state, the non-terminals with a transition, sorted the same way.")
     w("static GOTO: [&[(NonTerminal, State)]; NUM_STATES] = [")
     for state in range(len(states)):
         entries = ', '.join(entry for _, entry in sorted(goto_rows[state]))
@@ -657,13 +658,11 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w(f"pub const NUM_RULES: usize = {len(rules)};")
     w("")
 
-    w("/// Per state, what it is waiting for: the text after `expected`.")
-    w("///")
-    w("/// Worked out when the tables are built, because it is a fact about the")
-    w("/// state and not about the token that ran into it. A state permitting more")
-    w("/// than a handful of terminals is described by what it can go on to build --")
-    w("/// `an expression` for the fifty-odd terminals one can begin with -- and the")
-    w("/// terminals no such class accounts for are named after it.")
+    w("// Per state, what it is waiting for: the text after `expected`. Worked out")
+    w("// when the tables are built, since it is a fact about the state and not the")
+    w("// token that ran into it. A state permitting more than a handful is")
+    w("// described by what it can build -- `an expression` -- and the terminals no")
+    w("// such class accounts for are named after it.")
     w(f"static EXPECTED: [&str; NUM_STATES] = [")
     lookaheads = defaultdict(list)
     for (state, terminal) in action:
@@ -673,19 +672,17 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("];")
     w("")
 
-    w("/// Per state, what the parse is in the middle of: the text after `in`.")
-    w("///")
-    w("/// Empty where a state stands inside nothing worth naming. The tables can")
-    w("/// say this and a stack cannot: a state is the whole of what has been read")
-    w("/// so far, where the stack's top entry is one symbol of it.")
+    w("// Per state, what the parse is in the middle of: the text after `in`. Empty")
+    w("// where a state stands inside nothing worth naming. The tables can say this")
+    w("// and a stack cannot: a state is the whole of what has been read so far.")
     w("static CONTEXTS: [&str; NUM_STATES] = [")
     for state in states:
         w(f"    {quote(context_of(state))},")
     w("];")
     w("")
 
-    w("/// What the parse is in the middle of in `state`, where that is worth")
-    w("/// naming: the innermost construct it has begun and not yet finished.")
+    w("// What the parse is in the middle of in `state`, where that is worth")
+    w("// naming: the innermost construct it has begun and not yet finished.")
     w("pub fn context(state: State) -> Option<&'static str> {")
     w("    let text = CONTEXTS[state as usize];")
     w("    if text.is_empty() {")
@@ -696,11 +693,9 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("")
 
     keywords = sorted(keywords_of(terminal_order), key=lambda t: TOKENS[t])
-    w("/// Whether a terminal is a word of the language rather than punctuation.")
-    w("///")
-    w("/// The one thing this is for: a name was wanted and a keyword was written,")
-    w("/// which is worth saying in those words rather than as `expected an")
-    w("/// identifier`. See `Parser::hint`.")
+    w("// Whether a terminal is a word of the language rather than punctuation. For")
+    w("// one thing only: a name was wanted and a keyword was written, worth saying")
+    w("// in those words rather than as `expected an identifier`. See `Parser::hint`.")
     w("pub fn is_keyword(terminal: Terminal) -> bool {")
     w("    matches!(")
     w("        terminal,")
@@ -711,7 +706,7 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// `expected .., found ..`: what `state` was waiting for, and what came.")
+    w("// `expected .., found ..`: what `state` was waiting for, and what came.")
     w("fn unexpected(state: State, found: Terminal) -> String {")
     w("    format!(")
     w("        \"expected {}, found {}\",")
@@ -720,7 +715,7 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// What to do in `state` when the next token is `terminal`.")
+    w("// What to do in `state` when the next token is `terminal`.")
     w("pub fn action(state: State, terminal: Terminal) -> Action {")
     w("    let row = ACTION[state as usize];")
     w("    match row.binary_search_by_key(&terminal, |&(t, _)| t) {")
@@ -734,12 +729,10 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// What to do in `state` when the next token is `tok`.")
-    w("///")
-    w("/// The one thing a token says that a terminal does not is that the lexer")
-    w("/// could not read it. `Terminal::Error` is in no state's row, so the tables")
-    w("/// would turn it down with an `expected ..` about a token that was never")
-    w("/// there; what the lexer says instead is the whole of what went wrong.")
+    w("// What to do in `state` when the next token is `tok`. The one thing a token")
+    w("// says that a terminal does not is that the lexer could not read it:")
+    w("// `Terminal::Error` is in no state's row, so an `expected ..` would be about")
+    w("// a token that was never there, and the lexer's words are the whole of it.")
     w("pub fn action_for(state: State, tok: &TokType) -> Action {")
     w("    if let TokType::Error(why) = tok {")
     w("        return Action::Error(why.clone());")
@@ -748,17 +741,15 @@ def generate_rust(states, action, goto, rules, terminals, non_terminals, first_s
     w("}")
     w("")
 
-    w("/// The terminals `state` has an action for, in `Terminal` order.")
-    w("///")
-    w("/// `action` already says this in words when it turns one down, and that is")
-    w("/// the message to show. This is the same fact unworded, for a caller that")
-    w("/// wants to do something with the terminals themselves.")
+    w("// The terminals `state` has an action for, in `Terminal` order. `action`")
+    w("// already says this in words when it turns one down, which is the message to")
+    w("// show; this is the same fact unworded, for a caller that wants them.")
     w("pub fn expected(state: State) -> Vec<Terminal> {")
     w("    ACTION[state as usize].iter().map(|&(t, _)| t).collect()")
     w("}")
     w("")
 
-    w("/// The state to enter after reducing to `non_terminal` in `state`.")
+    w("// The state to enter after reducing to `non_terminal` in `state`.")
     w("pub fn goto(state: State, non_terminal: NonTerminal) -> Option<State> {")
     w("    let row = GOTO[state as usize];")
     w("    row.binary_search_by_key(&non_terminal, |&(n, _)| n)")
@@ -790,6 +781,16 @@ def main():
     states, action, goto, rules, conflicts = build_tables(
         grammar, terminals, non_terminals, first_sets)
 
+    # A grammar with a conflict has no table worth writing: where two actions
+    # disagree the generator keeps whichever it saw first, which is an answer
+    # about the order the states came out in and not about the language. The
+    # report comes before the file is opened, so a run that fails leaves the
+    # tables the last good grammar produced -- a conflict costs the caller the
+    # regeneration, and not what they had.
+    if conflicts:
+        report_conflicts(conflicts, rules)
+        sys.exit(1)
+
     non_terminals = non_terminals | {AUGMENTED_START}
     try:
         rust = generate_rust(states, action, goto, rules, terminals, non_terminals,
@@ -805,11 +806,6 @@ def main():
     print(f"Rules: {len(rules)}")
     print(f"Actions: {len(action)}")
     print(f"GOTOs: {len(goto)}")
-
-    if conflicts:
-        sys.stdout.flush()
-        report_conflicts(conflicts, rules)
-        sys.exit(1)
 
 
 if __name__ == "__main__":
