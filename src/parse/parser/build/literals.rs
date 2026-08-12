@@ -69,18 +69,18 @@ impl Parser {
             // ---- Sets ----------------------------------------------------
             // <set_element_list> -> ,
             // `{,}` is the empty set, written out because `{}` is the empty map.
-            322 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
+            323 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
             // <set_element_list> -> <expression_seq>
-            323 => self.pass(c[0]),
-            // <set_element_list> -> <expression_seq> ,
             324 => self.pass(c[0]),
+            // <set_element_list> -> <expression_seq> ,
+            325 => self.pass(c[0]),
             // <set_literal> -> VALUE_LCURLY <set_element_list> }
-            325 => self.at(
+            326 => self.at(
                 ASTNodeKind::Set { hashed: false, elems: self.list(c[1]) },
                 c[0],
             ),
             // <set_literal> -> # VALUE_LCURLY <set_element_list> }
-            326 => self.at(
+            327 => self.at(
                 ASTNodeKind::Set { hashed: true, elems: self.list(c[2]) },
                 c[0],
             ),

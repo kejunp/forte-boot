@@ -328,6 +328,12 @@ pub enum TIRExprKind {
         base: TIRExprId,
         name: String,
     },
+    // `<T, U>` at a call: `foo<MyType>(x)`. Kept as its own node the way it is
+    // written; whether the callee even takes them is the checker's to say.
+    TypeArgs {
+        base: TIRExprId,
+        args: Vec<TIRGenericArg>,
+    },
     // `.0`, counted rather than named.
     TupleIndex {
         base:  TIRExprId,

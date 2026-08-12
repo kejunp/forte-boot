@@ -472,7 +472,15 @@
                           | "::" IDENTIFIER
                           | "(" <arg_list_opt> ")"
                           | "[" <index> "]"
+                          | <type_args>
                           | <struct_literal_tail>
+
+# The type arguments of a call, `foo<MyType>(x)`. GENERIC_LT is a `<` the lexer
+# has already decided about: a bare name is a type and an expression both, so
+# nothing inside the angles settles it and the shape as a whole does -- a
+# matching `>` with a `(` after it. See `opens_type_args`, and the note under
+# <generic_args> below.
+<type_args>             ::= GENERIC_LT <generic_arg_list> ">"
 
 <index>                 ::= <expression>
 

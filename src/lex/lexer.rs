@@ -42,6 +42,12 @@ pub struct Lexer {
     last_was_name:     bool,
     last_was_impl:     bool,
     last_was_type_end: bool,
+    // Whether the token just read was a word that names a declaration, and
+    // whether the one before it was the keyword introducing one. Together they
+    // say that a `<` here opens generic *parameters* and not a call's
+    // arguments: `fn sort<T>(xs)` looks exactly like `sort<T>(xs)` otherwise.
+    last_was_decl_kw:   bool,
+    last_was_decl_name: bool,
 }
 
 // Everything `next_token` mutates, so a lookahead can be rolled back. The input
@@ -77,6 +83,8 @@ struct State {
     last_was_name:     bool,
     last_was_impl:     bool,
     last_was_type_end: bool,
+    last_was_decl_kw:   bool,
+    last_was_decl_name: bool,
 }
 
 // What a look inside a `{` says about the body it opens. See `scan_brace_body`.
@@ -398,6 +406,8 @@ impl Lexer {
             last_was_name:     false,
             last_was_impl:     false,
             last_was_type_end: false,
+            last_was_decl_kw: false,
+            last_was_decl_name: false,
         }
     }
 
@@ -454,6 +464,8 @@ impl Lexer {
             last_was_name:     self.last_was_name,
             last_was_impl:     self.last_was_impl,
             last_was_type_end: self.last_was_type_end,
+            last_was_decl_kw: self.last_was_decl_kw,
+            last_was_decl_name: self.last_was_decl_name,
         }
     }
 
@@ -486,6 +498,8 @@ impl Lexer {
         self.last_was_name = s.last_was_name;
         self.last_was_impl = s.last_was_impl;
         self.last_was_type_end = s.last_was_type_end;
+        self.last_was_decl_kw = s.last_was_decl_kw;
+        self.last_was_decl_name = s.last_was_decl_name;
     }
 
     // The token `next_token` would return, without consuming it. Lexing is
@@ -547,6 +561,16 @@ impl Lexer {
         let start = self.index;
         let mut tok = self.scan_token();
 
+        // A `<` after a name may open a call's type arguments. `last_was_name`
+        // is still the previous token's here, which is what this has to ask.
+        // `fn sort<T>(xs)` reads exactly as `sort<T>(xs)` does from here, so a
+        // name that a declaration keyword introduced is the one name a `<` may
+        // not open a call's arguments after.
+        let opens_generic = tok.toktype == TokType::LessThan
+            && self.last_was_name
+            && !self.last_was_decl_name
+            && self.opens_type_args();
+
         // A `>` only closes a generic if one was open; that also makes it the
         // end of a type, and so a place a statement can end: `let v: Vec<i32>`.
         let closed_generic = self.generic_depth > 0 && tok.toktype == TokType::GreaterThan;
@@ -566,6 +590,12 @@ impl Lexer {
         // A `_` is deliberately not one. It names no type, so it opens no
         // generic context and heads no struct literal: `_ < 2` is a comparison
         // and the `{` after a `_` is whatever it would have been on its own.
+        self.last_was_decl_name =
+            self.last_was_decl_kw && matches!(tok.toktype, TokType::Identifier(_));
+        self.last_was_decl_kw = matches!(
+            tok.toktype,
+            TokType::Fn | TokType::Struct | TokType::Enum | TokType::Trait | TokType::Macro
+        );
         self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
         self.last_was_impl = tok.toktype == TokType::Impl;
         // A name, or the `>` closing its type arguments: `Point {`, `Vec<i32> {`.
@@ -688,6 +718,9 @@ impl Lexer {
         // what leaves the lexer says which kind it opened.
         if opens_value {
             tok.toktype = TokType::LCurlyValue;
+        }
+        if opens_generic {
+            tok.toktype = TokType::LessGeneric;
         }
         // What the scan consumed is what was written: a `>` that split off a
         // `>>` moved one character and is one wide, and an EOF moved none.
@@ -832,6 +865,68 @@ impl Lexer {
                 ref t if depth == 0 && starts_statement(t) => break BraceScan::Block,
                 // Unterminated, or malformed past the point of guessing.
                 TokType::EOF | TokType::Error(_) => break BraceScan::Undecided,
+                _ => {}
+            }
+        };
+        self.restore(saved);
+        verdict
+    }
+
+    // Whether the `<` just scanned opens a call's type arguments rather than
+    // being a comparison. `foo<MyType>(x)` is the case that needs it: a bare
+    // name is a type and an expression both, so what stands *inside* the angles
+    // settles nothing. What settles it is the shape as a whole -- a matching
+    // `>` with a `(` after it.
+    //
+    // Called with the `<` already consumed. Anything that cannot appear in a
+    // type argument gives it up at once, which is what keeps `a < b && c` a
+    // comparison; `fits_in_generics` is the same list the speculative context
+    // above uses.
+    fn opens_type_args(&mut self) -> bool {
+        let saved = self.save();
+        let mut depth = 1usize;
+        // A `(` may stand inside a type argument -- a grouped type, a tuple --
+        // so one is followed in. What must not be followed is a closer this
+        // look did not open: `(a < b) > (c)` is a comparison inside a group,
+        // and without this the scan walks out of the group and finds the `(`
+        // of `(c)` sitting where a call's would be.
+        let mut brackets = 0usize;
+        let verdict = loop {
+            self.skip_whitespace();
+            let tok = self.scan_token();
+            match tok.toktype {
+                TokType::LParen | TokType::LBracket => brackets += 1,
+                TokType::RParen | TokType::RBracket => {
+                    if brackets == 0 {
+                        break false;
+                    }
+                    brackets -= 1;
+                }
+                TokType::LessThan => depth += 1,
+                TokType::GreaterThan => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // The whole of the rule: a call follows a type argument
+                        // list, and nothing else does.
+                        self.skip_whitespace();
+                        break self.peek_char() == Some('(');
+                    }
+                }
+                // A `>>` closing two lists at once, which the scan sees whole:
+                // nothing has opened a generic context here for it to split in,
+                // so it counts for the two it is. `Map<K, V>>` ends this way.
+                TokType::RShift => {
+                    if depth < 2 {
+                        break false;
+                    }
+                    depth -= 2;
+                    if depth == 0 {
+                        self.skip_whitespace();
+                        break self.peek_char() == Some('(');
+                    }
+                }
+                TokType::EOF | TokType::Error(_) => break false,
+                ref t if !fits_in_generics(t) => break false,
                 _ => {}
             }
         };

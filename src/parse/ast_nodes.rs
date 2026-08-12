@@ -298,6 +298,14 @@ pub enum ASTNodeKind {
         base:  ASTNodeId,
         index: u64,
     },
+    // `<T, U>` at a call: `foo<MyType>(x)`. A suffix like the rest, and built
+    // before its base like the rest -- what it is the type arguments *of* is not
+    // on the stack yet. Which `<` opens one is the lexer's to have decided.
+    TypeArgs {
+        base: ASTNodeId,
+        args: Vec<ASTNodeId>,
+    },
+
     // `::x`, a suffix here because a name can want a `.` on either side of it.
     Path {
         base: ASTNodeId,

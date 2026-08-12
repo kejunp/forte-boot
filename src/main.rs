@@ -1,3 +1,4 @@
+mod cfg;
 mod error;
 mod expand;
 mod lex;
@@ -79,6 +80,10 @@ fn dump_parse(path: &str, source: &str) {
 
     // The tree the rest of the compiler would read. Lowering is the last pass
     // that cares how any of it was written.
+    //
+    // It stops here. What comes next is `sema`, which turns this into the
+    // typed tree the CFG is built from -- and neither of those is written, so
+    // there is nothing yet to hand `cfg::lower` a TTIR to work on.
     let mut lowerer = Lowerer::new(&parser);
     lowerer.lower(&root);
     if !lowerer.errors().is_empty() {
@@ -148,6 +153,11 @@ fn main() {
     // The same braces hold statements where a statement could stand, and the
     // separators come back with them.
     dump("let v = {\n    f()\n    g()\n}\n{\n    h()\n    k()\n}\n");
+
+    // A call may name its type arguments, and no `::` is needed to say so: the
+    // lexer looks ahead for the matching `>` and the `(` after it. The second
+    // line is the comparison the first would be without that look.
+    dump("let a = foo<MyType>(x)\nlet b = a < b && c > d\n");
 
     // `::` reaches a namespace, a module or a type; `.` reaches a value and
     // nothing else. All three meet in one name here.
@@ -287,10 +297,14 @@ fn main() {
     dump_parse("arity.fc", "macro one($x:expr) {\n    $x\n}\nfn main() {\n    @one(1, 2);\n}\n");
     dump_parse("frag.fc", "macro n($x:ident) {\n    $x\n}\nfn main() {\n    @n(1 + 2);\n}\n");
 
-    // The closed set of attributes is checked while the TIR is built: a name
+    // The closed set of attributes is checked while the CFG is built: a name
     // the compiler does not know is an error naming what was probably meant.
     dump_parse("attr.fc", "%inlien\nfn f();\n");
     dump_parse("target.fc", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");
+
+    // Simplification: the arithmetic folds, the fold settles the branch, the
+    // branch leaves one value, and the value lands where the name was.
+    dump_parse("opt.fc", "fn main() {\n    let n = if 2 * 3 > 5 { 10 + 1 } else { 0 }\n    g(n);\n    return;\n    h();\n}\n");
 }
 
 

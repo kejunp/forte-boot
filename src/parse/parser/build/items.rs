@@ -77,13 +77,13 @@ impl Parser {
 
             // ---- ASTVisibility ----------------------------------------------
             // <visibility> -> public
-            385 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Public)), c[0]),
+            387 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Public)), c[0]),
             // <visibility> -> private
-            386 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Private)), c[0]),
+            388 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Private)), c[0]),
             // <visibility_opt> -> ε
-            387 => self.here(ASTNodeKind::Empty),
+            389 => self.here(ASTNodeKind::Empty),
             // <visibility_opt> -> <visibility>
-            388 => self.pass(c[0]),
+            390 => self.pass(c[0]),
 
             // ---- Bindings ------------------------------------------------
             // <binding_name> -> IDENTIFIER
@@ -238,23 +238,23 @@ impl Parser {
 
             // ---- where ---------------------------------------------------
             // <where_clause_opt> -> ε
-            389 => self.here(ASTNodeKind::List(Vec::new())),
+            391 => self.here(ASTNodeKind::List(Vec::new())),
             // <where_clause_opt> -> where <where_pred_list>
-            390 => self.pass(c[1]),
+            392 => self.pass(c[1]),
             // <where_pred> -> <type> : <type_bounds>
-            391 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
+            393 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
             // <where_pred> -> <lifetime> : <type_bounds>
             // The same node: a lifetime is what `ty` holds, and which of the
             // two was written is the node it points at.
-            392 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
+            394 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
             // <where_pred_list> -> <where_pred>
-            393 => self.one(c[0]),
+            395 => self.one(c[0]),
             // <where_pred_list> -> <where_pred_list> , <where_pred>
-            394 => self.grew(c[0], c[2]),
+            396 => self.grew(c[0], c[2]),
 
             // ---- Structs -------------------------------------------------
             // <struct_decl> -> struct IDENTIFIER <generic_params_opt> { <field_decl_list_opt> } <semi_opt>
-            336 => {
+            337 => {
                 let name = self.text(c[1]);
                 self.at(
                     ASTNodeKind::Struct {
@@ -270,7 +270,7 @@ impl Parser {
             // <struct_literal_tail> -> VALUE_LCURLY <field_init_list_opt> }
             // A suffix like any other: what it is a literal *of* stands to its
             // left and is not on the stack yet.
-            337 => self.at(
+            338 => self.at(
                 ASTNodeKind::StructLit { base: HOLE, fields: self.list(c[1]) },
                 c[0],
             ),
@@ -360,7 +360,7 @@ impl Parser {
 
             // ---- Traits --------------------------------------------------
             // <trait_decl> -> trait IDENTIFIER <generic_params_opt> { <trait_member_list> <trait_tail_opt> } <semi_opt>
-            338 => {
+            339 => {
                 let name = self.text(c[1]);
                 self.at(
                     ASTNodeKind::Trait {
@@ -376,15 +376,15 @@ impl Parser {
             // <trait_member> -> <attribute_list> <fn_decl>
             // A trait's members carry no visibility of their own: the trait's
             // is theirs.
-            339 => self.with_attrs(c[1], c[0], ASTVisibility::Unwritten),
+            340 => self.with_attrs(c[1], c[0], ASTVisibility::Unwritten),
             // <trait_member_list> -> ε
-            340 => self.here(ASTNodeKind::List(Vec::new())),
+            341 => self.here(ASTNodeKind::List(Vec::new())),
             // <trait_member_list> -> <trait_member_list> <trait_member>
-            341 => self.grew(c[0], c[1]),
+            342 => self.grew(c[0], c[1]),
             // <trait_tail_opt> -> ε
-            342 => self.here(ASTNodeKind::Empty),
+            343 => self.here(ASTNodeKind::Empty),
             // <trait_tail_opt> -> <attribute_list> <fn_sig>
-            343 => self.with_attrs(c[1], c[0], ASTVisibility::Unwritten),
+            344 => self.with_attrs(c[1], c[0], ASTVisibility::Unwritten),
 
             // ---- Impls ---------------------------------------------------
             // <impl_decl> -> impl <generic_params_opt> <type> <impl_for_opt> <where_clause_opt> { <impl_member_list> <impl_tail_opt> } <semi_opt>
@@ -475,9 +475,9 @@ impl Parser {
 
             // ---- Variables -----------------------------------------------
             // <var_decl> -> <var_head> ;
-            375 => self.pass(c[0]),
+            377 => self.pass(c[0]),
             // <var_head> -> <var_intro> <binding_name> <type_annotation_opt> <initializer_opt>
-            376 => {
+            378 => {
                 let intro = intro_of(self.mark(c[0]));
                 self.at(
                     ASTNodeKind::Variable {
@@ -492,25 +492,25 @@ impl Parser {
                 )
             }
             // <var_intro> -> let
-            377 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Let)), c[0]),
+            379 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Let)), c[0]),
             // <var_intro> -> var
-            378 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Var)), c[0]),
+            380 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Var)), c[0]),
 
             // ---- The optional semicolon ----------------------------------
             // Nothing above reads it: it is written for the grammar, which has
             // to say that it may be there.
             // <semi_opt> -> ε
-            320 => self.here(ASTNodeKind::Empty),
+            321 => self.here(ASTNodeKind::Empty),
             // <semi_opt> -> ;
-            321 => self.at(ASTNodeKind::Empty, c[0]),
+            322 => self.at(ASTNodeKind::Empty, c[0]),
 
             // ---- What a `;` may be left off ------------------------------
             // <unterminated_decl> -> <var_head> | <const_head> | <fn_sig>
-            365 | 366 | 367 => self.pass(c[0]),
+            367 | 368 | 369 => self.pass(c[0]),
             // <unterminated_stmt> -> <expression> | <var_head> | <const_head>
-            368 | 369 | 370 => self.pass(c[0]),
+            370 | 371 | 372 => self.pass(c[0]),
             // <unterminated_stmt> -> unsafe <unterminated_stmt>
-            371 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            373 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

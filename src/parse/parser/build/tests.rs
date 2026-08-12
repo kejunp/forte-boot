@@ -603,6 +603,10 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         ASTNodeKind::Field { base, .. }
         | ASTNodeKind::TupleIndex { base, .. }
         | ASTNodeKind::Path { base, .. } => out.push(*base),
+        ASTNodeKind::TypeArgs { base, args } => {
+            out.push(*base);
+            out.extend_from_slice(args);
+        }
         ASTNodeKind::Call { callee, args } => {
             out.push(*callee);
             out.extend_from_slice(args);

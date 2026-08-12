@@ -286,6 +286,49 @@ fn percent_is_an_attribute_and_an_operator() {
     accepts("let v = a % b\n%inline\nfn g();\n");
 }
 
+// `foo<MyType>(x)` is a call with type arguments and `a < b` is a comparison,
+// and nothing in front of the `<` says which. What settles it is the shape as a
+// whole: the lexer looks ahead for the matching `>` and a `(` after it, and
+// hands the parser a `<` it has already decided about -- the same division that
+// tells a value's `{` from a block's.
+#[test]
+fn a_call_may_name_its_type_arguments() {
+    accepts_body("foo<MyType>(x);");
+    accepts_body("let a = foo<i32>(x)");
+    // Nested arguments close with a `>>`, which the look counts for two.
+    accepts_body("let a = foo<Map<K, V>>(x)");
+    accepts_body("let a = foo<&~a str>(x)");
+    // A method takes them too: the `<` follows a name either way.
+    accepts_body("let a = obj.method<T>(x)");
+    accepts_body("let a = ns::f<T>(x)");
+
+    // A comparison is still a comparison wherever the shape does not fit.
+    accepts_body("let a = a < b");
+    accepts_body("let a = a < b && c > d");
+    accepts_body("let a = a < b > c");
+    // The `<` follows a `)` and not a name, so nothing opens.
+    accepts_body("let a = f() < g > (h)");
+
+    // A declaration's generic *parameters* read the same way from the `<`
+    // onwards, and are told apart by the keyword that introduced the name.
+    accepts("fn sort<T>(xs: *T[]) where T: Ord {\n    f()\n}\n");
+    accepts("struct P<T> {\n    x: T,\n}\n");
+    accepts("impl<T> Stack<T> {\n    fn len(this): i32;\n}\n");
+}
+
+// The one reading given up for it: `a < b > (c)` was two comparisons and is a
+// call with a type argument now. Nothing else in the language changes meaning,
+// and this is the shape that pays for the rest.
+#[test]
+fn the_reading_given_up_for_type_arguments() {
+    // It parses -- as a call, not as two comparisons. Parenthesise to say the
+    // other thing.
+    accepts_body("let a = a < b > (c)");
+    accepts_body("let a = (a < b) > (c)");
+    // Chaining is still written, and is still what it always parsed as.
+    accepts_body("let a = a < b > c");
+}
+
 // A declaration may take more than one generic parameter. The commas between
 // them sit in a `<..>` that `bracket_depth` does not count, so the header has
 // to keep waiting for its body across them -- exactly as it does across the
@@ -396,6 +439,9 @@ fn says_what_the_lexer_could_not_read() {
         "2:13: Unterminated string"
     );
 }
+
+
+
 
 
 

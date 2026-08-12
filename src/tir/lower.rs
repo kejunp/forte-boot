@@ -571,6 +571,11 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::TupleIndex { base, index } => {
                 TIRExprKind::TupleIndex { base: self.expr(base), index }
             }
+            ASTNodeKind::TypeArgs { base, args } => {
+                let base = self.expr(base);
+                let args = args.iter().map(|&a| self.generic_arg(a)).collect();
+                TIRExprKind::TypeArgs { base, args }
+            }
 
             ASTNodeKind::Call { callee, args } => TIRExprKind::Call {
                 callee: self.expr(callee),

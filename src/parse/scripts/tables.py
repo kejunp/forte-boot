@@ -65,6 +65,9 @@ TOKENS = {
     # The lexer decides which kind of thing a `{` opens and says so; the grammar
     # is ambiguous without it. See `push_brace`.
     'VALUE_LCURLY': 'LCurlyValue',
+    # The `<` of a call's type arguments, told from a comparison by a look
+    # ahead to the matching `>`. See `opens_type_args`.
+    'GENERIC_LT': 'LessGeneric',
     ':': 'Colon', '::': 'ColonColon', ',': 'Comma', '.': 'Dot',
     ';': 'Semicolon', '=>': 'FatArrow', '#': 'HashTag',
 
@@ -101,6 +104,7 @@ DESCRIPTIONS = {
     # difference between them.
     '{': 'a block `{`',
     'VALUE_LCURLY': 'a value `{`',
+    'GENERIC_LT': 'a type argument list',
     END_OF_FILE: 'end of file',
     LEX_ERROR: 'a token that could not be read',
 }

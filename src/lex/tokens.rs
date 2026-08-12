@@ -102,6 +102,11 @@ pub enum TokType {
     EqualsEquals,
     BangEquals,
     LessThan,
+    // The `<` that opens a type argument list at a call: `foo<T>(x)`. A `<` is
+    // a comparison everywhere else, and nothing in front of it says which --
+    // the lexer looks ahead for the matching `>` and what follows it, and says
+    // so here. The same decision `LCurlyValue` carries for a brace.
+    LessGeneric,
     GreaterThan,
     LessOrEqual,
     GreaterOrEqual,

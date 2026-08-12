@@ -167,6 +167,7 @@ impl Parser {
             ASTNodeKind::Field { base: under, .. } => *under = base,
             ASTNodeKind::TupleIndex { base: under, .. } => *under = base,
             ASTNodeKind::Path { base: under, .. } => *under = base,
+            ASTNodeKind::TypeArgs { base: under, .. } => *under = base,
             ASTNodeKind::Call { callee, .. } => *callee = base,
             ASTNodeKind::Index { base: under, .. } => *under = base,
             ASTNodeKind::StructLit { base: under, .. } => *under = base,

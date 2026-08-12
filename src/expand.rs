@@ -3,16 +3,16 @@
 //
 // Where it sits:
 //
-//     prep -> lex -> parse -> AST -> expand -> lower -> TIR -> sema
+//     prep -> lex -> parse -> AST -> expand -> lower -> CFG -> sema
 //
-// Before lowering, because the TIR has no macro of any kind -- see
-// `tir/tir_nodes.rs`, whose item kinds stop at `Global`. After parsing, because
+// Before lowering, because the CFG has no macro of any kind -- see
+// `cfg/cfg_nodes.rs`, whose item kinds stop at `Global`. After parsing, because
 // what a macro expands to is written in the language and is parsed as the
 // language: a body is a `<block>` the parser has already built, and expanding
 // is copying it with the arguments put where the parameters stood.
 //
-// It runs on the AST and not the TIR for the same reason it must run before
-// one: a macro is a thing of the syntax, and by the TIR there is nothing left
+// It runs on the AST and not the CFG for the same reason it must run before
+// one: a macro is a thing of the syntax, and by the CFG there is nothing left
 // of it to be.
 //
 // What it does not do is resolve anything. A macro is found by the name it was
@@ -162,6 +162,10 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         ASTNodeKind::Field { base, .. }
         | ASTNodeKind::TupleIndex { base, .. }
         | ASTNodeKind::Path { base, .. } => out.push(base),
+        ASTNodeKind::TypeArgs { base, args } => {
+            out.push(base);
+            out.extend(args.iter_mut());
+        }
         ASTNodeKind::Call { callee, args } => {
             out.push(callee);
             out.extend(args.iter_mut());
@@ -366,7 +370,7 @@ impl<'a> Expander<'a> {
     }
 
     // A declaration is dropped from the list that held it, there being nothing
-    // below this pass that could read one -- the TIR has no macro item at all.
+    // below this pass that could read one -- the CFG has no macro item at all.
     // The three lists that can hold one are a file's, a namespace's and a
     // block's, a macro being a `<declaration>` and so a statement as well.
     fn strip_decls(&self, kind: &mut ASTNodeKind) {

@@ -725,12 +725,30 @@ pairs — and so does a reference: "&(i32, str)" reads one.
 A member is reached with ".0", ".1" and so on (section 5), and the whole of
 one is taken apart with a <tuple_pattern> (section 5.2).
 
-<generic_args>. Note for implementers: the lexer only guesses at "<". It
-opens a generic context after an IDENTIFIER and abandons it on any token
-that cannot appear in a type argument list. The parser must therefore still
-be able to reject a "<" that turned out to be a comparison. Inside an open
-context ">>" is emitted as two ">" tokens, so "Map<str, List<i32>>" closes
-cleanly.
+<generic_args>. A call may name its type arguments, "foo<MyType>(x)", and
+there is no turbofish: what tells that from the comparison "foo < MyType > x"
+is the shape as a whole and not anything in front of the "<". A bare name is a
+type and an expression both, so what stands *inside* the angles settles
+nothing; what settles it is a matching ">" with a "(" after it. The lexer
+looks that far ahead and hands the parser a "<" it has already decided about,
+which is the division that tells a value's "{" from a block's.
+
+The look gives up at once on anything that cannot appear in a type argument,
+so "a < b && c > d" is two comparisons; it follows a "(" in but never out of
+one, so "(a < b) > (c)" is a comparison in a group and not a call. A name a
+declaration keyword introduced is the one name it will not open after, since
+"fn sort<T>(xs)" reads from the "<" onwards exactly as "sort<T>(xs)" does.
+
+One reading is given up for it, and it is the honest cost: "a < b > (c)" was
+two comparisons and is a call with a type argument now. Parenthesise to say
+the other thing. Nothing else in the language changes meaning.
+
+Note for implementers: the lexer also guesses at a "<" it does not decide, to
+know where a type argument list is open. It opens a context after an
+IDENTIFIER and abandons it on any token that cannot appear in one. The parser
+must therefore still be able to reject a "<" that turned out to be a
+comparison. Inside an open context ">>" is emitted as two ">" tokens, so
+"Map<str, List<i32>>" closes cleanly.
 
 A "+", a "_", a "::", a parenthesis and an integer can appear in a type
 argument as well — a bound separator, an inferred argument, a qualified name,
