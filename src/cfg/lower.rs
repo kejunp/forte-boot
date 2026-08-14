@@ -439,7 +439,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Literal(value) => CFGExprKind::Literal(value),
             TTIRExprKind::Local(l) => CFGExprKind::Local(l),
             TTIRExprKind::Item(i) => CFGExprKind::Item(i),
-            TTIRExprKind::This => CFGExprKind::This,
+            TTIRExprKind::SelfExpr => CFGExprKind::SelfExpr,
 
             TTIRExprKind::Field { base, index } => {
                 CFGExprKind::Field { base: self.value(base), index }

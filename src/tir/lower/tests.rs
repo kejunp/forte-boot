@@ -82,11 +82,11 @@ fn elifs_fold_into_nested_ifs() {
 // One AST node, two TIR shapes: a global at file scope, a `let` in a block.
 #[test]
 fn a_var_decl_is_a_global_or_a_let_by_where_it_stands() {
-    let tir = clean("public var n: i32 = 1\nfn main() {\n    let x = 2\n    g(x)\n}\n");
+    let tir = clean("pub var n: i32 = 1\nfn main() {\n    let x = 2\n    g(x)\n}\n");
     assert_eq!(tir.roots.len(), 2);
     match &tir.items[tir.roots[0]].kind {
         TIRItemKind::Global { vis, intro, name, .. } => {
-            assert_eq!(*vis, TIRVis::Public);
+            assert_eq!(*vis, TIRVis::Pub);
             assert_eq!(*intro, TIRIntro::Var);
             assert_eq!(*name, TIRBinding::Name("n".to_string()));
         }
@@ -144,7 +144,7 @@ fn the_three_payloads_become_one() {
 // is a trait or a lifetime.
 #[test]
 fn generics_and_bounds_keep_both_kinds() {
-    let tir = clean("fn f<~a, T: Show + ~a>(x: &~a T) where T: ~a, ~a: ~b;\n");
+    let tir = clean("fn f<'a, T: Show + 'a>(x: &'a T) where T: 'a, 'a: 'b;\n");
     let f = only_fn(&tir);
     assert_eq!(f.generics.len(), 2);
     match &f.generics[0] {
@@ -168,7 +168,7 @@ fn generics_and_bounds_keep_both_kinds() {
     assert!(matches!(f.wheres[0].subject, TIRBound::Trait(_)));
     assert!(matches!(&f.wheres[1].subject, TIRBound::Life(l) if l == "a"));
 
-    // The parameter's `&~a T` keeps the lifetime it was written with.
+    // The parameter's `&'a T` keeps the lifetime it was written with.
     let ty = f.params[0].ty.expect("a type");
     match &tir.types[ty].kind {
         TIRTypeKind::Ref { op, life, .. } => {
@@ -292,12 +292,17 @@ fn inline_and_noinline_contradict_and_a_repeat_is_refused() {
 #[test]
 fn the_whole_language_lowers() {
     let source = "import a::b as c;\n\
+                  pub import a::{b, c::*, d::{e, f as g}};\n\
+                  pub(suite) import super::super::h::*;\n\
+                  import suite::i::j;\n\
                   %deprecated(\"go\")\n\
-                  public const unsafe fn f<~a, T: Ord + ~a>(this, x: *i32[2]): (bool, i32)\n\
-                      where T: ~a {\n\
+                  pub const unsafe fn f<'a, T: Ord + 'a>(&self, x: *i32[2]): (bool, i32)\n\
+                      where T: 'a {\n\
                       let y = -x.a as i64 .. 3;\n\
                       let t: (i32, str) = (1, \"a\");\n\
                       let u = t.1;\n\
+                      let v = suite::limits::MAX + super::k::n;\n\
+                      let w: super::Node = self;\n\
                       if y { g(#{1: 2}, {,}, [1]) } else { move |z| z + 1 };\n\
                       while y { continue }\n\
                       for i in 0..=9 { break }\n\
@@ -315,10 +320,11 @@ fn the_whole_language_lowers() {
                       const K: i32 = 1;\n\
                       var g: i32 = 2;\n\
                       enum E { A, B(i32), C { x: i32 }, D = 4 }\n\
-                      struct S<T> { private v: T[] }\n\
-                      trait W { fn w<T>(this, t: T): str where T: Ord; }\n\
-                      impl W for S<i32> { private fn w(this): str { P { r: 1 } } }\n\
-                      struct H<~a, ~b: ~a> { v: &~a i32[], w: *~b i32 }\n\
+                      struct S<T> { priv v: T[] }\n\
+                      trait W { fn w<T>(&self, t: T): str where T: Ord; }\n\
+                      impl W for S<i32> { priv fn w(&self): str { P { r: 1 } } }\n\
+                      impl S<i32> { fn take(self); fn put(*self); }\n\
+                      struct H<'a, 'b: 'a> { v: &'a i32[], w: *'b i32 }\n\
                   }\n";
     let tir = clean(source);
     assert!(!tir.roots.is_empty());
@@ -335,8 +341,84 @@ fn the_whole_language_lowers() {
         })
         .flatten()
         .collect();
-    assert_eq!(members.len(), 2);
+    assert_eq!(members.len(), 4);
     for m in members {
         assert!(matches!(tir.items[m].kind, TIRItemKind::Fn(_)));
     }
+}
+
+// The type a number named for itself reaches the TIR beside the value, in an
+// expression and in a pattern alike. Nothing here asks whether the value fits
+// it -- that is the checker's, and `-128_i8` is why: the `-` is an operator,
+// and only a tree with both in it can tell that from an overflow.
+#[test]
+fn a_number_keeps_the_type_it_named() {
+    let tir = clean("fn main() {\n    let x = 5_u8;\n    let y = 2.6_f32;\n    match x {\n        1_u8 => a,\n        -3_i8 => b,\n        _ => c,\n    }\n}\n");
+
+    let suffixes: Vec<Option<TIRPrim>> = tir
+        .exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            TIRExprKind::Literal { suffix, .. } => Some(*suffix),
+            _ => None,
+        })
+        .collect();
+    assert!(suffixes.contains(&Some(TIRPrim::U8)));
+    assert!(suffixes.contains(&Some(TIRPrim::F32)));
+
+    let pats: Vec<(bool, Option<TIRPrim>)> = tir
+        .pats
+        .iter()
+        .filter_map(|p| match &p.kind {
+            TIRPatKind::Lit { negated, suffix, .. } => Some((*negated, *suffix)),
+            _ => None,
+        })
+        .collect();
+    assert!(pats.contains(&(false, Some(TIRPrim::U8))));
+    // The `-` is folded into the value where it can be; the suffix is the
+    // number's either way.
+    assert!(pats.iter().any(|(_, s)| *s == Some(TIRPrim::I8)));
+
+    // An unsuffixed number carries nothing, and is the same literal it was.
+    let tir = clean("fn main() {\n    let x = 5;\n}\n");
+    assert!(tir.exprs.iter().any(|e| matches!(
+        &e.kind,
+        TIRExprKind::Literal { value: TIRLit::Int(5), suffix: None }
+    )));
+}
+
+// A type alias reaches the TIR as an item of its own. It goes no further: the
+// resolver follows it, and what comes after has the type it named.
+#[test]
+fn a_type_alias_is_an_item_that_names_a_type() {
+    let tir = clean("pub type Pair<T> = (T, T)\n");
+    assert_eq!(tir.roots.len(), 1);
+    match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::TypeAlias { vis, name, generics, ty, .. } => {
+            assert_eq!(*vis, TIRVis::Pub);
+            assert_eq!(name, "Pair");
+            assert_eq!(generics.len(), 1);
+            assert!(matches!(&tir.types[*ty].kind, TIRTypeKind::Tuple(t) if t.len() == 2));
+        }
+        other => panic!("{:?}", other),
+    }
+
+    // `%deprecated` goes on anything, so it goes on this too.
+    let tir = clean("%deprecated(\"use i64\")\ntype Old = i32\n");
+    match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::TypeAlias { attrs, .. } => {
+            assert_eq!(attrs.deprecated.as_deref(), Some("use i64"));
+        }
+        other => panic!("{:?}", other),
+    }
+}
+
+// An attribute that is a function's is refused on one, as on any other
+// declaration that is not a function.
+#[test]
+fn a_function_attribute_is_refused_on_a_type_alias() {
+    let messages = errors_in("%inline\ntype T = i32\n");
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("`%inline` goes on a function"), "{}", messages[0]);
+    assert!(messages[0].contains("this is a type alias"), "{}", messages[0]);
 }

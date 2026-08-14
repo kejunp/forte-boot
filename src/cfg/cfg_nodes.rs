@@ -141,7 +141,7 @@ pub enum CFGExprKind {
     Literal(TIRLit),
     Local(CFGLocalId),
     Item(TTIRItemId),
-    This,
+    SelfExpr,
 
     Field {
         base:  CFGExprId,

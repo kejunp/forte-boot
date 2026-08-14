@@ -55,23 +55,23 @@ fn parses_declarations() {
     accepts("let x = 25\nlet y = x + 1\n");
     accepts("import shapes::circle;\n");
     accepts("import shapes::circle as circ;\n");
-    accepts("public const MAX: i32 = 1 << 20\n");
+    accepts("pub const MAX: i32 = 1 << 20\n");
     accepts("struct P {\n    x: i32,\n    y: i32,\n}\n");
-    accepts("public struct P<T> {\n    private x: T\n}\n");
+    accepts("pub struct P<T> {\n    priv x: T\n}\n");
     accepts("enum E {\n    A,\n    B(i32),\n    C { x: i32 },\n    D = 4,\n}\n");
-    accepts("trait Show<T> {\n    fn show(this: T): str\n}\n");
-    accepts("trait Show {\n    fn show(this): str\n    fn id(this): i32\n}\n");
-    accepts("impl Show<i32> for Box {\n    fn show(this: i32): str { return \"box\" }\n}\n");
-    accepts("impl<T> Stack<T> where T: Ord + Show {\n    fn len(this): i32;\n}\n");
+    accepts("trait Show<T> {\n    fn show(&self): str\n}\n");
+    accepts("trait Show {\n    fn show(&self): str\n    fn id(&self): i32\n}\n");
+    accepts("impl Show<i32> for Box {\n    fn show(&self): str { return \"box\" }\n}\n");
+    accepts("impl<T> Stack<T> where T: Ord + Show {\n    fn len(&self): i32;\n}\n");
     // A type is a type: an impl takes any of them, primitives included.
-    accepts("impl i32 {\n    fn abs(this): i32;\n}\n");
-    accepts("impl Show for str {\n    fn show(this): str { return this }\n}\n");
-    accepts("impl<T> Show for T[] {\n    fn show(this): str;\n}\n");
-    accepts("namespace limits {\n    public const MAX: i32 = 255\n}\n");
-    accepts("%inline\n%repr(C)\npublic fn f();\n");
+    accepts("impl i32 {\n    fn abs(&self): i32;\n}\n");
+    accepts("impl Show for str {\n    fn show(&self): str { return self }\n}\n");
+    accepts("impl<T> Show for T[] {\n    fn show(&self): str;\n}\n");
+    accepts("namespace limits {\n    pub const MAX: i32 = 255\n}\n");
+    accepts("%inline\n%repr(C)\npub fn f();\n");
     accepts("%symbol(\"malloc\")\nfn malloc(n: u64): *u8;\n");
     accepts("const fn square(n: i32): i32 { n * n }\n");
-    accepts("public unsafe fn write(dst: *u8[], n: u64);\n");
+    accepts("pub unsafe fn write(dst: *u8[], n: u64);\n");
     accepts("fn panic(m: str): never;\n");
     accepts("fn log(m: str): null;\n");
     accepts("fn f() {\n    let x = 1\n    g(x)\n}\n");
@@ -170,7 +170,7 @@ fn parses_tuples() {
     accepts_body("for x in (1, 2) {\n    f(x)\n    g(x)\n}");
     accepts_body("let f = |x| (x, x)\nlet t = (\n    1,\n    2,\n)");
     accepts("enum E {\n    B((i32, str)),\n}\n");
-    accepts("impl (i32, str) {\n    fn first(this): i32;\n}\n");
+    accepts("impl (i32, str) {\n    fn first(&self): i32;\n}\n");
     accepts("fn f<T>(p: (T, T)): T where T: Ord;\n");
     // A group of one is what it always was, and a call takes its own comma.
     accepts_body("let g = (1)\nlet refs: (&i32)[8]\nlet c = f(1, 2)");
@@ -228,18 +228,40 @@ fn parses_the_bitwise_operators() {
 #[test]
 fn copy_and_drop_need_no_grammar_of_their_own() {
     // `Drop` holds the one method, whose receiver writes to what it releases.
-    accepts("impl Drop for Buf {\n    fn drop(this: *Buf) {\n        unsafe free(this.p)\n    }\n}\n");
-    accepts("impl Drop for Buf {\n    fn drop(this: *Buf);\n}\n");
+    accepts("impl Drop for Buf {\n    fn drop(*self) {\n        unsafe free(self.p)\n    }\n}\n");
+    accepts("impl Drop for Buf {\n    fn drop(*self);\n}\n");
     // `Copy` holds nothing, so its body is empty.
     accepts("impl Copy for Point {}\n");
     accepts("trait Copy {}\n");
-    accepts("trait Drop {\n    fn drop(this: *This);\n}\n");
+    accepts("trait Drop {\n    fn drop(*self);\n}\n");
     // Both compose with everything an impl already takes: parameters, a
     // `where` clause, and the lifetimes of section 3.
-    accepts("impl<T> Drop for Vec<T> {\n    fn drop(this: *Vec<T>);\n}\n");
+    accepts("impl<T> Drop for Vec<T> {\n    fn drop(*self);\n}\n");
     accepts("impl<T> Copy for Pair<T> where T: Copy {}\n");
-    accepts("impl<~a> Drop for Parser<~a> {\n    fn drop(this: *Parser<~a>);\n}\n");
-    accepts("impl<~a, T> Drop for Held<~a, T> where T: ~a {\n    fn drop(this: *Held<~a, T>);\n}\n");
+    accepts("impl<'a> Drop for Parser<'a> {\n    fn drop(*self);\n}\n");
+    accepts("impl<'a, T> Drop for Held<'a, T> where T: 'a {\n    fn drop(*self);\n}\n");
+}
+
+// `type MyType = i32` names a type. It stands wherever a declaration does, takes
+// generic parameters because the type on the right may want them, and ends with
+// a separator like every other declaration whose last thing is not a `}`.
+#[test]
+fn a_type_alias_names_a_type() {
+    accepts("type MyType = i32;\n");
+    accepts("type MyType = i32\n");
+    accepts("pub type Pair<T> = (T, T)\n");
+    accepts("type Ref<'a> = &'a str\n");
+    accepts("type Grid = i32[8][8]\n");
+    accepts("type Held = Map<str, Vec<i32>>\n");
+    accepts("%deprecated(\"use i64\")\ntype Old = i32\n");
+    // A declaration, so it stands in a namespace and in a block as well -- and
+    // at the end of either, where no separator is inserted before the `}`.
+    accepts("namespace n {\n    type T = i32\n}\n");
+    accepts_body("type Local = i32\nlet x: Local = 1");
+    accepts("namespace n {\n    type T = i32\n}\n");
+    accepts_body("let x = 1\ntype Last = i32");
+    // `type` is a keyword now, so nothing binds it.
+    assert!(recognise("fn main() {\n    let type = 1\n}\n").is_err());
 }
 
 // A macro is declared with a keyword and invoked with `@`. Its parameters are
@@ -252,7 +274,7 @@ fn parses_macros() {
     accepts("macro pair($a:expr, $b:expr) {\n    ($a, $b)\n}\n");
     // A macro is a declaration, so it takes attributes and a visibility, and
     // stands inside a namespace or a block like any other.
-    accepts("%deprecated(\"use log\")\npublic macro shout($m:expr) {\n    print($m)\n}\n");
+    accepts("%deprecated(\"use log\")\npub macro shout($m:expr) {\n    print($m)\n}\n");
     accepts("namespace m {\n    macro one($x:expr) {\n        $x\n    }\n}\n");
     accepts_body("macro inner($x:expr) {\n    $x\n}\nlet n = 1");
     // The invocation is an operand, so it stands wherever a value does.
@@ -297,7 +319,7 @@ fn a_call_may_name_its_type_arguments() {
     accepts_body("let a = foo<i32>(x)");
     // Nested arguments close with a `>>`, which the look counts for two.
     accepts_body("let a = foo<Map<K, V>>(x)");
-    accepts_body("let a = foo<&~a str>(x)");
+    accepts_body("let a = foo<&'a str>(x)");
     // A method takes them too: the `<` follows a name either way.
     accepts_body("let a = obj.method<T>(x)");
     accepts_body("let a = ns::f<T>(x)");
@@ -313,7 +335,7 @@ fn a_call_may_name_its_type_arguments() {
     // onwards, and are told apart by the keyword that introduced the name.
     accepts("fn sort<T>(xs: *T[]) where T: Ord {\n    f()\n}\n");
     accepts("struct P<T> {\n    x: T,\n}\n");
-    accepts("impl<T> Stack<T> {\n    fn len(this): i32;\n}\n");
+    accepts("impl<T> Stack<T> {\n    fn len(&self): i32;\n}\n");
 }
 
 // The one reading given up for it: `a < b > (c)` was two comparisons and is a
@@ -337,8 +359,8 @@ fn the_reading_given_up_for_type_arguments() {
 fn a_header_survives_the_commas_of_its_generic_parameters() {
     accepts("struct Pair<A, B> {\n    l: A,\n    r: B,\n}\n");
     accepts("enum Either<A, B> {\n    L(A),\n    R(B),\n}\n");
-    accepts("trait Into<A, B> {\n    fn into(this): B;\n}\n");
-    accepts("impl<A, B> Into<A, B> for Pair<A, B> {\n    fn into(this): B;\n}\n");
+    accepts("trait Into<A, B> {\n    fn into(&self): B;\n}\n");
+    accepts("impl<A, B> Into<A, B> for Pair<A, B> {\n    fn into(&self): B;\n}\n");
     accepts("fn zip<A, B>(a: A, b: B): (A, B) {\n    (a, b)\n}\n");
     // Three of them, and one carrying bounds, still leave the brace alone.
     accepts("struct T3<A, B, C> {\n    a: A,\n}\n");
@@ -347,36 +369,45 @@ fn a_header_survives_the_commas_of_its_generic_parameters() {
     accepts("struct Held<A, B> {\n    m: Map<A, Vec<B>>,\n}\n");
 }
 
-// A lifetime is `~a`: one token, since `~` spells nothing else. It stands as a
+// A lifetime is `'a`: one token, since `~` spells nothing else. It stands as a
 // parameter, as a type argument, in front of what a reference refers to, and on
 // either side of a `where` predicate's colon.
 #[test]
 fn parses_lifetimes() {
-    accepts("fn longest<~a>(x: &~a str, y: &~a str): &~a str;\n");
-    accepts("struct Parser<~a> {\n    text: &~a str,\n}\n");
-    accepts("struct Pair<~a, ~b, T> {\n    l: &~a T,\n    r: &~b T,\n}\n");
+    accepts("fn longest<'a>(x: &'a str, y: &'a str): &'a str;\n");
+    accepts("struct Parser<'a> {\n    text: &'a str,\n}\n");
+    accepts("struct Pair<'a, 'b, T> {\n    l: &'a T,\n    r: &'b T,\n}\n");
     // Bounds, both kinds, inline and in a `where`.
-    accepts("fn f<~a, ~b: ~a, T: Show + ~a>(x: &~a T);\n");
-    accepts("fn f<~a, T>(x: &~a T) where T: ~a, ~a: ~b;\n");
-    accepts("impl<~a> Show for Parser<~a> {\n    fn show(this: &~a Parser<~a>): str;\n}\n");
+    accepts("fn f<'a, 'b: 'a, T: Show + 'a>(x: &'a T);\n");
+    accepts("fn f<'a, T>(x: &'a T) where T: 'a, 'a: 'b;\n");
+    accepts("impl<'a> Show for Parser<'a> {\n    fn show(&self): str;\n}\n");
     // A mutable reference names one the same way, and a view is a reference.
-    accepts_body("let w: *~a i32 = *a\nlet v: &~a i32[] = &a");
+    accepts_body("let w: *'a i32 = *a\nlet v: &'a i32[] = &a");
     // Nested arguments still close: the `>>` splits with a lifetime inside.
-    accepts_body("let m: Map<~a, Vec<&~b str>> = empty()");
-    accepts_body("let n: Vec<Vec<~a>> = empty()");
-    // `~_` is the one with no name worth giving.
-    accepts_body("let p: &~_ i32 = &x");
+    accepts_body("let m: Map<'a, Vec<&'b str>> = empty()");
+    accepts_body("let n: Vec<Vec<'a>> = empty()");
+    // `'_` is the one with no name worth giving.
+    accepts_body("let p: &'_ i32 = &x");
     // A lifetime is not a value, and `~` alone is not a lifetime.
-    assert!(recognise("fn main() {\n    let x = ~a\n}\n").is_err());
+    assert!(recognise("fn main() {\n    let x = 'a\n}\n").is_err());
     assert!(recognise("fn f<~>(x: i32);\n").is_err());
 }
 
-// The `~` of a lifetime takes nothing away from a char literal, which is what
-// the spelling was chosen for: `'a'` needs no lookahead to stay itself.
+// `'a` is a lifetime and `'a'` a character, and the two are told apart by
+// looking past the name for a closing quote. Both readings have to keep
+// working, including where they stand next to each other.
 #[test]
-fn a_lifetime_leaves_char_literals_alone() {
-    accepts_body("let c = 'a'\nlet d = '\\n'");
-    accepts("fn f<~a>(c: char, s: &~a str): char { 'x' }\n");
+fn a_lifetime_and_a_char_literal_share_the_quote() {
+    // Characters, escapes and the wildcard-looking one included.
+    accepts_body("let c = 'a'\nlet d = '\\n'\nlet e = '_'\nlet f = '1'");
+    // Lifetimes, including the one with no name worth giving.
+    accepts("fn f<'a>(x: &'a str): &'a str;\n");
+    accepts("fn f<'_>(x: &'_ i32);\n");
+    // And both in one function, where the look has to answer twice.
+    accepts("fn f<'a>(c: char, s: &'a str): char { 'x' }\n");
+    accepts_body("let c = 'a'\nlet v: &'b i32 = &x");
+    // `''` is still the empty character literal it always was.
+    assert!(recognise("fn main() {\n    let c = ''\n}\n").is_err());
 }
 
 #[test]
@@ -397,6 +428,58 @@ fn rejects_what_the_grammar_gave_up() {
     // A jump says all it has to say on its own.
     assert!(recognise("fn main() {\n    let f = || break\n}\n").is_err());
     accepts_body("let f = || { break }");
+    // A receiver is written and not annotated: the type is the impl's.
+    assert!(recognise("impl P {\n    fn f(self: P);\n}\n").is_err());
+    // A glob names nothing, so there is nothing to rename.
+    assert!(recognise("import a::* as b;\n").is_err());
+    // A group hangs off a path; it does not stand on its own.
+    assert!(recognise("import {a, b};\n").is_err());
+    // `::*` is one token, so a space in it is two and neither is a glob.
+    assert!(recognise("import a:: *;\n").is_err());
+    // An import reaches a name and not a type, so it takes no arguments.
+    assert!(recognise("import a::b<i32>;\n").is_err());
+}
+
+// The tree an import may be written as, and the roots a path may start from.
+#[test]
+fn parses_import_trees_and_path_roots() {
+    accepts("import shapes::{circle, square};\n");
+    accepts("import shapes::{circle as c, square};\n");
+    accepts("import shapes::{circle, square::*, poly::{tri, quad}};\n");
+    // A list is a list: the trailing comma is written wherever one may be.
+    accepts("import shapes::{circle, square,};\n");
+    accepts("import shapes::*;\n");
+    accepts("import super::circle::*;\n");
+    accepts("import super::super::shapes::square;\n");
+    accepts("import suite::limits::MAX as m;\n");
+    accepts("import self::helpers::trim;\n");
+    // An import is a declaration, so it carries what one carries.
+    accepts("pub import shapes::circle;\n");
+    accepts("pub(suite) import shapes::{circle, square};\n");
+    accepts("%deprecated(\"go\")\npub import shapes::circle;\n");
+    // ...and stands where a declaration stands, a block included.
+    accepts("fn main() {\n    import shapes::circle;\n}\n");
+    // A namespace's last item drops its `;` like any other.
+    accepts("namespace n {\n    import a::{b, c}\n}\n");
+
+    // A root reaches into an expression, a type and a pattern alike.
+    accepts_body("let n = suite::limits::MAX");
+    accepts_body("let n = super::super::shapes::area(1)");
+    accepts("fn f(x: super::shapes::Color): suite::Rank;\n");
+    accepts_body("match c {\n    suite::Color::Red => 1,\n    _ => 2,\n}");
+    accepts_body("let n = x as super::Kind");
+}
+
+// The three receivers, and the one thing that is not one.
+#[test]
+fn parses_receivers() {
+    accepts("impl P {\n    fn take(self);\n}\n");
+    accepts("impl P {\n    fn read(&self): i32;\n}\n");
+    accepts("impl P {\n    fn write(*self);\n}\n");
+    accepts("impl P {\n    fn with(&self, k: i32): i32;\n}\n");
+    accepts("trait Drop {\n    fn drop(*self);\n}\n");
+    // `self` is a value where a value is wanted.
+    accepts("impl P {\n    fn id(&self): P { return self }\n}\n");
 }
 
 // The message an error carries: where, what was wanted, what was there.
@@ -439,6 +522,9 @@ fn says_what_the_lexer_could_not_read() {
         "2:13: Unterminated string"
     );
 }
+
+
+
 
 
 

@@ -30,7 +30,7 @@ pub type TTIRBodyId = usize;
 pub type TTIRLocalId = usize;
 // A type, worked out rather than written: `Vec<_>` has an answer by now.
 pub type TyId = usize;
-// How long a reference is good for, once the checker has settled it. A `~a` in
+// How long a reference is good for, once the checker has settled it. A `'a` in
 // the source and one it worked out for itself are the same thing here.
 pub type RegionId = usize;
 
@@ -60,7 +60,7 @@ pub enum Ty {
     },
     Ref {
         op:    TIRRefOp,
-        // Always known here. A reference with no `~a` written got one anyway,
+        // Always known here. A reference with no `'a` written got one anyway,
         // which is what the inference in section 3 is for.
         life:  RegionId,
         inner: TyId,
@@ -237,7 +237,7 @@ pub enum TTIRExprKind {
     // A name, resolved. `Name` is gone: there is nothing left to look up.
     Local(TTIRLocalId),
     Item(TTIRItemId),
-    This,
+    SelfExpr,
 
     // Reached by index rather than by name: which field `x` is, is settled.
     Field {

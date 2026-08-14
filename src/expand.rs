@@ -118,6 +118,11 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
             out.push(ty);
             out.push(value);
         }
+        ASTNodeKind::TypeAlias { attrs, generics, ty, .. } => {
+            out.extend(attrs.iter_mut());
+            out.extend(generics.iter_mut());
+            out.push(ty);
+        }
         ASTNodeKind::Attr { args, .. } => out.extend(args.iter_mut()),
         ASTNodeKind::Param { ty, .. } => out.extend(ty.iter_mut()),
         ASTNodeKind::FieldDecl { attrs, ty, .. } => {
@@ -238,10 +243,13 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         ASTNodeKind::VariantPat { elems, .. } => out.extend(elems.iter_mut()),
         ASTNodeKind::StructPat { fields, .. } => out.extend(fields.iter_mut()),
         ASTNodeKind::FieldPat { pat, .. } => out.extend(pat.iter_mut()),
+        // An import holds no handle but the attributes written in front of it;
+        // the tree it reached is spelling and stands in the node itself.
+        ASTNodeKind::Import { attrs, .. } => out.extend(attrs.iter_mut()),
         // The leaves, and the scaffolding that names nothing.
         ASTNodeKind::Empty
         | ASTNodeKind::Mark(_)
-        | ASTNodeKind::Import { .. }
+        | ASTNodeKind::ImportTree(_)
         | ASTNodeKind::Prim(_)
         | ASTNodeKind::Infer
         | ASTNodeKind::Literal(_)
@@ -249,7 +257,8 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         | ASTNodeKind::Lifetime(_)
         | ASTNodeKind::MacroVar(_)
         | ASTNodeKind::MacroParam { .. }
-        | ASTNodeKind::This
+        | ASTNodeKind::SelfExpr
+        | ASTNodeKind::SelfRecv(_)
         | ASTNodeKind::Name(_)
         | ASTNodeKind::Continue
         | ASTNodeKind::Wildcard

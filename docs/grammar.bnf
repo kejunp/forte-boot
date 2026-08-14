@@ -8,16 +8,22 @@
 <item_list>             ::= <empty>
                           | <item_list> <item>
 
-<item>                  ::= <import_decl>
-                          | <attribute_list> <visibility_opt> <declaration>
+<item>                  ::= <attribute_list> <visibility_opt> <declaration>
 
 <visibility_opt>        ::= <empty>
                           | <visibility>
 
-<visibility>            ::= "public"
-                          | "private"
+# "pub(suite)" exports a name to the rest of the suite and no further. The
+# parenthesis is the only place a visibility takes an argument, and "suite" the
+# only word it takes: what stands between a file and the world is the suite, and
+# there is no third thing to name.
+<visibility>            ::= "pub"
+                          | "priv"
+                          | "pub" "(" "suite" ")"
 
-<declaration>           ::= <fn_decl>
+<declaration>           ::= <import_decl>
+                          | <fn_decl>
+                          | <type_decl>
                           | <macro_decl>
                           | <struct_decl>
                           | <enum_decl>
@@ -49,13 +55,39 @@
 
 <import_decl>           ::= <import_head> ";"
 
-<import_head>           ::= "import" <import_path> <import_alias_opt>
+<import_head>           ::= "import" <import_tree>
 
-<import_alias_opt>      ::= <empty>
-                          | "as" IDENTIFIER
+# A tree and not a path, since a group may hold another: `a::{b, c::{d, e}}`.
+# The alias belongs to the leaf it renames rather than to the import, which is
+# what lets one group hold a renamed name beside a plain one. A glob names no
+# leaf at all, so nothing may be said of it: `a::* as b` renames nothing.
+<import_tree>           ::= <import_path>
+                          | <import_path> "as" IDENTIFIER
+                          | <import_path> "::*"
+                          | <import_path> "::" VALUE_LCURLY <import_list> "}"
 
-<import_path>           ::= IDENTIFIER
-                          | <import_path> "::" IDENTIFIER
+<import_list>           ::= <import_seq>
+                          | <import_seq> ","
+
+<import_seq>            ::= <import_tree>
+                          | <import_seq> "," <import_tree>
+
+# Kept apart from <qualified_name> though the two spell the same thing: a type
+# carries generic arguments and an import has nothing to do with them, and one
+# rule for both would leave `import a::b<i32>;` parsing.
+<import_path>           ::= <path_seg>
+                          | <import_path> "::" <path_seg>
+
+# The roots are segments and not a rule of their own, which is what lets "super"
+# repeat: `super::super::a` is two of them and then a name. It leaves
+# `a::super::b` parsing, a root in the middle of a path where it means nothing —
+# pinning them to the front needs the token after the "::" following a "super",
+# which is one more than the tables have. What a path means is the resolver's,
+# and so is that.
+<path_seg>              ::= IDENTIFIER
+                          | "suite"
+                          | "super"
+                          | "self"
 
 <fn_decl>               ::= <fn_sig> <fn_body>
 
@@ -107,10 +139,19 @@
 <binding_name>          ::= IDENTIFIER
                           | "_"
 
-<param>                 ::= <param_name> <type_annotation_opt>
+# A receiver is written and not annotated: "&self" reads the value and "*self"
+# writes to it, the two spellings a reference has anywhere else, and a bare
+# "self" takes it whole. There is no "self: T" — the type is the one the impl
+# names, and saying it again is the one thing a receiver cannot do.
+#
+# Nothing here says a receiver comes first, or that it comes only in a method.
+# Both are true and neither is the tables' to know: a parameter list is a list.
+<param>                 ::= <binding_name> <type_annotation_opt>
+                          | <receiver>
 
-<param_name>            ::= "this"
-                          | <binding_name>
+<receiver>              ::= "self"
+                          | "&" "self"
+                          | "*" "self"
 
 <type_annotation_opt>   ::= <empty>
                           | ":" <type>
@@ -167,7 +208,7 @@
 <trait_member>          ::= <attribute_list> <fn_decl>
 
 # Nothing is inserted in front of a `}`, so the last signature in a body has no
-# separator after it: `trait S { fn show(this): str }`. That is the body's
+# separator after it: `trait S { fn show(&self): str }`. That is the body's
 # business, exactly as a block's trailing expression is the block's.
 <trait_tail_opt>        ::= <empty>
                           | <attribute_list> <fn_sig>
@@ -193,11 +234,12 @@
 # The same slot the other bodies have: a namespace holds items, and its last
 # one is in front of a `}` like any other.
 <item_tail_opt>         ::= <empty>
-                          | <import_head>
                           | <attribute_list> <visibility_opt> <unterminated_decl>
 
 <unterminated_decl>     ::= <var_head>
                           | <const_head>
+                          | <type_head>
+                          | <import_head>
                           | <fn_sig>
 
 <var_decl>              ::= <var_head> ";"
@@ -210,6 +252,13 @@
 
 <initializer_opt>       ::= <empty>
                           | "=" <expression>
+
+# A name for a type, and a name only: it makes no new type and nothing checks
+# anything about it beyond what the type it names already says. Generic
+# parameters are taken because the type on the right may want them.
+<type_decl>             ::= <type_head> ";"
+
+<type_head>             ::= "type" IDENTIFIER <generic_params_opt> "=" <type>
 
 <const_decl>            ::= <const_head> ";"
 
@@ -255,8 +304,8 @@
 
 <named_type>            ::= <qualified_name> <generic_args_opt>
 
-<qualified_name>        ::= IDENTIFIER
-                          | <qualified_name> "::" IDENTIFIER
+<qualified_name>        ::= <path_seg>
+                          | <qualified_name> "::" <path_seg>
 
 <generic_args_opt>      ::= <empty>
                           | <generic_args>
@@ -278,7 +327,7 @@
 # A lifetime parameter is written among the type parameters and not in a list
 # of its own. Whether the two may be interleaved is a rule for the checker, as
 # is what a lifetime may be bounded by — the grammar has one <type_bounds> and
-# lets it hold either, since `~a: ~b` and `T: ~a` are both written.
+# lets it hold either, since `'a: 'b` and `T: 'a` are both written.
 <generic_param>         ::= IDENTIFIER
                           | IDENTIFIER ":" <type_bounds>
                           | <lifetime>
@@ -290,7 +339,7 @@
 <type_bound>            ::= <named_type>
                           | <lifetime>
 
-# A type argument list takes lifetimes too, so `Parser<~a>` and `Map<~a, T>`
+# A type argument list takes lifetimes too, so `Parser<'a>` and `Map<'a, T>`
 # are said. <type_list> is left alone: a tuple and a payload take types only.
 <generic_args>          ::= "<" <generic_arg_list> ">"
 
@@ -324,6 +373,7 @@
 <unterminated_stmt>     ::= <expression>
                           | <var_head>
                           | <const_head>
+                          | <type_head>
                           | "unsafe" <unterminated_stmt>
 
 <expression_opt>        ::= <empty>
@@ -469,7 +519,7 @@
 # struct literal, which is what makes `shapes.Point { x: 1 }` sayable.
 <postfix_op>            ::= "." IDENTIFIER
                           | "." INT_LITERAL
-                          | "::" IDENTIFIER
+                          | "::" <path_seg>
                           | "(" <arg_list_opt> ")"
                           | "[" <index> "]"
                           | <type_args>
@@ -494,7 +544,9 @@
                           | <expression_seq> "," <expression>
 
 <primary>               ::= <literal>
-                          | "this"
+                          | "self"
+                          | "super"
+                          | "suite"
                           | IDENTIFIER
                           | <macro_call>
                           | MACRO_PARAM
@@ -683,7 +735,9 @@ IDENTIFIER              ::= <ident_start> <ident_continue_list>
                           | <digit>
                           | "_"
 
-INT_LITERAL             ::= <decimal_int>
+INT_LITERAL             ::= <int_body> <int_suffix_opt>
+
+<int_body>              ::= <decimal_int>
                           | <prefixed_int>
 
 <decimal_int>           ::= <digit>
@@ -703,7 +757,21 @@ INT_LITERAL             ::= <decimal_int>
 <base_digit>            ::= <digit>
                           | <letter>
 
-FLOAT_LITERAL           ::= <decimal_int> "." <decimal_int>
+# A float suffix on a whole number makes a float of it, so "5_f32" is a
+# FLOAT_LITERAL and "5_u8" an INT_LITERAL.
+FLOAT_LITERAL           ::= <decimal_int> "." <decimal_int> <float_suffix_opt>
+                          | <int_body> <float_suffix>
+
+<int_suffix_opt>        ::= <empty>
+                          | <int_suffix>
+
+<float_suffix_opt>      ::= <empty>
+                          | <float_suffix>
+
+<int_suffix>            ::= "i8" | "i16" | "i32" | "i64" | "i128"
+                          | "u8" | "u16" | "u32" | "u64" | "u128"
+
+<float_suffix>          ::= "f32" | "f64"
 
 STRING_LITERAL          ::= '"' <string_item_list> '"'
                           | "`" <raw_char_list> "`"
@@ -741,13 +809,14 @@ CHAR_LITERAL            ::= "'" <char_item> "'"
 
 <keyword>               ::= <primitive_type>
                           | "fn"      | "let"    | "var"      | "const"
-                          | "struct"  | "trait"  | "impl"     | "public"
-                          | "private" | "import" | "enum"     | "namespace"
+                          | "struct"  | "trait"  | "impl"     | "type"
+                          | "macro"   | "pub"    | "priv"     | "import"
+                          | "enum"    | "namespace"
                           | "if"      | "elif"   | "else"     | "while"
                           | "for"     | "in"     | "return"   | "break"
                           | "continue"| "match"  | "as"       | "where"
-                          | "move"    | "true"   | "false"    | "this"
-                          | "unsafe"  | "_"
+                          | "move"    | "true"   | "false"    | "self"
+                          | "super"   | "suite"  | "unsafe"   | "_"
 
 <comment>               ::= "//" <line_char_list>
                           | "/*" <any_char_list> "*/"

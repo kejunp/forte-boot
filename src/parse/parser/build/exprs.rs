@@ -15,25 +15,25 @@ impl Parser {
             // Built around a HOLE: what these are the arguments of reduces
             // after them, and `with_base` fills it in.
             // <type_args> -> GENERIC_LT <generic_arg_list> >
-            353 => self.at(
+            367 => self.at(
                 ASTNodeKind::TypeArgs { base: HOLE, args: self.list(c[1]) },
                 c[0],
             ),
             // <postfix_op> -> <type_args>
-            277 => self.pass(c[0]),
+            286 => self.pass(c[0]),
 
             // ---- Macros --------------------------------------------------
             // <macro_call> -> MACRO_NAME ( <arg_list_opt> )
-            214 => {
+            220 => {
                 let name = self.text(c[0]);
                 self.at(ASTNodeKind::MacroCall { name, args: self.list(c[2]) }, c[0])
             }
             // <primary> -> <macro_call>
-            282 => self.pass(c[0]),
+            293 => self.pass(c[0]),
             // A `$x` is already its own leaf, in all three of the places it may
             // stand: an operand here, a base type, and a pattern.
             // <primary> -> MACRO_PARAM
-            283 => self.pass(c[0]),
+            294 => self.pass(c[0]),
 
             // ---- Assignment ----------------------------------------------
             // <assign_op> -> =
@@ -68,14 +68,14 @@ impl Parser {
             // Either end may be missing, and the four rules below are the four
             // ways to write that.
             // <range_expr> -> <logical_or>
-            308 => self.pass(c[0]),
+            319 => self.pass(c[0]),
             // <range_expr> -> <logical_or> <range_op>
-            309 => {
+            320 => {
                 let op = range_of(self.mark(c[1]));
                 self.at(ASTNodeKind::Range { op, start: Some(c[0]), end: None }, c[0])
             }
             // <range_expr> -> <logical_or> <range_op> <logical_or>
-            310 => {
+            321 => {
                 let op = range_of(self.mark(c[1]));
                 self.at(
                     ASTNodeKind::Range { op, start: Some(c[0]), end: Some(c[2]) },
@@ -83,44 +83,44 @@ impl Parser {
                 )
             }
             // <range_expr> -> <range_op>
-            311 => {
+            322 => {
                 let op = range_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Range { op, start: None, end: None }, c[0])
             }
             // <range_expr> -> <range_op> <logical_or>
-            312 => {
+            323 => {
                 let op = range_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Range { op, start: None, end: Some(c[1]) }, c[0])
             }
             // <range_op> -> ..
-            313 => self.at(ASTNodeKind::Mark(ASTMark::Range(ASTRangeOp::Exclusive)), c[0]),
+            324 => self.at(ASTNodeKind::Mark(ASTMark::Range(ASTRangeOp::Exclusive)), c[0]),
             // <range_op> -> ..=
-            314 => self.at(ASTNodeKind::Mark(ASTMark::Range(ASTRangeOp::Inclusive)), c[0]),
+            325 => self.at(ASTNodeKind::Mark(ASTMark::Range(ASTRangeOp::Inclusive)), c[0]),
             // <range_pattern> -> <literal_pattern> <range_op> <literal_pattern>
-            315 => {
+            326 => {
                 let op = range_of(self.mark(c[1]));
                 self.at(ASTNodeKind::RangePat { op, lo: c[0], hi: c[2] }, c[0])
             }
 
             // ---- Logic ---------------------------------------------------
             // <logical_and> -> <equality>
-            208 => self.pass(c[0]),
+            214 => self.pass(c[0]),
             // <logical_and> -> <logical_and> && <equality>
-            209 => self.at(
+            215 => self.at(
                 ASTNodeKind::Binary { op: ASTBinOp::And, lhs: c[0], rhs: c[2] },
                 c[0],
             ),
             // <logical_or> -> <logical_xor>
-            210 => self.pass(c[0]),
+            216 => self.pass(c[0]),
             // <logical_or> -> <logical_or> || <logical_xor>
-            211 => self.at(
+            217 => self.at(
                 ASTNodeKind::Binary { op: ASTBinOp::Or, lhs: c[0], rhs: c[2] },
                 c[0],
             ),
             // <logical_xor> -> <logical_and>
-            212 => self.pass(c[0]),
+            218 => self.pass(c[0]),
             // <logical_xor> -> <logical_xor> ^^ <logical_and>
-            213 => self.at(
+            219 => self.at(
                 ASTNodeKind::Binary { op: ASTBinOp::Xor, lhs: c[0], rhs: c[2] },
                 c[0],
             ),
@@ -153,16 +153,16 @@ impl Parser {
 
             // ---- Equality ------------------------------------------------
             // <equality> -> <comparison>
-            110 => self.pass(c[0]),
+            112 => self.pass(c[0]),
             // <equality> -> <equality> <equality_op> <comparison>
-            111 => {
+            113 => {
                 let op = bin_of(self.mark(c[1]));
                 self.at(ASTNodeKind::Binary { op, lhs: c[0], rhs: c[2] }, c[0])
             }
             // <equality_op> -> ==
-            112 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Eq)), c[0]),
+            114 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Eq)), c[0]),
             // <equality_op> -> !=
-            113 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Ne)), c[0]),
+            115 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Ne)), c[0]),
 
             // ---- Comparison ----------------------------------------------
             // <comparison> -> <bit_or>
@@ -183,16 +183,16 @@ impl Parser {
 
             // ---- Shifts --------------------------------------------------
             // <shift> -> <additive>
-            328 => self.pass(c[0]),
+            342 => self.pass(c[0]),
             // <shift> -> <shift> <shift_op> <additive>
-            329 => {
+            343 => {
                 let op = bin_of(self.mark(c[1]));
                 self.at(ASTNodeKind::Binary { op, lhs: c[0], rhs: c[2] }, c[0])
             }
             // <shift_op> -> <<
-            330 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shl)), c[0]),
+            344 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shl)), c[0]),
             // <shift_op> -> >>
-            331 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shr)), c[0]),
+            345 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shr)), c[0]),
 
             // ---- Arithmetic ----------------------------------------------
             // <additive> -> <multiplicative>
@@ -209,18 +209,18 @@ impl Parser {
 
             // ---- Multiplication ------------------------------------------
             // <multiplicative> -> <cast>
-            239 => self.pass(c[0]),
+            245 => self.pass(c[0]),
             // <multiplicative> -> <multiplicative> <multiplicative_op> <cast>
-            240 => {
+            246 => {
                 let op = bin_of(self.mark(c[1]));
                 self.at(ASTNodeKind::Binary { op, lhs: c[0], rhs: c[2] }, c[0])
             }
             // <multiplicative_op> -> *
-            241 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Mul)), c[0]),
+            247 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Mul)), c[0]),
             // <multiplicative_op> -> /
-            242 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Div)), c[0]),
+            248 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Div)), c[0]),
             // <multiplicative_op> -> %
-            243 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Rem)), c[0]),
+            249 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Rem)), c[0]),
 
             // ---- Casts ---------------------------------------------------
             // <cast> -> <unary>
@@ -251,20 +251,20 @@ impl Parser {
 
             // ---- Unary ---------------------------------------------------
             // <unary> -> <unary_op> <unary>
-            360 => {
+            376 => {
                 let op = unary_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Unary { op, operand: c[1] }, c[0])
             }
             // <unary> -> <postfix>
-            361 => self.pass(c[0]),
+            377 => self.pass(c[0]),
             // <unary_op> -> !
-            362 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Not)), c[0]),
+            378 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Not)), c[0]),
             // <unary_op> -> -
-            363 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Neg)), c[0]),
+            379 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Neg)), c[0]),
             // <unary_op> -> <ref_op>
             // `&x` and `*x` take a reference; neither dereferences, so the
             // same two spellings mean here what they mean in a type.
-            364 => {
+            380 => {
                 let op = ref_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Ref(op))), c[0])
             }
@@ -273,49 +273,56 @@ impl Parser {
             // Each suffix was built around a HOLE; this is where it is given
             // the expression it was written after.
             // <postfix> -> <primary>
-            270 => self.pass(c[0]),
+            279 => self.pass(c[0]),
             // <postfix> -> <postfix> <postfix_op>
-            271 => self.with_base(c[1], c[0]),
+            280 => self.with_base(c[1], c[0]),
             // <postfix_op> -> . IDENTIFIER
-            272 => {
+            281 => {
                 let name = self.text(c[1]);
                 self.at(ASTNodeKind::Field { base: HOLE, name }, c[0])
             }
             // <postfix_op> -> . INT_LITERAL
             // The same `.`, reaching into a tuple: a member there is counted
             // and not named, so what follows the dot is the number.
-            273 => self.at(
+            282 => self.at(
                 ASTNodeKind::TupleIndex { base: HOLE, index: self.index(c[1]) },
                 c[0],
             ),
-            // <postfix_op> -> :: IDENTIFIER
-            274 => {
+            // <postfix_op> -> :: <path_seg>
+            283 => {
                 let name = self.text(c[1]);
                 self.at(ASTNodeKind::Path { base: HOLE, name }, c[0])
             }
             // <postfix_op> -> ( <arg_list_opt> )
-            275 => self.at(
+            284 => self.at(
                 ASTNodeKind::Call { callee: HOLE, args: self.list(c[1]) },
                 c[0],
             ),
             // <postfix_op> -> [ <index> ]
-            276 => self.at(ASTNodeKind::Index { base: HOLE, index: c[1] }, c[0]),
+            285 => self.at(ASTNodeKind::Index { base: HOLE, index: c[1] }, c[0]),
             // <postfix_op> -> <struct_literal_tail>
-            278 => self.pass(c[0]),
+            287 => self.pass(c[0]),
 
             // ---- Primaries -----------------------------------------------
-            // <primary> -> <literal> | this | IDENTIFIER | <array_literal>
+            // <primary> -> <literal> | self | IDENTIFIER | <array_literal>
             //           |  <map_literal> | <set_literal> | <grouping>
             //           |  <tuple_expr>
-            279 | 280 | 281 | 284 | 285 | 286 | 287 | 288 => self.pass(c[0]),
+            288 | 289 | 292 | 295 | 296 | 297 | 298 | 299 => self.pass(c[0]),
+            // A root is the base of the `::` chain that follows it, and a base
+            // is a name: what tells this one from a name someone wrote is that
+            // no one can write it. Which module it stands for is the resolver's.
+            // <primary> -> super
+            290 => self.at(ASTNodeKind::Ident("super".to_string()), c[0]),
+            // <primary> -> suite
+            291 => self.at(ASTNodeKind::Ident("suite".to_string()), c[0]),
 
             // ---- Grouping ------------------------------------------------
             // Parentheses are gone from the tree: what they said about
             // precedence the shape now says.
             // <grouped_type> -> ( <type> )
-            165 => self.pass(c[1]),
+            167 => self.pass(c[1]),
             // <grouping> -> ( <expression> )
-            166 => self.pass(c[1]),
+            168 => self.pass(c[1]),
 
             // ---- Call arguments ------------------------------------------
             // <arg_list> -> <expression_seq>
@@ -329,11 +336,11 @@ impl Parser {
 
             // ---- Indexing and initializers -------------------------------
             // <index> -> <expression>
-            183 => self.pass(c[0]),
+            191 => self.pass(c[0]),
             // <initializer_opt> -> ε
-            184 => self.here(ASTNodeKind::Empty),
+            192 => self.here(ASTNodeKind::Empty),
             // <initializer_opt> -> = <expression>
-            185 => self.pass(c[1]),
+            193 => self.pass(c[1]),
 
             // ---- Closures ------------------------------------------------
             // <closure_expr> -> <move_opt> | <closure_param_list_opt> | <value_expr>
@@ -363,38 +370,51 @@ impl Parser {
 
             // ---- Closures, continued -------------------------------------
             // <move_opt> -> ε
-            237 => self.here(ASTNodeKind::Empty),
+            243 => self.here(ASTNodeKind::Empty),
             // <move_opt> -> move
-            238 => self.at(ASTNodeKind::Mark(ASTMark::Move), c[0]),
+            244 => self.at(ASTNodeKind::Mark(ASTMark::Move), c[0]),
 
             // ---- Jumps ---------------------------------------------------
             // <jump_expr> -> return <expression_opt>
-            193 => self.at(ASTNodeKind::Return(self.opt(c[1])), c[0]),
+            199 => self.at(ASTNodeKind::Return(self.opt(c[1])), c[0]),
             // <jump_expr> -> break <expression_opt>
-            194 => self.at(ASTNodeKind::Break(self.opt(c[1])), c[0]),
+            200 => self.at(ASTNodeKind::Break(self.opt(c[1])), c[0]),
             // <jump_expr> -> continue
-            195 => self.at(ASTNodeKind::Continue, c[0]),
+            201 => self.at(ASTNodeKind::Continue, c[0]),
 
             // ---- Literals ------------------------------------------------
             // The leaf a shift built already holds the value: <literal> only
             // says that one may stand where an expression may.
             // <literal> -> INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL
             //           |  CHAR_LITERAL | true | false | null
-            199 | 200 | 201 | 202 | 203 | 204 | 205 => self.pass(c[0]),
+            205 | 206 | 207 | 208 | 209 | 210 | 211 => self.pass(c[0]),
             // <literal_pattern> -> <literal>
-            206 => self.at(ASTNodeKind::LitPat { negated: false, value: self.lit(c[0]) }, c[0]),
+            212 => self.at(ASTNodeKind::LitPat { negated: false, value: self.lit(c[0]) }, c[0]),
             // <literal_pattern> -> - <literal>
-            207 => self.at(ASTNodeKind::LitPat { negated: true, value: self.lit(c[1]) }, c[0]),
+            213 => self.at(ASTNodeKind::LitPat { negated: true, value: self.lit(c[1]) }, c[0]),
 
             // ---- Values --------------------------------------------------
             // <value_expr> -> <assignment> | <closure_expr> | <block_expr>
-            374 | 375 | 376 => self.pass(c[0]),
+            393 | 394 | 395 => self.pass(c[0]),
 
             // ---- Names ---------------------------------------------------
-            // <qualified_name> -> IDENTIFIER
-            306 => self.at(ASTNodeKind::Name(vec![self.text(c[0])]), c[0]),
-            // <qualified_name> -> <qualified_name> :: IDENTIFIER
-            307 => {
+            // A segment is a name whatever spelled it, so a path stays a list of
+            // strings and a root is the string it was written with. No one can
+            // write these three as a name, which is what keeps them apart from
+            // one without a node to say so.
+            // <path_seg> -> IDENTIFIER
+            261 => self.pass(c[0]),
+            // <path_seg> -> suite
+            262 => self.at(ASTNodeKind::Ident("suite".to_string()), c[0]),
+            // <path_seg> -> super
+            263 => self.at(ASTNodeKind::Ident("super".to_string()), c[0]),
+            // <path_seg> -> self
+            264 => self.at(ASTNodeKind::Ident("self".to_string()), c[0]),
+
+            // <qualified_name> -> <path_seg>
+            317 => self.at(ASTNodeKind::Name(vec![self.text(c[0])]), c[0]),
+            // <qualified_name> -> <qualified_name> :: <path_seg>
+            318 => {
                 let mut segments = self.path(c[0]);
                 segments.push(self.text(c[2]));
                 self.at(ASTNodeKind::Name(segments), c[0])
@@ -402,17 +422,17 @@ impl Parser {
 
             // ---- Expressions and statements ------------------------------
             // <expr_stmt> -> <expression> ;
-            114 => self.at(ASTNodeKind::ExprStmt(c[0]), c[0]),
+            116 => self.at(ASTNodeKind::ExprStmt(c[0]), c[0]),
             // <expression> -> <value_expr> | <jump_expr>
-            115 | 116 => self.pass(c[0]),
+            117 | 118 => self.pass(c[0]),
             // <expression_opt> -> ε
-            117 => self.here(ASTNodeKind::Empty),
+            119 => self.here(ASTNodeKind::Empty),
             // <expression_opt> -> <expression>
-            118 => self.pass(c[0]),
+            120 => self.pass(c[0]),
             // <expression_seq> -> <expression>
-            119 => self.one(c[0]),
+            121 => self.one(c[0]),
             // <expression_seq> -> <expression_seq> , <expression>
-            120 => self.grew(c[0], c[2]),
+            122 => self.grew(c[0], c[2]),
 
             _ => return None,
         })

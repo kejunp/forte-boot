@@ -54,10 +54,17 @@ pub enum ASTNodeKind {
     // A declaration carries its own attributes and visibility, wherever of the
     // grammar's four places it was written; in a statement they are empty.
     Import {
-        // `shapes::circle` as `["shapes", "circle"]`.
-        path:  Vec<String>,
-        alias: Option<String>,
+        attrs:  Vec<ASTNodeId>,
+        vis:    ASTVisibility,
+        // Every name the tree reached, flattened: `a::{b, c::*}` is two leaves.
+        // The visibility is the import's and not a leaf's — `pub import`
+        // re-exports everything it brought in.
+        leaves: Vec<ASTImportLeaf>,
     },
+
+    // What an import's tree has come to so far, on its way up to the `import`
+    // that will hold it. Payload and no handles, so a group nests for free.
+    ImportTree(Vec<ASTImportLeaf>),
 
     Fn {
         attrs:     Vec<ASTNodeId>,
@@ -123,6 +130,16 @@ pub enum ASTNodeKind {
         name:  ASTBinding,
         ty:    Option<ASTNodeId>,
         init:  Option<ASTNodeId>,
+    },
+
+    // `type MyType = i32`: a name for a type. It makes no new type -- what it
+    // names is the type, and the alias is gone once anything has resolved it.
+    TypeAlias {
+        attrs:    Vec<ASTNodeId>,
+        vis:      ASTVisibility,
+        name:     String,
+        generics: Vec<ASTNodeId>,
+        ty:       ASTNodeId,
     },
 
     // A `const` declaration, which spells its type and its value both.
@@ -202,11 +219,11 @@ pub enum ASTNodeKind {
         bounds: Vec<ASTNodeId>,
     },
 
-    // A lifetime where it is named: `~a`, without the `~`. It stands as a
+    // A lifetime where it is named: `'a`, without the `~`. It stands as a
     // generic argument, as a bound, and in front of what a reference refers to.
     Lifetime(String),
 
-    // One lifetime parameter of a `<~a, T>`; `bounds` may be empty. Its own
+    // One lifetime parameter of a `<'a, T>`; `bounds` may be empty. Its own
     // variant rather than a `GenericParam` with a flag, because the two are
     // different kinds of name and every pass that reads one has to know which.
     LifetimeParam {
@@ -214,7 +231,7 @@ pub enum ASTNodeKind {
         bounds: Vec<ASTNodeId>,
     },
 
-    // One predicate of a `where`: `T: Ord + Show`, or `~a: ~b`, whose `ty` is
+    // One predicate of a `where`: `T: Ord + Show`, or `'a: 'b`, whose `ty` is
     // a `Lifetime`.
     WherePred {
         ty:     ASTNodeId,
@@ -226,7 +243,7 @@ pub enum ASTNodeKind {
     // `&T` reads and `*T` writes; see section 3 of docs/prose.txt.
     RefType {
         op:    ASTRefOp,
-        // The lifetime written in front of the referent, `&~a T`. `None` where
+        // The lifetime written in front of the referent, `&'a T`. `None` where
         // none was written, which is every reference the checker is left to
         // work out for itself -- and, so far, every reference in a cast.
         life:  Option<ASTNodeId>,
@@ -261,7 +278,11 @@ pub enum ASTNodeKind {
     Literal(ASTLit),
     // A name standing on its own, in an expression.
     Ident(String),
-    This,
+    // `self`: the receiver where a value is wanted, and the module a path
+    // starts in where a path is. Which one is the resolver's to say.
+    SelfExpr,
+    // A receiver, as a parameter list holds it: `self`, `&self`, `*self`.
+    SelfRecv(ASTSelf),
 
     // A `::`-separated name, in a type, an import or a pattern.
     Name(Vec<String>),
@@ -453,10 +474,15 @@ pub enum ASTMark {
 }
 
 // The leaves that are not nodes: a spelling, and no position under it.
+//
+// A number carries the type its own spelling named -- the `u8` of `5_u8` -- as
+// the primitive it names. Only the twelve numeric ones can be there, the lexer
+// spelling no other suffix, and holding it as an `ASTPrimType` is what lets the
+// checker hold it against a type without translating first.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTLit {
-    Int(i64),
-    Float(f64),
+    Int(i64, Option<ASTPrimType>),
+    Float(f64, Option<ASTPrimType>),
     Str(String),
     Char(char),
     Bool(bool),
@@ -468,8 +494,30 @@ pub enum ASTLit {
 pub enum ASTVisibility {
     // Neither word was written.
     Unwritten,
-    Public,
-    Private,
+    Pub,
+    Priv,
+    // `pub(suite)`: exported to the rest of the suite and no further.
+    Suite,
+}
+
+// One name an import reached. A glob names none of them and stands for whatever
+// the path holds, which is why it carries no alias: there is nothing to rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ASTImportLeaf {
+    // `shapes::circle` as `["shapes", "circle"]`, the roots spelled as the
+    // words they were written with.
+    pub path:  Vec<String>,
+    pub alias: Option<String>,
+    pub glob:  bool,
+}
+
+// How a method takes its receiver. `&self` reads it, `*self` writes through it,
+// and a bare `self` takes the value whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ASTSelf {
+    Value,
+    Ref,
+    Mut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,13 +526,14 @@ pub enum ASTVariableIntro {
     Var,
 }
 
-// A name being bound. `This` is a parameter's only.
+// A name being bound. `SelfRecv` is a parameter's only, and a method's at that:
+// a closure shares `Param` and never has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ASTBinding {
     Name(String),
     // `_`: bound to nothing on purpose. `_foo` is an ordinary name.
     Discard,
-    This,
+    SelfRecv(ASTSelf),
 }
 
 // `&` and `*`, which decide only whether writing through is allowed.

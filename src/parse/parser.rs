@@ -114,8 +114,12 @@ fn leaf_of(toktype: &tokens::TokType) -> ast_nodes::ASTNodeKind {
     use ast_nodes::{ASTLit, ASTNodeKind, ASTPrimType};
     match toktype {
         tokens::TokType::Identifier(name) => ASTNodeKind::Ident(name.clone()),
-        tokens::TokType::IntLiteral(n) => ASTNodeKind::Literal(ASTLit::Int(*n)),
-        tokens::TokType::FloatLiteral(f) => ASTNodeKind::Literal(ASTLit::Float(*f)),
+        tokens::TokType::IntLiteral(n, s) => {
+            ASTNodeKind::Literal(ASTLit::Int(*n, s.map(prim_of_suffix)))
+        }
+        tokens::TokType::FloatLiteral(f, s) => {
+            ASTNodeKind::Literal(ASTLit::Float(*f, s.map(prim_of_suffix)))
+        }
         tokens::TokType::StringLiteral(s) => ASTNodeKind::Literal(ASTLit::Str(s.clone())),
         tokens::TokType::CharLiteral(c) => ASTNodeKind::Literal(ASTLit::Char(*c)),
         // The leaf is already the node: `<lifetime>` has nothing to add to it.
@@ -129,7 +133,7 @@ fn leaf_of(toktype: &tokens::TokType) -> ast_nodes::ASTNodeKind {
         tokens::TokType::True => ASTNodeKind::Literal(ASTLit::Bool(true)),
         tokens::TokType::False => ASTNodeKind::Literal(ASTLit::Bool(false)),
         tokens::TokType::Null => ASTNodeKind::Literal(ASTLit::Null),
-        tokens::TokType::This => ASTNodeKind::This,
+        tokens::TokType::SelfKw => ASTNodeKind::SelfExpr,
         tokens::TokType::Underscore => ASTNodeKind::Wildcard,
 
         tokens::TokType::I8 => ASTNodeKind::Prim(ASTPrimType::I8),
@@ -152,6 +156,27 @@ fn leaf_of(toktype: &tokens::TokType) -> ast_nodes::ASTNodeKind {
         // A keyword, a delimiter, an operator: the rule it belongs to is the
         // whole of what it says, and the position is all a parent wants of it.
         _ => ASTNodeKind::Empty,
+    }
+}
+
+// The type a number's suffix named. The lexer keeps its own short list of the
+// twelve, since those are the only types a suffix may name; this is the same
+// twelve as the tree spells them.
+fn prim_of_suffix(s: tokens::NumSuffix) -> ast_nodes::ASTPrimType {
+    use ast_nodes::ASTPrimType;
+    match s {
+        tokens::NumSuffix::I8 => ASTPrimType::I8,
+        tokens::NumSuffix::I16 => ASTPrimType::I16,
+        tokens::NumSuffix::I32 => ASTPrimType::I32,
+        tokens::NumSuffix::I64 => ASTPrimType::I64,
+        tokens::NumSuffix::I128 => ASTPrimType::I128,
+        tokens::NumSuffix::U8 => ASTPrimType::U8,
+        tokens::NumSuffix::U16 => ASTPrimType::U16,
+        tokens::NumSuffix::U32 => ASTPrimType::U32,
+        tokens::NumSuffix::U64 => ASTPrimType::U64,
+        tokens::NumSuffix::U128 => ASTPrimType::U128,
+        tokens::NumSuffix::F32 => ASTPrimType::F32,
+        tokens::NumSuffix::F64 => ASTPrimType::F64,
     }
 }
 
@@ -826,7 +851,7 @@ error: expected an identifier or `}`, found an integer literal
         assert_eq!(
             error_in("fn a(((((\n"),
             "\
-error: expected an identifier, `)`, `this` or `_`, found `(`
+error: expected `&`, an identifier, `)`, `self`, `*` or `_`, found `(`
  --> input.fc:1:6
   |
 1 | fn a(((((

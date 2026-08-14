@@ -52,22 +52,123 @@ fn a_file_is_its_items_in_order() {
     assert!(matches!(p.get_node(items[2]).kind, ASTNodeKind::Fn { .. }));
 }
 
+// The leaves an import reached, as `(path, alias, glob)` triples.
+#[cfg(test)]
+fn leaves_of(item: &ASTNode) -> Vec<(Vec<String>, Option<String>, bool)> {
+    match &item.kind {
+        ASTNodeKind::Import { leaves, .. } => leaves
+            .iter()
+            .map(|l| (l.path.clone(), l.alias.clone(), l.glob))
+            .collect(),
+        other => panic!("{:?}", other),
+    }
+}
+
+#[cfg(test)]
+fn path_of(segments: &[&str]) -> Vec<String> {
+    segments.iter().map(|s| s.to_string()).collect()
+}
+
 #[test]
 fn an_import_keeps_its_path_and_its_alias() {
     let (_, item) = only_item("import shapes::circle as c;\n");
+    assert_eq!(
+        leaves_of(&item),
+        vec![(path_of(&["shapes", "circle"]), Some("c".to_string()), false)]
+    );
+
+    let (_, bare) = only_item("import shapes;\n");
+    assert_eq!(leaves_of(&bare), vec![(path_of(&["shapes"]), None, false)]);
+}
+
+// A group is spelling and nothing more: what reaches the tree is the names it
+// reached, each with the path in front of it already written on.
+#[test]
+fn a_group_flattens_into_one_leaf_for_each_name() {
+    let (_, item) = only_item("import a::{b, c::{d, e}};\n");
+    assert_eq!(
+        leaves_of(&item),
+        vec![
+            (path_of(&["a", "b"]), None, false),
+            (path_of(&["a", "c", "d"]), None, false),
+            (path_of(&["a", "c", "e"]), None, false),
+        ]
+    );
+
+    // An alias belongs to the leaf it renames, so one group holds both.
+    let (_, aliased) = only_item("import a::{b as x, c};\n");
+    assert_eq!(
+        leaves_of(&aliased),
+        vec![
+            (path_of(&["a", "b"]), Some("x".to_string()), false),
+            (path_of(&["a", "c"]), None, false),
+        ]
+    );
+}
+
+#[test]
+fn a_glob_is_a_leaf_that_names_nothing() {
+    let (_, item) = only_item("import super::super::circle::*;\n");
+    assert_eq!(
+        leaves_of(&item),
+        vec![(path_of(&["super", "super", "circle"]), None, true)]
+    );
+
+    // A glob inside a group is a glob of the path the group stands under.
+    let (_, nested) = only_item("import suite::shapes::{circle, square::*};\n");
+    assert_eq!(
+        leaves_of(&nested),
+        vec![
+            (path_of(&["suite", "shapes", "circle"]), None, false),
+            (path_of(&["suite", "shapes", "square"]), None, true),
+        ]
+    );
+}
+
+// An import is a declaration now, so it carries what one carries.
+#[test]
+fn an_import_takes_a_visibility() {
+    let (_, item) = only_item("pub import shapes::circle;\n");
     match &item.kind {
-        ASTNodeKind::Import { path, alias } => {
-            assert_eq!(path, &["shapes", "circle"]);
-            assert_eq!(alias.as_deref(), Some("c"));
-        }
+        ASTNodeKind::Import { vis, .. } => assert_eq!(*vis, ASTVisibility::Pub),
         other => panic!("{:?}", other),
     }
-    let (_, bare) = only_item("import shapes;\n");
-    match &bare.kind {
-        ASTNodeKind::Import { path, alias } => {
-            assert_eq!(path, &["shapes"]);
-            assert_eq!(alias, &None);
+
+    let (_, plain) = only_item("import shapes::circle;\n");
+    match &plain.kind {
+        ASTNodeKind::Import { vis, .. } => assert_eq!(*vis, ASTVisibility::Unwritten),
+        other => panic!("{:?}", other),
+    }
+}
+
+#[test]
+fn a_receiver_says_how_it_was_taken() {
+    for (source, held) in [
+        ("impl P {\n    fn f(self);\n}\n", ASTSelf::Value),
+        ("impl P {\n    fn f(&self);\n}\n", ASTSelf::Ref),
+        ("impl P {\n    fn f(*self);\n}\n", ASTSelf::Mut),
+    ] {
+        let (p, item) = only_item(source);
+        let ASTNodeKind::Impl { members, .. } = &item.kind else { panic!("{:?}", item.kind) };
+        let ASTNodeKind::Fn { params, .. } = &p.get_node(members[0]).kind else {
+            panic!("not a fn")
+        };
+        match &p.get_node(params[0]).kind {
+            ASTNodeKind::Param { name, ty } => {
+                assert_eq!(*name, ASTBinding::SelfRecv(held));
+                // A receiver is written and not annotated.
+                assert!(ty.is_none());
+            }
+            other => panic!("{:?}", other),
         }
+    }
+}
+
+#[test]
+fn pub_suite_is_its_own_visibility() {
+    let (_, item) = only_item("pub(suite) fn helper();\n");
+    match &item.kind {
+        ASTNodeKind::Fn { vis, .. } => assert_eq!(*vis, ASTVisibility::Suite),
         other => panic!("{:?}", other),
     }
 }
@@ -83,7 +184,7 @@ fn precedence_is_spent_on_the_shape() {
     match &p.get_node(expr).kind {
         ASTNodeKind::Binary { op, lhs, rhs } => {
             assert_eq!(*op, ASTBinOp::Add);
-            assert_eq!(p.get_node(*lhs).kind, ASTNodeKind::Literal(ASTLit::Int(1)));
+            assert_eq!(p.get_node(*lhs).kind, ASTNodeKind::Literal(ASTLit::Int(1, None)));
             match &p.get_node(*rhs).kind {
                 ASTNodeKind::Binary { op, .. } => assert_eq!(*op, ASTBinOp::Mul),
                 other => panic!("{:?}", other),
@@ -230,11 +331,11 @@ fn a_postfix_takes_everything_to_its_left() {
 
 #[test]
 fn a_declaration_carries_what_was_written_in_front_of_it() {
-    let (p, item) = only_item("%repr(C)\npublic const unsafe fn f(x: i32): i32 {\n    x\n}\n");
+    let (p, item) = only_item("%repr(C)\npub const unsafe fn f(x: i32): i32 {\n    x\n}\n");
     match &item.kind {
         ASTNodeKind::Fn { attrs, vis, is_const, is_unsafe, name, params, ret, .. } => {
             assert_eq!(attrs.len(), 1);
-            assert_eq!(*vis, ASTVisibility::Public);
+            assert_eq!(*vis, ASTVisibility::Pub);
             assert!(*is_const && *is_unsafe);
             assert_eq!(name, "f");
             assert_eq!(params.len(), 1);
@@ -255,7 +356,7 @@ fn a_declaration_carries_what_was_written_in_front_of_it() {
 
 #[test]
 fn a_signature_without_a_body_has_none() {
-    let (p, item) = only_item("trait Show {\n    fn show(this): str;\n}\n");
+    let (p, item) = only_item("trait Show {\n    fn show(&self): str;\n}\n");
     let members = match &item.kind {
         ASTNodeKind::Trait { members, .. } => members.clone(),
         other => panic!("{:?}", other),
@@ -325,7 +426,7 @@ fn a_tuple_keeps_its_members_in_order() {
     match &p.get_node(base).kind {
         ASTNodeKind::TupleLit(members) => {
             assert_eq!(members.len(), 2);
-            assert_eq!(p.get_node(members[0]).kind, ASTNodeKind::Literal(ASTLit::Int(1)));
+            assert_eq!(p.get_node(members[0]).kind, ASTNodeKind::Literal(ASTLit::Int(1, None)));
         }
         other => panic!("{:?}", other),
     }
@@ -333,7 +434,7 @@ fn a_tuple_keeps_its_members_in_order() {
     let (p, stmts) = statements("    let x = (1);");
     match &p.get_node(stmts[0]).kind {
         ASTNodeKind::Variable { init: Some(id), .. } => {
-            assert_eq!(p.get_node(*id).kind, ASTNodeKind::Literal(ASTLit::Int(1)));
+            assert_eq!(p.get_node(*id).kind, ASTNodeKind::Literal(ASTLit::Int(1, None)));
         }
         other => panic!("{:?}", other),
     }
@@ -360,7 +461,7 @@ fn a_tuple_pattern_is_a_variant_pattern_with_no_name() {
             match &p.get_node(elems[0]).kind {
                 ASTNodeKind::LitPat { negated, value } => {
                     assert!(!negated);
-                    assert_eq!(*value, ASTLit::Int(0));
+                    assert_eq!(*value, ASTLit::Int(0, None));
                 }
                 other => panic!("{:?}", other),
             }
@@ -383,7 +484,7 @@ fn a_block_tells_its_tail_from_its_statements() {
         ASTNodeKind::Block { stmts, tail } => {
             assert_eq!(stmts.len(), 1);
             let tail = tail.expect("the last expression is the block's value");
-            assert_eq!(p.get_node(tail).kind, ASTNodeKind::Literal(ASTLit::Int(1)));
+            assert_eq!(p.get_node(tail).kind, ASTNodeKind::Literal(ASTLit::Int(1, None)));
         }
         other => panic!("{:?}", other),
     }
@@ -427,11 +528,17 @@ fn check_tree() {
     // Every node the root can reach is a node of the language: no `ASTMark`
     // survived the rule that took its word, and no hole was left unfilled.
     let source = "import a::b as c;\n\
+                  pub import a::{b, c::*, d::{e, f as g}};\n\
+                  pub(suite) import super::super::h::*;\n\
+                  import suite::i::j;\n\
                   %attr(1)\n\
-                  public fn f<T: Ord>(this, x: *i32[2]): (bool, i32) {\n\
+                  pub fn f<T: Ord>(&self, x: *i32[2]): (bool, i32) {\n\
                       let y = -x.a as i64 .. 3;\n\
                       let t: (i32, str) = (1, \"a\");\n\
                       let u = t.1;\n\
+                      let v = suite::limits::MAX + super::k::n;\n\
+                      let w: super::Node = self;\n\
+                      import self::inner::q;\n\
                       if y { g(#{1: 2}, {,}, [1]) } else { move |z| z + 1 };\n\
                       while y { continue }\n\
                       for i in 0..=9 { break }\n\
@@ -441,17 +548,19 @@ fn check_tree() {
                           P::Q(m) => m,\n\
                           (m, _) => m,\n\
                           P { n: o } => o,\n\
+                          suite::P::Q => a,\n\
                           _ => return,\n\
                       }\n\
                   }\n\
                   namespace n {\n\
                       const K: i32 = 1;\n\
                       enum E { A, B(i32), C { x: i32 }, D = 4 }\n\
-                      struct S<T> { private v: T[] }\n\
-                      trait W { fn w<T>(this, t: T): str where T: Ord; }\n\
-                      impl W for S<i32> { private fn w(this): str { P { r: 1 } } }\n\
-                      struct H<~a, ~b: ~a, T: Ord + ~a> { v: &~a T[], w: *~b T }\n\
-                      fn h<~a, T>(x: &~a T, y: &Map<~a, T>): &~a T where T: ~a, ~a: ~b;\n\
+                      struct S<T> { priv v: T[] }\n\
+                      trait W { fn w<T>(&self, t: T): str where T: Ord; }\n\
+                      impl W for S<i32> { priv fn w(&self): str { P { r: 1 } } }\n\
+                      impl S<i32> { fn take(self); fn put(*self); }\n\
+                      struct H<'a, 'b: 'a, T: Ord + 'a> { v: &'a T[], w: *'b T }\n\
+                      fn h<'a, T>(x: &'a T, y: &Map<'a, T>): &'a T where T: 'a, 'a: 'b;\n\
                   }\n";
     let (p, root) = tree(source);
     let mut seen = vec![false; p.nodes.len()];
@@ -558,6 +667,11 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
             out.extend_from_slice(attrs);
             out.push(*ty);
             out.push(*value);
+        }
+        ASTNodeKind::TypeAlias { attrs, generics, ty, .. } => {
+            out.extend_from_slice(attrs);
+            out.extend_from_slice(generics);
+            out.push(*ty);
         }
         ASTNodeKind::Attr { args, .. } => out.extend_from_slice(args),
         ASTNodeKind::Param { ty, .. } => out.extend(ty.iter()),
@@ -676,10 +790,13 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         ASTNodeKind::VariantPat { elems, .. } => out.extend_from_slice(elems),
         ASTNodeKind::StructPat { fields, .. } => out.extend_from_slice(fields),
         ASTNodeKind::FieldPat { pat, .. } => out.extend(pat.iter()),
+        // An import holds only the attributes written in front of it: the tree
+        // it reached is spelling, and stands in the node itself.
+        ASTNodeKind::Import { attrs, .. } => out.extend_from_slice(attrs),
         // The leaves, and the scaffolding that names nothing.
         ASTNodeKind::Empty
         | ASTNodeKind::Mark(_)
-        | ASTNodeKind::Import { .. }
+        | ASTNodeKind::ImportTree(_)
         | ASTNodeKind::Prim(_)
         | ASTNodeKind::Infer
         | ASTNodeKind::Literal(_)
@@ -687,7 +804,8 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::Lifetime(_)
         | ASTNodeKind::MacroVar(_)
         | ASTNodeKind::MacroParam { .. }
-        | ASTNodeKind::This
+        | ASTNodeKind::SelfExpr
+        | ASTNodeKind::SelfRecv(_)
         | ASTNodeKind::Name(_)
         | ASTNodeKind::Continue
         | ASTNodeKind::Wildcard
@@ -701,7 +819,7 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
 // bound. The `~` is the lexer's, so what the tree holds is the name alone.
 #[test]
 fn a_lifetime_reaches_the_tree_where_it_was_written() {
-    let (p, item) = only_item("fn longest<~a, T: ~a>(x: &~a str): &~a T;\n");
+    let (p, item) = only_item("fn longest<'a, T: 'a>(x: &'a str): &'a T;\n");
     let (generics, params, ret) = match &item.kind {
         ASTNodeKind::Fn { generics, params, ret, .. } => {
             (generics.clone(), params.clone(), ret.expect("a return type"))
@@ -709,7 +827,7 @@ fn a_lifetime_reaches_the_tree_where_it_was_written() {
         other => panic!("built {:?}", other),
     };
 
-    // `<~a, T: ~a>`: a lifetime parameter, then a type parameter bounded by it.
+    // `<'a, T: 'a>`: a lifetime parameter, then a type parameter bounded by it.
     assert_eq!(generics.len(), 2);
     match &p.get_node(generics[0]).kind {
         ASTNodeKind::LifetimeParam { name, bounds } => {
@@ -728,7 +846,7 @@ fn a_lifetime_reaches_the_tree_where_it_was_written() {
         other => panic!("the second parameter built {:?}", other),
     }
 
-    // `x: &~a str`: the lifetime hangs off the reference, not off the referent.
+    // `x: &'a str`: the lifetime hangs off the reference, not off the referent.
     let ty = match &p.get_node(params[0]).kind {
         ASTNodeKind::Param { ty: Some(id), .. } => *id,
         other => panic!("a parameter built {:?}", other),
@@ -765,7 +883,7 @@ fn a_reference_with_no_lifetime_written_holds_none() {
 // one on either side of its colon.
 #[test]
 fn a_lifetime_is_an_argument_and_a_predicate() {
-    let (p, item) = only_item("struct Parser<~a> {\n    text: &~a str,\n}\n");
+    let (p, item) = only_item("struct Parser<'a> {\n    text: &'a str,\n}\n");
     match &item.kind {
         ASTNodeKind::Struct { generics, fields, .. } => {
             assert_eq!(generics.len(), 1);
@@ -778,7 +896,7 @@ fn a_lifetime_is_an_argument_and_a_predicate() {
         other => panic!("built {:?}", other),
     }
 
-    let (p, item) = only_item("fn f<~a, ~b>(x: &~a i32) where ~a: ~b;\n");
+    let (p, item) = only_item("fn f<'a, 'b>(x: &'a i32) where 'a: 'b;\n");
     let wheres = match &item.kind {
         ASTNodeKind::Fn { wheres, .. } => wheres.clone(),
         other => panic!("built {:?}", other),
@@ -792,4 +910,122 @@ fn a_lifetime_is_an_argument_and_a_predicate() {
         }
         other => panic!("a where predicate built {:?}", other),
     }
+}
+
+// The tables and these arms are written against the same grammar, and nothing
+// but this says so. A rule id is the generator's: adding a rule to
+// docs/grammar.bnf shifts every id after it, and an arm left behind points at
+// whatever production took its number -- silently, since a wrong arm of the
+// same arity builds a wrong node rather than panicking.
+//
+// `build` does complain about a rule with no arm at all, but only once some
+// source reaches that rule, and `parse.rs` runs the tables without building a
+// tree at all. This asks for every rule at once, which is the only moment the
+// answer is cheap.
+#[test]
+fn every_rule_has_exactly_one_arm() {
+    // The pattern of an arm: the ids at the head of a line, up to the `=>`.
+    // Anchored so that nothing inside a body -- `c[0]`, `1u64` -- can match.
+    fn ids_of(pattern: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        for part in pattern.split('|') {
+            let part = part.trim();
+            match part.split_once("..=") {
+                Some((lo, hi)) => {
+                    let (lo, hi): (usize, usize) =
+                        (lo.trim().parse().unwrap(), hi.trim().parse().unwrap());
+                    out.extend(lo..=hi);
+                }
+                None => out.push(part.parse().unwrap()),
+            }
+        }
+        out
+    }
+
+    // The head of a line, if it is one an arm could begin with.
+    fn arm_of(line: &str) -> Option<&str> {
+        let (head, _) = line.split_once("=>")?;
+        let head = head.trim();
+        let ok = |c: char| c.is_ascii_digit() || c == '|' || c == '.' || c == '=' || c == ' ';
+        if head.is_empty() || !head.chars().all(ok) || !head.starts_with(|c: char| c.is_ascii_digit())
+        {
+            return None;
+        }
+        Some(head)
+    }
+
+    // What each rule of the tables was generated from, by the comment the
+    // generator wrote beside it.
+    let tables = include_str!("../../tables.rs");
+    let rules: Vec<&str> = tables
+        .split_once("pub const RULES: &[Rule] = &[")
+        .expect("the tables hold a rule table")
+        .1
+        .split_once("\n];")
+        .unwrap()
+        .0
+        .lines()
+        .filter(|l| l.trim_start().starts_with("Rule {"))
+        .map(|l| l.split_once("// ").expect("a rule names its production").1.trim())
+        .collect();
+
+    let files: [(&str, &str); 6] = [
+        ("items.rs", include_str!("items.rs")),
+        ("exprs.rs", include_str!("exprs.rs")),
+        ("types.rs", include_str!("types.rs")),
+        ("patterns.rs", include_str!("patterns.rs")),
+        ("stmts.rs", include_str!("stmts.rs")),
+        ("literals.rs", include_str!("literals.rs")),
+    ];
+
+    let mut owner: Vec<Option<String>> = vec![None; rules.len()];
+    for (name, source) in files {
+        let lines: Vec<&str> = source.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some(head) = arm_of(line) else { continue };
+            for id in ids_of(head) {
+                let at = format!("{}:{}", name, n + 1);
+                assert!(id < rules.len(), "{} points at rule {}, past the table", at, id);
+                assert!(
+                    owner[id].is_none(),
+                    "rule {} has two arms: {} and {}",
+                    id,
+                    owner[id].as_ref().unwrap(),
+                    at
+                );
+                owner[id] = Some(at);
+            }
+
+            // What the arm says it builds has to be what it was given. Only
+            // where one comment names one rule: the rest summarise.
+            let ids = ids_of(head);
+            if ids.len() != 1 {
+                continue;
+            }
+            let mut k = n;
+            while k > 0 && lines[k - 1].trim_start().starts_with("//") {
+                let comment = lines[k - 1].trim_start().trim_start_matches("//").trim();
+                if comment.starts_with('<') && comment.contains(" -> ") {
+                    assert_eq!(
+                        comment,
+                        rules[ids[0]],
+                        "{}:{} builds rule {}, which is a different production",
+                        name,
+                        n + 1,
+                        ids[0]
+                    );
+                    break;
+                }
+                k -= 1;
+            }
+        }
+    }
+
+    let orphans: Vec<String> = owner
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.is_none())
+        .map(|(i, _)| format!("{} {}", i, rules[i]))
+        .collect();
+    assert!(orphans.is_empty(), "rules with no arm:\n  {}", orphans.join("\n  "));
 }

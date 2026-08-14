@@ -65,14 +65,56 @@ otherwise invisible.
 1. Compilation unit
 ==============================================================================
 
-<item>, <visibility>. A declaration is private to its file until "public"
-exports it. "private" is therefore only the default written down: it is
-accepted wherever "public" is — a file-scope item, a struct field, an impl
-member — and changes nothing there. It exists to be said out loud, not to do
-anything.
+A file is a module and the suite is every file compiled together, which are
+the only two units there are: a module holds items, a <namespace_decl> nests
+another inside the one it is written in (section 2), and the suite is the
+root all of them hang from. Nothing above the suite is nameable, there being
+nothing above it to name.
+
+<item>, <visibility>. A declaration is private to its module until "pub"
+exports it. "priv" is therefore only the default written down: it is accepted
+wherever "pub" is — a file-scope item, a struct field, an impl member — and
+changes nothing there. It exists to be said out loud, not to do anything.
+
+"pub(suite)" is the third answer and the middle one: exported to the rest of
+the suite and no further. It is what a helper wants when two modules share it
+and nothing outside is meant to have it, and it is the only place a
+visibility takes an argument — "suite" is what stands between a module and
+the world, and there is no fourth unit to put in the parentheses. The "("
+is glued to the "pub" as an attribute's is to its name: a space there ends
+the visibility at the word and leaves the parenthesis for the parser to
+complain about.
 
 <declaration>. A <var_decl> at file scope is a global. A <const_decl> is the
 compile-time constant, and stands there and in a block alike (section 2).
+
+<import_decl>. An import names what it reaches and nothing more, so what it
+reaches may be a tree: a group holds names under a common path, a group may
+hold another, and a glob takes whatever the path holds.
+
+    import shapes::circle;
+    import shapes::circle as circ;
+    import shapes::{circle, square::*, poly::{tri, quad}};
+    import shapes::*;
+
+The alias belongs to the leaf it renames and not to the import, which is what
+lets one group hold a renamed name beside a plain one. A glob renames
+nothing, having named nothing to rename: "a::* as b" says nothing and is
+refused. What the tree is written as is spelling and stops at the parser —
+what the compiler holds is one leaf for each name, with the path in front of
+it already written on.
+
+A path may start where it is written or somewhere else, and three words say
+which: "suite" is the root of the suite, "super" the module above this one,
+and "self" this one. "super" repeats, so "super::super::a" climbs twice. They
+are the roots of any path and not an import's alone: "suite::limits::MAX"
+reads the same in an expression, a type or a pattern (section 5).
+
+An import is a declaration like any other, which is what makes "pub import"
+the way to say a re-export: the names it brought in leave again under the
+visibility written on it. That also puts it where a declaration stands rather
+than at the top of a file only, so one may be written inside a block, near
+whatever wanted it.
 
 <attribute>. One "%" per attribute — "%inline", "%repr(C)",
 "%derive(Show, Clone)" — and a list of them is a list, written one after
@@ -80,7 +122,7 @@ another with nothing between:
 
     %inline
     %cold
-    public fn panic(m: str): null
+    pub fn panic(m: str): null
 
 The sigil and the name are one token, so nothing separates them and no space
 may: what the parser is handed is the name, and the "%" is spent before it
@@ -203,9 +245,9 @@ checker can see both ends, and it is a foreign declaration that puts a claim
 where it cannot.
 
 It sits after the visibility and in front of the "fn", so a declaration reads
-"public unsafe fn write(dst: *u8[], n: u64)", and "const unsafe fn" where
+"pub unsafe fn write(dst: *u8[], n: u64)", and "const unsafe fn" where
 both apply. The order is the order of the <fn_sig> rule and not a matter of
-taste: "unsafe public fn" is not a declaration.
+taste: "unsafe pub fn" is not a declaration.
 
 The word says nothing about the body. An unsafe fn is checked exactly as any
 other fn is, and marking one buys no licence inside it — a body that wants to
@@ -321,12 +363,12 @@ its own to be written. "Copy" says the type is copied rather than moved
 "Drop" says what releasing one comes to, and holds the one method:
 
     impl Drop for Buf {
-        fn drop(this: *Buf) {
-            unsafe free(this.p)
+        fn drop(*self) {
+            unsafe free(self.p)
         }
     }
 
-The receiver is a "*Buf" because releasing writes to what it releases, and
+The receiver is a "*self" because releasing writes to what it releases, and
 that is the ordinary spelling for it — nothing about the declaration is
 special, which is the point of putting it in a trait rather than in a form of
 its own. What is special is the name, and that is a rule for the checker, as
@@ -349,11 +391,11 @@ the value is the aliasing rule's business (section 3) and is refused there.
 <namespace_decl>. A namespace is a name put in front of a list of items. It
 holds whatever a file holds — a fn, a struct, an enum, a constant, another
 namespace — and changes nothing about them except how they are reached and
-what "public" means one level up:
+what "pub" means one level up:
 
     namespace limits {
-        public const MAX: i32 = 65535
-        public fn clamp(n: i32): i32 { ... }
+        pub const MAX: i32 = 65535
+        pub fn clamp(n: i32): i32 { ... }
     }
 
     let n = limits::clamp(x)
@@ -369,8 +411,28 @@ holds variants: "shapes::Color::Red" walks a namespace, then a type, then
 lands on a value.
 
 Nesting falls out of the rule — a namespace is an <item> like any other — and
-"public" is needed at both levels to escape both, since a public member of a
-private namespace is reachable only from inside it.
+"pub" is needed at both levels to escape both, since a public member of a
+private namespace is reachable only from inside it. "pub(suite)" on the inner
+one is how to stop it at the edge of the suite while still letting the rest
+of the suite reach it (section 1).
+
+A nested namespace is what "super" climbs out of, and the enclosing one is
+what it lands on:
+
+    namespace shapes {
+        fn circle() { ... }
+        namespace poly {
+            fn tri() { super::circle() }
+        }
+    }
+
+A file is a module too, so a "super" written at the top level of one reaches
+the module the file sits in, and "suite" reaches the root from anywhere.
+Which module a path lands on is the resolver's to work out; what the grammar
+settles is only that a root is a segment like any other, which is what lets
+"super" repeat. It also leaves "a::super::b" parsing — a root in the middle
+of a path, where it names nothing — and that too is turned down where a path
+is looked up rather than where it is read.
 
 <var_decl>. "let" binds a name that is read and never written, "var" one
 that may be assigned again. That is the whole of the difference, and it says
@@ -435,6 +497,22 @@ does it looks like the line that copies. The cost is Rust's cost, said
 plainly: whether "let b = a" ends a's life is a fact about a's type and not
 about the line, so a reader who does not know the type does not know what
 the line did.
+
+<type_decl>. "type MyType = i32" is a name for a type and not a type of its
+own: nothing is checked about it that the type it names does not already say,
+and two names for one type are one type. It takes generic parameters because
+what stands on the right may want them — "type Pair<T> = (T, T)" — and a
+lifetime is a parameter like any other, "type Ref<'a> = &'a str".
+
+It ends with a separator, written or inserted, as every declaration does whose
+last thing is not a "}". That is what keeps "type Grid = i32[8]" and the "[1]"
+on the line below two things rather than one: an <array_suffix> could have gone
+on, and the separator is what says it did not.
+
+An alias is gone by the time anything has resolved through it. The tree the
+checker is handed still has one, since a name has to be looked up before it can
+be followed; what the checker hands on has the type it named and no alias at
+all (section 8).
 
 <const_decl>. A constant is a name for a value the compiler works out for
 itself: "const MAX: i32 = 1 << 20". Both halves are required where a
@@ -538,9 +616,9 @@ reference, which is a fact about the program rather than about the manners of
 whoever else is holding one.
 
 It is a rule about places and not about names, so it reaches wherever a
-reference is taken and not only where one is spelled out. A "this: *Point"
-receiver holds a mutable reference to the whole point for the length of the
-call, so nothing reads that point while the method runs; a closure that
+reference is taken and not only where one is spelled out. A "*self" receiver
+holds a mutable reference to the whole value for the length of the call, so
+nothing reads that value while the method runs; a closure that
 captures a name by "*" holds one for as long as the closure lives (section
 5); and "f(&p, *p)" asks for both at once and is refused. The rule is the
 checker's, and unlike the lifetime a signature leaves out — which is always
@@ -561,11 +639,17 @@ The two compose with everything a type does: "&Point", "*i32", "Vec<&str>",
 "&i32[]" is a reference to a run of i32 — the view of <array_suffix> below —
 and an array of references is said with a <grouped_type>, "(&i32)[8]".
 
-A method borrows its receiver by annotating it, since "this" is a <param>
-like any other: "fn norm(this: &Point): f64" reads the point and
-"fn scale(this: *Point, k: f64)" writes to it. Nothing else marks the two
-apart — there is no "&this" form, and no rule here says which of them a trait
-wants.
+<receiver>. A method borrows its receiver by writing the reference on it:
+"fn norm(&self): f64" reads the value and "fn scale(*self, k: f64)" writes to
+it, the same "&" and "*" that mean this everywhere else. A bare "self" takes
+the value whole and so moves it, which is what a method that consumes its
+receiver is written with.
+
+There is no "self: T". A receiver is the one parameter whose type nobody has
+to say — it is the type the impl names — and the annotation was never doing
+anything but repeating it. That is why the reference moved onto the receiver:
+with the type gone there was nowhere else left to put it. What is still not
+said here is which of the three a trait wants of the impls that answer it.
 
 A reference to a reference is written as one expects, "&&T", though those two
 characters are the logical operator as well. What tells them apart is what
@@ -582,25 +666,27 @@ reading given up is the conjunction of an open range, "1.. && x", and a range
 is not a truth value anyway.
 
 <lifetime>. How long a reference is good for has a name where one is worth
-giving: "~a", the "~" and the name being a single token. That character
-spells nothing else in the language, which is the whole of why the reading
-works — Rust's "'a" has to be told from the "'a'" of a character literal by
-looking past the name, and this has nothing to look past. "~_" is the one
-with no name worth giving, and says a lifetime belongs here that nothing
-else refers to.
+giving: "'a", the "'" and the name being a single token. That character
+spells a character literal as well, and the two are told apart by looking
+past the name: "'a'" closes and is a character, "'a" does not and is a
+lifetime. The look is bounded by the name, which is what makes it worth
+paying — it never runs past the identifier, where a "`"-delimited raw string
+would have had to be scanned to the end of the file to answer the same
+question. "'_" is the one with no name worth giving, and says a lifetime
+belongs here that nothing else refers to.
 
 A lifetime stands in the four places a type parameter stands in: among the
-parameters of a declaration, "<~a, T>"; among its arguments, "Parser<~a>";
-in front of what a reference refers to, "&~a str"; and on either side of the
-colon of a bound, "T: ~a" and "~a: ~b". There is one list of parameters and
+parameters of a declaration, "<'a, T>"; among its arguments, "Parser<'a>";
+in front of what a reference refers to, "&'a str"; and on either side of the
+colon of a bound, "T: 'a" and "'a: 'b". There is one list of parameters and
 one of bounds rather than a list apiece, so whether the two may be
 interleaved, and what a lifetime may be bounded by, are rules for the
 checker. A <cast_type> takes none: nothing has needed to say one there.
 
-    fn longest<~a>(x: &~a str, y: &~a str): &~a str
+    fn longest<'a>(x: &'a str, y: &'a str): &'a str
 
-    struct Parser<~a> {
-        text: &~a str,
+    struct Parser<'a> {
+        text: &'a str,
     }
 
 Writing one is not the usual case and is not meant to become one. A reference
@@ -632,14 +718,14 @@ somewhere other than the line in front of them, and it is the price of never
 having to write an annotation to get a signature accepted.
 
 Writing a lifetime is how the precision comes back. It is never required and
-is only ever a sharpening: "fn first<~a>(x: &~a str, y: &str): &~a str" says
+is only ever a sharpening: "fn first<'a>(x: &'a str, y: &str): &'a str" says
 the result outlives y, which the rule alone would not have said, and every
 caller is held to that instead of to the shorter of the two. That is what
-"~a" is for in a language that can always do without it, and it is the same
+"'a" is for in a language that can always do without it, and it is the same
 bargain as a type annotation on a "let" whose type was never in doubt.
 
-A method is where the loss shows most. "fn name(this: &Point, sep: &str):
-&str" ties its result to sep as well as to this, though what a method gives
+A method is where the loss shows most. "fn name(&self, sep: &str): &str"
+ties its result to sep as well as to the receiver, though what a method gives
 back is almost always the receiver's. Rust spends a whole elision rule on
 that one case; this spends none, and the method that wants it says so. One
 rule that always answers, and a way to say better, is the trade — against
@@ -1005,12 +1091,11 @@ thing:
 
   "."   into a value, and into nothing else — a field, a method, "p.norm()".
   "::"  into a namespace, a module or a type — "limits::MAX",
-        "shapes::circle", "Color::Red". A module is an import, which is a
-        namespace someone else wrote (section 8), so it is reached the way
-        one is and needs no separator of its own. An enum variant is what
-        "::" reaches in a type, and the only thing: an impl holds methods,
-        and a method is reached through a value with a "." like any other
-        member (section 2).
+        "shapes::circle", "Color::Red". A module is what an import reaches
+        (section 1), and it is reached the way a namespace is and needs no
+        separator of its own. An enum variant is what "::" reaches in a type,
+        and the only thing: an impl holds methods, and a method is reached
+        through a value with a "." like any other member (section 2).
   ":"   neither — it annotates.
 
 So "shapes::Color::Red.name" walks a namespace, then a type, then a value.
@@ -1018,6 +1103,20 @@ The rule behind the first two is that "::" walks what the compiler knows the
 name of and "." walks what is there at run time. A module is known by name
 at compile time like everything else on that side, which is what settles it
 onto "::" and leaves "." meaning one thing only.
+
+A path may say where to start from, and the three words that say so —
+"suite", "super", "self" — are segments of it like any other: "suite" is the
+root of the suite, "super" the module above, "self" this one, and "super"
+repeats. They are <primary>s here, so the "::" after one is the ordinary
+<postfix_op> and nothing about a path needs a rule of its own —
+"super::super::shapes::area(x)" is a name walked the way every name is. A
+root reaches a type and a pattern the same way, through <qualified_name>.
+
+The one place a path is written and none of this applies is an import's, and
+only because a group and a glob are written there: "a::{b, c}" and "a::*"
+reach names rather than values, and neither is an expression (section 1).
+"::*" is one token and not two, which is what lets an import that globs end
+its line like any other declaration (section 7).
 
 <struct_literal_tail>. A "{" that opens neither a body nor a block, and a
 place a separator is never synthesised (section 7, rule b). Every comma here
@@ -1194,6 +1293,31 @@ characters would otherwise be "t" "." and the float 0.1 — which is not
 something the grammar has anywhere to put. Only the lone "." does this; the
 dots of a range are their own token, so "0..0.5" keeps its float.
 
+<int_suffix>, <float_suffix>. A number may name its own type: "5_u8" is a u8
+and "2.6_f32" an f32. The "_" in front of it is the digit separator that
+"1_000_000" is written with — dropped wherever it falls and never part of the
+value — so "5u8" says the same thing and reads the same way. The suffix is
+part of the number's token rather than one beside it, which is what makes a
+space between them impossible: "5 u8" is two tokens and says nothing.
+
+Only the twelve numeric primitives can be named this way. "bool", "char" and
+"str" have literals of their own and nothing to ascribe, and "null" has one
+value already. Nor does a tuple index carry one: the number after a "." is a
+member's place, as just above, and a member has whatever type it has.
+
+A float suffix on a whole number makes a float of it: "5_f32" is "5.0_f32"
+with the point left out. An integer suffix on a number that has a point is an
+error — "2.6_u8" names a type the value has not got.
+
+The digits of a based literal are read as greedily as they ever were, so a
+suffix spelled in them is no suffix at all: "0x1_f32" is the number 0x1f32,
+"f", "3" and "2" being hex digits every one. "0xFF_u8" is a u8, "u" being
+none of them.
+
+Whether the value fits the type it named is not asked here. "-128_i8" is a
+negation of "128_i8", which is out of range on its own and not in the tree the
+"-" is in; the checker asks, where the sign is in hand.
+
 STRING_LITERAL. A "`"-delimited string is raw: no escapes.
 
 CHAR_LITERAL. A CHAR_LITERAL holds exactly one character.
@@ -1210,10 +1334,16 @@ A ";" may always be written by hand, and a "," always must be. The lexer
 inserts a ";" at a newline when all of the following hold:
 
   a. The previous token can end a statement: an identifier, "_", a literal,
-     "this", "null", "return", "break", "continue", ")", "]", "}", "..", a
-     primitive type name, or the ">" closing a generic argument list. A "_"
-     is there because it names a binding, so "let _" is as complete a
-     declaration as "let x".
+     "self", "null", "return", "break", "continue", ")", "]", "}", "..",
+     "::*", a primitive type name, or the ">" closing a generic argument
+     list. A "_" is there because it names a binding, so "let _" is as
+     complete a declaration as "let x". "::*" is there so an import that
+     globs may drop its ";" like any other declaration — which is also the
+     whole of why it is one token and not a "::" and a "*": a bare "*" is
+     owed an operand, so a line ending in one is a line still going.
+     "super" and "suite" are in neither list: each opens a path and no path
+     ends on one. Nor is the ")" of a "pub(suite)", which closes a
+     visibility and not an operand, exactly as the ")" of a "%repr(C)" does.
   b. No "(" or "[" is open, and the innermost open brace is not an entry
      body — a struct, enum or match body, or a struct, map or set literal. A
      block is a boundary; an argument list is not, and neither is a list of
@@ -1372,11 +1502,33 @@ what those answers left behind. Each says what was decided and what the
 decision does not cover, and the ones marked settled are kept because the
 answer is not obvious from the rules alone.
 
-  - <import_decl> is a "::" path with an optional "as" alias, since an import
-    is a namespace someone else wrote and is reached like one. A "." is left
-    meaning only "into a value at run time". Settled. What it does not say is
-    where a path is looked up, or whether a name that is not a legal
-    identifier can be imported at all.
+  - <import_decl> is a "::" tree: a group under a common path, a group
+    inside a group, a glob, and an "as" alias on the leaf it renames. An
+    import is a namespace someone else wrote and is reached like one, which
+    leaves "." meaning only "into a value at run time". Settled. What it does
+    not say is where a path is looked up, whether a name that is not a legal
+    identifier can be imported at all, or what a glob does to a name already
+    in scope -- whether it loses to the name written by hand, or is an error
+    naming both.
+  - A path may start at "suite", "super" or "self", and a file is a module so
+    that all three have something to mean (section 1). They are segments and
+    not roots, which is what lets "super" repeat: pinning them to the front
+    of a path wants the token after the "::" that follows a "super", and that
+    is one more than an LR(1) table holds. Settled. The cost is that
+    "a::super::b" parses, a root in the middle where it names nothing, and
+    only the resolver can turn it down. Nor is it said what a file's module
+    is called, or whether two files may name the same one.
+  - A receiver is "self", "&self" or "*self", and there is no "self: T": the
+    type is the one the impl names, so the annotation only ever repeated it,
+    and with the type gone the reference went where the type had been.
+    Settled. What is not said is whether a trait may demand one of the three
+    of the impls that answer it, nor -- since a parameter list is a list --
+    that a receiver comes first and comes only in a method. Both are the
+    checker's.
+  - "pub" exports and "pub(suite)" exports as far as the suite, which are
+    the two units there are (section 1). Settled. Whether a "pub import" of
+    a name that is itself only "pub(suite)" is an error where it is written,
+    or a re-export that quietly narrows, is not said.
   - A macro is declared "macro foo($x:expr) { .. }" and invoked "@foo(..)",
     the word declaring and the sigil using (section 2). Settled. "@" spells
     nothing else now that the attributes have moved to "%", so an invocation
@@ -1457,7 +1609,7 @@ answer is not obvious from the rules alone.
     What it leaves is the asymmetry: reading walks a chain of references to
     the bottom and writing does not, so the two are transparent to different
     depths and only the reader of a long chain has to notice.
-  - How long a reference stays good has a spelling, "~a", and never needs
+  - How long a reference stays good has a spelling, "'a", and never needs
     one: a return borrows for the shortest-lived of what the parameters
     brought in, which is always sound, so inference answers every signature
     and refuses none (section 3). Settled, and it is the one place the
@@ -1475,18 +1627,20 @@ answer is not obvious from the rules alone.
     here. What is left is whether the trade is the right one, and it is the
     only piece of this that a body of real programs would settle rather than
     an argument.
-    The spelling is the other thing that is not Rust's. "~" spells nothing
-    else in the language, where "'" already spells a character literal, so
-    "~a" needs none of the lookahead "'a" against "'a'" would have wanted.
+    The spelling is Rust's too, and so is what it costs: "'" already spells a
+    character literal, so a "'" is told from one by looking past the name for
+    a closing quote. That look is bounded by the identifier and no more, which
+    is what makes it affordable — a delimiter with no bound, "`" among them,
+    could not be told apart the same way at any price.
   - A place is reached through one "*" or through any number of "&", and
     never both at once (section 3). Settled. It is Rust's rule and it buys
     what Rust buys with it: an "&" is a guarantee that nothing moves
     underneath, so what may be cached, reordered or handed to another thread
     follows from the type rather than from a convention. The cost is harder
     than the lifetime entry's, and for the reason that entry is easy: there
-    a signature is always answerable and "~a" only sharpens the answer, while
+    a signature is always answerable and "'a" only sharpens the answer, while
     here a program refused for aliasing is refused with nothing to write at
-    all — a "~a" says which references are the same one, and the language has
+    all — a "'a" says which references are the same one, and the language has
     no way to say which are not. The two are otherwise one question asked
     twice, since a reference that outlives its referent and one that aliases
     a "*" are both a place reached two ways at once. What is left is how

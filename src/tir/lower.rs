@@ -14,8 +14,8 @@
 
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::parse::ast_nodes::{
-    ASTAssignOp, ASTBinOp, ASTBinding, ASTLit, ASTNode, ASTNodeId, ASTNodeKind, ASTPrimType,
-    ASTRangeOp, ASTRefOp, ASTUnaryOp, ASTVariableIntro, ASTVisibility,
+    ASTAssignOp, ASTBinOp, ASTBinding, ASTImportLeaf, ASTLit, ASTNode, ASTNodeId, ASTNodeKind,
+    ASTPrimType, ASTRangeOp, ASTRefOp, ASTSelf, ASTUnaryOp, ASTVariableIntro, ASTVisibility,
 };
 use crate::parse::parser::Parser;
 use super::tir_nodes::*;
@@ -233,7 +233,11 @@ impl<'a> Lowerer<'a> {
     fn item(&mut self, id: ASTNodeId) -> Option<TIRItemId> {
         let kind = self.kind(id);
         let built = match kind {
-            ASTNodeKind::Import { path, alias } => TIRItemKind::Import { path, alias },
+            ASTNodeKind::Import { attrs, vis, leaves } => TIRItemKind::Import {
+                vis:    visibility(vis),
+                attrs:  self.attrs(&attrs, Target::Other("an import")).common,
+                leaves: leaves.iter().map(import_leaf).collect(),
+            },
 
             ASTNodeKind::Fn { .. } => {
                 let f = self.function(id);
@@ -295,6 +299,13 @@ impl<'a> Lowerer<'a> {
                 let attrs = self.attrs(&attrs, Target::Other("a namespace")).common;
                 let items = items.iter().filter_map(|&i| self.item(i)).collect();
                 TIRItemKind::Namespace { vis: visibility(vis), attrs, name, items }
+            }
+
+            ASTNodeKind::TypeAlias { attrs, vis, name, generics, ty } => {
+                let attrs = self.attrs(&attrs, Target::Other("a type alias")).common;
+                let generics = self.generics(&generics);
+                let ty = self.ty(ty);
+                TIRItemKind::TypeAlias { vis: visibility(vis), attrs, name, generics, ty }
             }
 
             ASTNodeKind::Const { attrs, vis, name, ty, value } => {
@@ -491,7 +502,8 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::Name(path) => TIRPatKind::Name(path),
             ASTNodeKind::Ident(name) => TIRPatKind::Name(vec![name]),
             ASTNodeKind::LitPat { negated, value } => {
-                TIRPatKind::Lit { negated, value: lit(value) }
+                let suffix = suffix_of(&value);
+                TIRPatKind::Lit { negated, value: lit(value), suffix }
             }
             ASTNodeKind::RangePat { op, lo, hi } => {
                 TIRPatKind::Range { op: range_op(op), lo: self.pat(lo), hi: self.pat(hi) }
@@ -554,10 +566,13 @@ impl<'a> Lowerer<'a> {
 
     fn expr(&mut self, id: ASTNodeId) -> TIRExprId {
         let kind = match self.kind(id) {
-            ASTNodeKind::Literal(value) => TIRExprKind::Literal(lit(value)),
+            ASTNodeKind::Literal(value) => {
+                let suffix = suffix_of(&value);
+                TIRExprKind::Literal { value: lit(value), suffix }
+            }
             ASTNodeKind::Ident(name) => TIRExprKind::Name(vec![name]),
             ASTNodeKind::Name(path) => TIRExprKind::Name(path),
-            ASTNodeKind::This => TIRExprKind::This,
+            ASTNodeKind::SelfExpr => TIRExprKind::SelfExpr,
 
             // `.` reaches a value and `::` what the compiler knows the name of.
             // They look alike once resolved, and are kept apart here because
@@ -737,9 +752,10 @@ impl<'a> Lowerer<'a> {
     // last statement in it.
     fn is_value(&self, id: ASTNodeId) -> bool {
         match self.kind(id) {
-            ASTNodeKind::Variable { .. } | ASTNodeKind::Const { .. } | ASTNodeKind::Fn { .. } => {
-                false
-            }
+            ASTNodeKind::Variable { .. }
+            | ASTNodeKind::Const { .. }
+            | ASTNodeKind::TypeAlias { .. }
+            | ASTNodeKind::Fn { .. } => false,
             ASTNodeKind::Unsafe(inner) => self.is_value(inner),
             _ => true,
         }
@@ -753,8 +769,21 @@ impl<'a> Lowerer<'a> {
 fn visibility(v: ASTVisibility) -> TIRVis {
     match v {
         ASTVisibility::Unwritten => TIRVis::Unwritten,
-        ASTVisibility::Public => TIRVis::Public,
-        ASTVisibility::Private => TIRVis::Private,
+        ASTVisibility::Pub => TIRVis::Pub,
+        ASTVisibility::Priv => TIRVis::Priv,
+        ASTVisibility::Suite => TIRVis::Suite,
+    }
+}
+
+fn import_leaf(l: &ASTImportLeaf) -> TIRImportLeaf {
+    TIRImportLeaf { path: l.path.clone(), alias: l.alias.clone(), glob: l.glob }
+}
+
+fn self_of(s: ASTSelf) -> TIRSelf {
+    match s {
+        ASTSelf::Value => TIRSelf::Value,
+        ASTSelf::Ref => TIRSelf::Ref,
+        ASTSelf::Mut => TIRSelf::Mut,
     }
 }
 
@@ -769,14 +798,22 @@ fn binding(b: &ASTBinding) -> TIRBinding {
     match b {
         ASTBinding::Name(name) => TIRBinding::Name(name.clone()),
         ASTBinding::Discard => TIRBinding::Discard,
-        ASTBinding::This => TIRBinding::This,
+        ASTBinding::SelfRecv(held) => TIRBinding::SelfRecv(self_of(*held)),
+    }
+}
+
+// The type a number's suffix named, which only a number can have carried.
+fn suffix_of(l: &ASTLit) -> Option<TIRPrim> {
+    match l {
+        ASTLit::Int(_, s) | ASTLit::Float(_, s) => s.map(prim),
+        _ => None,
     }
 }
 
 fn lit(l: ASTLit) -> TIRLit {
     match l {
-        ASTLit::Int(n) => TIRLit::Int(n),
-        ASTLit::Float(f) => TIRLit::Float(f),
+        ASTLit::Int(n, _) => TIRLit::Int(n),
+        ASTLit::Float(f, _) => TIRLit::Float(f),
         ASTLit::Str(s) => TIRLit::Str(s),
         ASTLit::Char(c) => TIRLit::Char(c),
         ASTLit::Bool(b) => TIRLit::Bool(b),
@@ -879,8 +916,8 @@ fn list(words: &[&str]) -> String {
 
 fn describe_arg(kind: &ASTNodeKind) -> &'static str {
     match kind {
-        ASTNodeKind::Literal(ASTLit::Int(_)) => "an integer",
-        ASTNodeKind::Literal(ASTLit::Float(_)) => "a float",
+        ASTNodeKind::Literal(ASTLit::Int(..)) => "an integer",
+        ASTNodeKind::Literal(ASTLit::Float(..)) => "a float",
         ASTNodeKind::Literal(ASTLit::Char(_)) => "a character",
         ASTNodeKind::Literal(ASTLit::Bool(_)) => "a boolean",
         ASTNodeKind::Literal(ASTLit::Null) => "`null`",

@@ -27,10 +27,17 @@ pub enum TokType {
     Const,
     Struct,
     Trait,
+    // `type MyType = i32`: a name for a type, and nothing new to check.
+    Type,
     Impl,
-    Public,
-    Private,
+    Pub,
+    Priv,
     Import,
+    // The two roots a path may start from: the suite a file is compiled in, and
+    // the module above the one the path is written in. `self` is the third and
+    // is a literal below, being an expression as well.
+    Suite,
+    Super,
     Enum,
     Namespace,
     // Declares a macro: `macro foo($x:expr) { .. }`.
@@ -54,7 +61,9 @@ pub enum TokType {
     // Literals
     True,
     False,
-    This,
+    // A method's receiver, and the module a path starts in. Both are `self`,
+    // and which one it is depends on where it stands.
+    SelfKw,
     // Both a literal and a type name: `null` is the one value of the type
     // `null`, which is what a function, a block or a loop yields when it
     // yields nothing in particular. There is no `void`.
@@ -67,8 +76,12 @@ pub enum TokType {
 
     // Literal values
     Identifier(String),
-    IntLiteral(i64),
-    FloatLiteral(f64),
+    // A number and the type its spelling named, `5_u8` being `IntLiteral(5,
+    // Some(U8))`. The suffix is part of the token and not one of its own, for
+    // the reason a lifetime is one token: no space may come between a number
+    // and its suffix, and two tokens could not say so.
+    IntLiteral(i64, Option<NumSuffix>),
+    FloatLiteral(f64, Option<NumSuffix>),
     StringLiteral(String),
     CharLiteral(char),
 
@@ -83,10 +96,10 @@ pub enum TokType {
     // A macro's parameter where the body spells it, `$x`, without the `$`.
     MacroParam(String),
 
-    // A lifetime, `~a`, carrying its name without the `~`. One token and not
-    // two: `~` spells nothing else in the language, so there is no reading of
-    // it a space could change, and gluing the name on is what keeps `~ a` from
-    // being a lifetime written oddly.
+    // A lifetime, `'a`, carrying its name without the `'`. One token and not
+    // two, so no space can come between the sigil and the name. The same `'`
+    // opens a character literal, and which one it is depends on what follows
+    // the name -- see `opens_lifetime`.
     Lifetime(String),
 
     // Arithmetic operators
@@ -171,6 +184,12 @@ pub enum TokType {
     RCurlyBracket,
     Colon,
     ColonColon,
+    // `::*`, the glob of an import, glued as one token the way `%name` and `#{`
+    // are. A `*` on its own is the multiplication and the reference both, and
+    // neither ends an operand; this does, so an import that globs may end its
+    // line without a `;` like every other declaration. `a:: *` with a space in
+    // it is two tokens and no glob, as a space likewise ends an attribute.
+    Glob,
     Comma,
     Dot,
     Semicolon,
@@ -182,6 +201,56 @@ pub enum TokType {
     // Special
     EOF,
     Error(String),
+}
+
+// The type a number literal named for itself: the `u8` of `5_u8`. Only the
+// numeric primitives can be said this way -- `bool` and `str` have literals of
+// their own and nothing to ascribe -- so this is its own short list rather than
+// the whole of the primitives with ten spellings the lexer would have to refuse.
+//
+// Whether the value fits the type it named is not asked here. `-128_i8` is a
+// negation of `128_i8`, and only a tree that has the `-` in it can tell that
+// one from the overflow it looks like; the checker asks, once it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumSuffix {
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    F32,
+    F64,
+}
+
+impl NumSuffix {
+    // The suffix a word spells, or `None` where it spells no suffix at all.
+    pub fn of(word: &str) -> Option<NumSuffix> {
+        Some(match word {
+            "i8" => NumSuffix::I8,
+            "i16" => NumSuffix::I16,
+            "i32" => NumSuffix::I32,
+            "i64" => NumSuffix::I64,
+            "i128" => NumSuffix::I128,
+            "u8" => NumSuffix::U8,
+            "u16" => NumSuffix::U16,
+            "u32" => NumSuffix::U32,
+            "u64" => NumSuffix::U64,
+            "u128" => NumSuffix::U128,
+            "f32" => NumSuffix::F32,
+            "f64" => NumSuffix::F64,
+            _ => return None,
+        })
+    }
+
+    // Whether the suffix names a float type, and so may follow a decimal point.
+    pub fn is_float(self) -> bool {
+        matches!(self, NumSuffix::F32 | NumSuffix::F64)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

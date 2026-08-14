@@ -109,9 +109,11 @@ impl Parser {
 
     // The number an `INT_LITERAL` leaf carried, for the `.0` of a tuple. No
     // negative one can reach here: a leading `-` is an operator of its own.
+    // Nor a suffixed one: a number written after a `.` is an index, and the
+    // lexer reads no suffix on one.
     pub(super) fn index(&self, id: ASTNodeId) -> u64 {
         match self.kind(id) {
-            ASTNodeKind::Literal(ASTLit::Int(n)) => *n as u64,
+            ASTNodeKind::Literal(ASTLit::Int(n, _)) => *n as u64,
             other => panic!("a rule wanted an index and was given {:?}", other),
         }
     }
@@ -125,13 +127,21 @@ impl Parser {
         elems
     }
 
-    // What a `<binding_name>` or a `<param_name>` binds.
+    // What a `<binding_name>` or a `<receiver>` binds.
     pub(super) fn binding(&self, id: ASTNodeId) -> ASTBinding {
         match self.kind(id) {
             ASTNodeKind::Ident(name) => ASTBinding::Name(name.clone()),
             ASTNodeKind::Wildcard => ASTBinding::Discard,
-            ASTNodeKind::This => ASTBinding::This,
+            ASTNodeKind::SelfRecv(held) => ASTBinding::SelfRecv(*held),
             other => panic!("a rule wanted a binding and was given {:?}", other),
+        }
+    }
+
+    // The leaves an import's tree has gathered so far.
+    pub(super) fn leaves(&self, id: ASTNodeId) -> Vec<ASTImportLeaf> {
+        match self.kind(id) {
+            ASTNodeKind::ImportTree(leaves) => leaves.clone(),
+            other => panic!("a rule wanted an import tree and was given {:?}", other),
         }
     }
 
@@ -217,7 +227,9 @@ impl Parser {
             | ASTNodeKind::Namespace { attrs: on, vis: seen, .. }
             | ASTNodeKind::Variable { attrs: on, vis: seen, .. }
             | ASTNodeKind::Const { attrs: on, vis: seen, .. }
-            | ASTNodeKind::MacroDecl { attrs: on, vis: seen, .. } => {
+            | ASTNodeKind::TypeAlias { attrs: on, vis: seen, .. }
+            | ASTNodeKind::MacroDecl { attrs: on, vis: seen, .. }
+            | ASTNodeKind::Import { attrs: on, vis: seen, .. } => {
                 *on = written;
                 *seen = vis;
             }

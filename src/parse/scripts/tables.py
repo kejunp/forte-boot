@@ -29,8 +29,9 @@ TOKENS = {
     'bool': 'Bool', 'char': 'Char', 'str': 'Str', 'never': 'Never',
 
     'fn': 'Fn', 'let': 'Let', 'var': 'Var', 'const': 'Const',
-    'struct': 'Struct', 'trait': 'Trait', 'impl': 'Impl',
-    'public': 'Public', 'private': 'Private', 'import': 'Import',
+    'struct': 'Struct', 'trait': 'Trait', 'impl': 'Impl', 'type': 'Type',
+    'pub': 'Pub', 'priv': 'Priv', 'import': 'Import',
+    'suite': 'Suite', 'super': 'Super',
     'enum': 'Enum', 'namespace': 'Namespace', 'unsafe': 'Unsafe',
     'macro': 'Macro',
 
@@ -38,7 +39,7 @@ TOKENS = {
     'for': 'For', 'in': 'In', 'return': 'Return', 'break': 'Break',
     'continue': 'Continue', 'match': 'Match',
 
-    'true': 'True', 'false': 'False', 'this': 'This', 'null': 'Null',
+    'true': 'True', 'false': 'False', 'self': 'SelfKw', 'null': 'Null',
     '_': 'Underscore',
 
     'as': 'As', 'where': 'Where', 'move': 'Move',
@@ -69,6 +70,9 @@ TOKENS = {
     # ahead to the matching `>`. See `opens_type_args`.
     'GENERIC_LT': 'LessGeneric',
     ':': 'Colon', '::': 'ColonColon', ',': 'Comma', '.': 'Dot',
+    # `::*`, glued as one token so that it ends an operand where a bare `*`
+    # could not. See `TokType::Glob`.
+    '::*': 'Glob',
     ';': 'Semicolon', '=>': 'FatArrow', '#': 'HashTag',
 
     'IDENTIFIER': 'Identifier', 'INT_LITERAL': 'IntLiteral',
@@ -218,6 +222,7 @@ CONTEXTS = {
     '<named_payload>': "a variant's fields",
     '<enum_variant_list>': "an enum's variants",
 
+    '<receiver>': 'a receiver',
     '<param>': 'a parameter',
     '<param_seq>': 'a parameter list',
     '<param_list>': 'a parameter list',
@@ -254,7 +259,9 @@ CONTEXTS = {
     # and a declaration alike, and each of those says where to look where `a type
     # annotation` only says again what `expected a type` has said.
     '<import_path>': 'an `import`',
-    '<import_alias_opt>': 'an `import`',
+    '<import_tree>': 'an `import`',
+    '<import_seq>': "an `import`'s group",
+    '<import_list>': "an `import`'s group",
     '<import_head>': 'an `import`',
     '<import_decl>': 'an `import`',
     '<initializer_opt>': 'a variable declaration',

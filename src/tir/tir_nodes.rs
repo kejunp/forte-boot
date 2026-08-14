@@ -84,11 +84,14 @@ pub struct TIRPat {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TIRItemKind {
-    // `shapes::circle` as `["shapes", "circle"]`. Where the path is looked up
-    // is the resolver's, and section 8 leaves it open.
+    // Every name one `import` reached, the tree it was written as already
+    // flattened. Where a path is looked up is the resolver's, and section 8
+    // leaves it open; so is what a glob does to a name already in scope, and
+    // whether a root may stand anywhere but the front of a path.
     Import {
-        path:  Vec<String>,
-        alias: Option<String>,
+        vis:    TIRVis,
+        attrs:  TIRAttrs,
+        leaves: Vec<TIRImportLeaf>,
     },
 
     Fn(TIRFn),
@@ -147,6 +150,17 @@ pub enum TIRItemKind {
         name:  String,
         ty:    TIRTypeId,
         value: TIRExprId,
+    },
+
+    // `type MyType = i32`. It survives to here and no further: an alias is a
+    // name for a type and not a type, so once the resolver has followed it
+    // there is nothing left of it -- which is why the TTIR has no such item.
+    TypeAlias {
+        vis:      TIRVis,
+        attrs:    TIRAttrs,
+        name:     String,
+        generics: Vec<TIRGeneric>,
+        ty:       TIRTypeId,
     },
 
     // A `<var_decl>` at file scope. The same declaration inside a block is a
@@ -258,7 +272,7 @@ pub enum TIRTypeKind {
         path: Vec<String>,
         args: Vec<TIRGenericArg>,
     },
-    // `&T` reads and `*T` writes. `life` is the `~a` written in front of the
+    // `&T` reads and `*T` writes. `life` is the `'a` written in front of the
     // referent, and `None` is every reference the checker works out for itself
     // -- which is all of them but the sharpened few.
     Ref {
@@ -310,11 +324,19 @@ pub enum TIRStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TIRExprKind {
-    Literal(TIRLit),
+    // `suffix` is the type a number named for itself, the `u8` of `5_u8`, and
+    // only a numeric primitive can be there. It stands beside the value rather
+    // than inside `TIRLit`, which the typed tree shares: there a literal has a
+    // type over it, and a suffix would be the same answer written twice.
+    Literal {
+        value:  TIRLit,
+        suffix: Option<TIRPrim>,
+    },
     // A name as written. What it refers to is the resolver's, and it is a name
     // in a pattern too -- see `TIRPatKind::Name`.
     Name(Vec<String>),
-    This,
+    // `self` where a value is wanted: the receiver.
+    SelfExpr,
 
     // `.x` reaches a value at run time; `::x` reaches what the compiler knows
     // the name of. The two look alike once resolved and are kept apart here for
@@ -469,9 +491,11 @@ pub enum TIRPatKind {
     Name(Vec<String>),
     // The `-` a literal pattern may carry is folded into the value where it
     // can be, and kept as a flag where the literal has no sign of its own.
+    // `suffix` is the number's own, as in `TIRExprKind::Literal`.
     Lit {
         negated: bool,
         value:   TIRLit,
+        suffix:  Option<TIRPrim>,
     },
     Range {
         op: TIRRangeOp,
@@ -560,8 +584,28 @@ pub enum TIRLit {
 pub enum TIRVis {
     #[default]
     Unwritten,
-    Public,
-    Private,
+    Pub,
+    Priv,
+    // `pub(suite)`: as far as the suite and no further.
+    Suite,
+}
+
+// One name an import reached. A glob stands for whatever the path holds and so
+// renames nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TIRImportLeaf {
+    pub path:  Vec<String>,
+    pub alias: Option<String>,
+    pub glob:  bool,
+}
+
+// How a method takes its receiver: `self` by value, `&self` to read, `*self` to
+// write through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TIRSelf {
+    Value,
+    Ref,
+    Mut,
 }
 
 // `let` binds a name that is read and never written, `var` one that may be
@@ -577,7 +621,7 @@ pub enum TIRBinding {
     Name(String),
     // `_`, which binds nothing and so cannot be referred to.
     Discard,
-    This,
+    SelfRecv(TIRSelf),
 }
 
 // `&` reads and `*` writes; neither is a pointer.

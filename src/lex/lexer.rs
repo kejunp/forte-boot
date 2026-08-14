@@ -19,6 +19,11 @@ pub struct Lexer {
     in_attribute:      bool,
     attr_bracket_depth: usize,
 
+    // The same wait for the `(suite)` of a `pub(suite)`, and for the same
+    // reason: its `)` closes a visibility and not an operand.
+    in_visibility:     bool,
+    vis_bracket_depth: usize,
+
     // Brace context. See `push_brace`.
     brace_depth:        usize,
     entry_braces:       u64,
@@ -30,6 +35,7 @@ pub struct Lexer {
 
     // What stood in front of the current token, for deciding a `{`.
     hash_prefix:    bool,
+    path_prefix:    bool,
     prev_ends_stmt: bool,
     prev_was_brace: bool,
 
@@ -66,6 +72,9 @@ struct State {
     in_attribute:       bool,
     attr_bracket_depth: usize,
 
+    in_visibility:      bool,
+    vis_bracket_depth:  usize,
+
     brace_depth:        usize,
     entry_braces:       u64,
     value_braces:       u64,
@@ -75,6 +84,7 @@ struct State {
     header_brace_depth: usize,
 
     hash_prefix:    bool,
+    path_prefix:    bool,
     prev_ends_stmt: bool,
     prev_was_brace: bool,
     prev_was_dot:   bool,
@@ -104,13 +114,13 @@ fn ends_an_operand(t: &TokType) -> bool {
     matches!(
         t,
         TokType::Identifier(_)
-            | TokType::IntLiteral(_)
-            | TokType::FloatLiteral(_)
+            | TokType::IntLiteral(..)
+            | TokType::FloatLiteral(..)
             | TokType::StringLiteral(_)
             | TokType::CharLiteral(_)
             | TokType::True
             | TokType::False
-            | TokType::This
+            | TokType::SelfKw
             // A literal, and a type name besides.
             | TokType::Null
             // A wildcard names a binding, so it stands where a name stands.
@@ -144,6 +154,11 @@ fn can_end_statement(t: &TokType) -> bool {
                 // `..=` is not — it always needs an upper bound — so it keeps
                 // looking.
                 | TokType::DotDot
+                // `::*` ends the import it globs, so one may drop its `;` like
+                // any other declaration. It is not in `ends_an_operand`: no
+                // infix operator may follow a glob. `super` and `suite` are in
+                // neither list — each opens a path and no path ends on one.
+                | TokType::Glob
         )
 }
 
@@ -159,8 +174,8 @@ fn fits_in_generics(t: &TokType) -> bool {
             // Trait bounds, e.g. `<T: Show + Clone>`.
             | TokType::Colon
             | TokType::Plus
-            // A lifetime parameter or argument, e.g. `<~a>`, `<~a, T>`, and the
-            // `~a` of a `&~a i32` nested in one.
+            // A lifetime parameter or argument, e.g. `<'a>`, `<'a, T>`, and the
+            // `'a` of a `&'a i32` nested in one.
             | TokType::Lifetime(_)
             // A macro's parameter standing in for a type: `Vec<$t>`.
             | TokType::MacroParam(_)
@@ -169,13 +184,17 @@ fn fits_in_generics(t: &TokType) -> bool {
             // A qualified type name, e.g. `<limits::Kind>`. A type path is all
             // `::`, so a `.` inside one says the `<` was a comparison.
             | TokType::ColonColon
+            // The roots one may start from, e.g. `<super::Node>`, `<Vec<self::T>>`.
+            | TokType::SelfKw
+            | TokType::Super
+            | TokType::Suite
             // A grouped type, e.g. `<(&i32)[8]>`.
             | TokType::LParen
             | TokType::RParen
             // An array size, e.g. `<i32[8]>`. A literal cannot *start* a type
             // argument, but `<array_suffix>` takes a constant expression, so
             // one may well turn up inside it.
-            | TokType::IntLiteral(_)
+            | TokType::IntLiteral(..)
             // Nested arguments and array types, e.g. `<Map<str, i32[]>>`.
             | TokType::LessThan
             | TokType::GreaterThan
@@ -240,6 +259,7 @@ fn heads_a_body(t: &TokType) -> bool {
             | TokType::Impl
             // Its body holds items, so it is a statement body like a fn's.
             | TokType::Namespace
+            | TokType::Type
             // A macro's body is a block, and its `{` is claimed the way a fn's
             // is -- across the commas of its own parameter list.
             | TokType::Macro
@@ -271,8 +291,8 @@ fn starts_statement(t: &TokType) -> bool {
             | TokType::Impl
             | TokType::Import
             | TokType::Namespace
-            | TokType::Public
-            | TokType::Private
+            | TokType::Pub
+            | TokType::Priv
             // It prefixes a statement, so it is the start of one.
             | TokType::Unsafe
             // An attribute only ever prefixes a declaration.
@@ -300,6 +320,22 @@ fn radix_of(c: char) -> Option<u32> {
         'd' | 'D' => Some(10),
         _ => None,
     }
+}
+
+// A token that is nothing but the complaint it carries. `len` is 0 like every
+// other token's: what a diagnostic underlines is the report's to work out.
+fn bad(message: String, line: usize, col: usize) -> Tok {
+    Tok { toktype: TokType::Error(message), line, col, len: 0 }
+}
+
+// A word glued to a number that names no type. Spelled out in full, since the
+// twelve are the whole of what may be written there.
+fn suffix_error(word: &str, literal: &str) -> String {
+    format!(
+        "Unknown suffix '{}' on number literal '{}'; expected one of i8, i16, i32, i64, \
+         i128, u8, u16, u32, u64, u128, f32, f64",
+        word, literal
+    )
 }
 
 // Reserved words. Anything not listed here lexes as an `Identifier`.
@@ -330,10 +366,13 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "const" => TokType::Const,
         "struct" => TokType::Struct,
         "trait" => TokType::Trait,
+        "type" => TokType::Type,
         "impl" => TokType::Impl,
-        "public" => TokType::Public,
-        "private" => TokType::Private,
+        "pub" => TokType::Pub,
+        "priv" => TokType::Priv,
         "import" => TokType::Import,
+        "suite" => TokType::Suite,
+        "super" => TokType::Super,
         "enum" => TokType::Enum,
         "namespace" => TokType::Namespace,
         "macro" => TokType::Macro,
@@ -359,7 +398,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         // Literals
         "true" => TokType::True,
         "false" => TokType::False,
-        "this" => TokType::This,
+        "self" => TokType::SelfKw,
         "null" => TokType::Null,
 
         // The wildcard. Reserved as a whole word and not as a prefix, so `_foo`
@@ -387,6 +426,8 @@ impl Lexer {
 
             in_attribute:       false,
             attr_bracket_depth: 0,
+            in_visibility:      false,
+            vis_bracket_depth:  0,
 
             brace_depth:        0,
             entry_braces:       0,
@@ -397,6 +438,7 @@ impl Lexer {
             header_brace_depth: 0,
 
             hash_prefix:    false,
+            path_prefix:    false,
             // Nothing precedes the first token, and a statement may start there.
             prev_ends_stmt: true,
             prev_was_brace: false,
@@ -447,6 +489,9 @@ impl Lexer {
             in_attribute:       self.in_attribute,
             attr_bracket_depth: self.attr_bracket_depth,
 
+            in_visibility:      self.in_visibility,
+            vis_bracket_depth:  self.vis_bracket_depth,
+
             brace_depth:        self.brace_depth,
             entry_braces:       self.entry_braces,
             value_braces:       self.value_braces,
@@ -456,6 +501,7 @@ impl Lexer {
             header_brace_depth: self.header_brace_depth,
 
             hash_prefix:    self.hash_prefix,
+            path_prefix:    self.path_prefix,
             prev_ends_stmt: self.prev_ends_stmt,
             prev_was_brace: self.prev_was_brace,
             prev_was_dot:   self.prev_was_dot,
@@ -480,6 +526,8 @@ impl Lexer {
         self.last_ends_operand = s.last_ends_operand;
         self.in_attribute = s.in_attribute;
         self.attr_bracket_depth = s.attr_bracket_depth;
+        self.in_visibility = s.in_visibility;
+        self.vis_bracket_depth = s.vis_bracket_depth;
 
         self.brace_depth = s.brace_depth;
         self.entry_braces = s.entry_braces;
@@ -490,6 +538,7 @@ impl Lexer {
         self.header_brace_depth = s.header_brace_depth;
 
         self.hash_prefix = s.hash_prefix;
+        self.path_prefix = s.path_prefix;
         self.prev_ends_stmt = s.prev_ends_stmt;
         self.prev_was_brace = s.prev_was_brace;
         self.prev_was_dot = s.prev_was_dot;
@@ -552,6 +601,7 @@ impl Lexer {
         // Captured before the scan overwrites it.
         let after_type_name = self.last_was_type_end;
         let after_hash = self.hash_prefix;
+        let after_path = self.path_prefix;
         let value_only = !self.prev_ends_stmt && !(self.prev_was_brace && !self.in_entry_body());
 
         // Where the token starts, so that its width can be had from how far the
@@ -606,7 +656,9 @@ impl Lexer {
         // inside one ends a statement: `@inline` / newline / `fn f()` is a
         // single item, and the name that closes the attribute must not have a
         // separator inserted after it.
-        if self.in_attribute {
+        // The `(suite)` of a visibility is a prefix in the same way, and so is
+        // nothing a statement may end inside of.
+        if self.in_attribute || self.in_visibility {
             self.last_can_end = false;
         }
         // The `>` closing a type argument list ends a type, and so an operand.
@@ -615,6 +667,10 @@ impl Lexer {
         // A `#` marks the brace behind it as a hash map or hash set, but only
         // when glued to it — `#{`, as `#[` opens an attribute.
         self.hash_prefix = tok.toktype == TokType::HashTag && self.peek_char() == Some('{');
+        // A `{` after a `::` is the group of an import and nothing else, which
+        // is what `push_brace` needs to hear: the scan inside would call the
+        // one-name `a::{b}` undecided and fall back on where it stands.
+        self.path_prefix = tok.toktype == TokType::ColonColon;
         self.prev_ends_stmt = matches!(tok.toktype, TokType::Semicolon | TokType::FatArrow);
         self.prev_was_brace =
             matches!(tok.toktype, TokType::LCurlyBracket | TokType::RCurlyBracket);
@@ -630,7 +686,8 @@ impl Lexer {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
             }
             TokType::LCurlyBracket => {
-                opens_value = self.push_brace(after_type_name, after_hash, value_only);
+                opens_value =
+                    self.push_brace(after_type_name, after_hash, after_path, value_only);
             }
             TokType::RCurlyBracket => {
                 // Only a block's `}` ends the line it sits on; the `}` of a
@@ -714,6 +771,21 @@ impl Lexer {
                 self.last_ends_operand = false;
             }
         }
+
+        // `pub(suite)` waits the same way, and for the same reason one line
+        // down: its `)` ends a visibility, so a newline after it must not be
+        // read as the end of a statement. `pub` on a line of its own is a
+        // declaration missing everything after it either way.
+        if tok.toktype == TokType::Pub && self.peek_char() == Some('(') {
+            self.in_visibility = true;
+            self.vis_bracket_depth = self.bracket_depth;
+        } else if self.in_visibility
+            && tok.toktype == TokType::RParen
+            && self.bracket_depth == self.vis_bracket_depth
+        {
+            self.in_visibility = false;
+            self.last_ends_operand = false;
+        }
         // Everything above reads the brace as the `{` it was scanned as; only
         // what leaves the lexer says which kind it opened.
         if opens_value {
@@ -739,6 +811,7 @@ impl Lexer {
     //     the top level of a header;
     //   - a struct literal, where a type name ends right before it: `Point {`;
     //   - a map or set literal — `{1: 2}`, `{1, 2}`, anything after a glued `#`;
+    //   - an import's group, where a `::` stands in front of it;
     //   - a block otherwise.
     //
     // Bit `n` of `entry_braces` is set when the brace at depth `n` holds
@@ -752,7 +825,13 @@ impl Lexer {
     // Returns whether the brace opened a value: a literal's `{` is `LCurlyValue`
     // and a block's or a body's is `LCurlyBracket`, which is what the grammar
     // needs to tell them apart.
-    fn push_brace(&mut self, after_type_name: bool, after_hash: bool, value_only: bool) -> bool {
+    fn push_brace(
+        &mut self,
+        after_type_name: bool,
+        after_hash: bool,
+        after_path: bool,
+        value_only: bool,
+    ) -> bool {
         let at_header = self.pending_header
             && self.bracket_depth == self.header_depth
             && self.brace_depth == self.header_brace_depth;
@@ -764,8 +843,11 @@ impl Lexer {
         // its top level, or a `#` glued in front. A body of statements never
         // has those. A struct, enum or match body does, so those three keep
         // their brace whatever is inside it.
+        // An import's group is entries whatever is written inside it, and a `::`
+        // in front is the whole of what says so — no other brace may follow one.
         let collection = !literal
             && (after_hash
+                || after_path
                 || if at_header {
                     !self.pending_entry_body
                         && matches!(self.scan_brace_body(), BraceScan::Collection)
@@ -1052,8 +1134,15 @@ impl Lexer {
         match c {
             '"' => self.read_str(false),
             '`' => self.read_str(true),
-            '\'' => self.read_char(),
-            '~' => self.read_lifetime(),
+            // `'a` is a lifetime and `'a'` a character. Which one is settled
+            // by looking past the name for the closing quote -- see below.
+            '\'' => {
+                if self.opens_lifetime() {
+                    self.read_lifetime()
+                } else {
+                    self.read_char()
+                }
+            }
             '@' => self.read_sigil_name('@'),
             '$' => self.read_sigil_name('$'),
             _ => self.read_operator(),
@@ -1168,8 +1257,17 @@ impl Lexer {
             ']' => TokType::RBracket,
             '{' => TokType::LCurlyBracket,
             '}' => TokType::RCurlyBracket,
-            // `::` reaches into a type — `Color::Red` — where `:` annotates one.
-            ':' => if self.eat(':') { TokType::ColonColon } else { TokType::Colon },
+            // `::` reaches into a type — `Color::Red` — where `:` annotates one,
+            // and `::*` glued to it is the glob of an import. A `*` can only
+            // ever follow a `::` there, so taking it here costs nothing and buys
+            // the glob a token that ends an operand: see `TokType::Glob`.
+            ':' => {
+                if self.eat(':') {
+                    if self.eat('*') { TokType::Glob } else { TokType::ColonColon }
+                } else {
+                    TokType::Colon
+                }
+            }
             ',' => TokType::Comma,
             '.' => {
                 if self.eat('.') {
@@ -1264,13 +1362,11 @@ impl Lexer {
         Tok { toktype: TokType::CharLiteral(value), line, col, len: 0 }
     }
 
-    // Reads a lifetime, `~a`. The `~` is the whole of what says so, since it
-    // spells nothing else in the language -- which is what buys the reading
-    // Rust's `'a` has to pay a lookahead for, `'a'` being a char literal and
-    // `'a` not. A char literal above is read exactly as it always was.
+    // Reads a lifetime, `'a`, its `'` known to open one by `opens_lifetime`.
     //
-    // The name follows an identifier's rules, so `~_` is the one with no name
-    // worth giving and `~1` is not a lifetime at all.
+    // The name follows an identifier's rules, so `'_` is the one with no name
+    // worth giving and `'1` is not a lifetime at all -- it is the start of a
+    // character literal the reader below will complain about.
     // Reads `@name`, `$name` and the `%name` of an attribute. The sigil is
     // already known to be one of those and is consumed here; what each becomes
     // is `finish_sigil_name`'s, which the `%` of `read_operator` reaches
@@ -1317,20 +1413,34 @@ impl Lexer {
         name
     }
 
+    // Whether the `'` at the current position opens a lifetime rather than a
+    // character. The two are told apart by what follows the name: `'a'` closes
+    // and is a character, `'a` does not and is a lifetime.
+    //
+    // The look is bounded by the name, which is what makes it affordable -- it
+    // never runs past the identifier, and a character literal is never longer
+    // than one escape. This is Rust's rule and it is Rust's for the same reason.
+    fn opens_lifetime(&self) -> bool {
+        let first = match self.peek_char_at(1) {
+            Some(c) => c,
+            None => return false,
+        };
+        if !(first.is_alphabetic() || first == '_') {
+            return false;
+        }
+        let mut at = 1;
+        while matches!(self.peek_char_at(at), Some(c) if c.is_alphanumeric() || c == '_') {
+            at += 1;
+        }
+        // A quote here closes a character literal; anything else leaves the
+        // name standing on its own, which is what a lifetime is.
+        self.peek_char_at(at) != Some('\'')
+    }
+
     fn read_lifetime(&mut self) -> Tok {
         let line = self.line;
         let col = self.col;
-        self.advance(); // the `~`
-
-        let starts = matches!(self.peek_char(), Some(c) if c.is_alphabetic() || c == '_');
-        if !starts {
-            return Tok {
-                toktype: TokType::Error("A lifetime is `~` and a name, as in `~a`".to_string()),
-                line,
-                col,
-                len: 0,
-            };
-        }
+        self.advance(); // the `'`
 
         let mut name = String::new();
         while let Some(c) = self.peek_char() {
@@ -1449,50 +1559,86 @@ impl Lexer {
             }
         }
 
-        // Reject junk glued to the literal: `1.2.3`, `12abc`. A second '.' can
-        // only appear here once `is_float` is set, so this catches a repeated
-        // decimal point without touching `1..2`, where the dots are a range.
+        // The type the number named for itself, `5_u8` and `2.6_f32`. The `_`
+        // in front of it is the digit separator, already dropped by the loop
+        // above, so `5u8` says the same thing and reads the same way.
+        //
+        // Not after a `.`, where the number is a tuple index: `t.0` reaches a
+        // member, and a member has whatever type it has.
+        let mut suffix = None;
+        if !index && matches!(self.peek_char(), Some(c) if c.is_alphabetic()) {
+            let word = self.read_suffix_word();
+            match NumSuffix::of(&word) {
+                Some(s) if is_float && !s.is_float() => {
+                    self.consume_literal_tail();
+                    return bad(
+                        format!("Float literal '{}' cannot have the suffix '{}'", num_str, word),
+                        line,
+                        col,
+                    );
+                }
+                Some(s) => suffix = Some(s),
+                None => {
+                    self.consume_literal_tail();
+                    return bad(suffix_error(&word, &num_str), line, col);
+                }
+            }
+        }
+
+        // Reject junk glued to the literal: `1.2.3`, and the `abc` of `t.0abc`,
+        // which the suffix above did not take because an index carries none. A
+        // second '.' can only appear here once `is_float` is set, so this
+        // catches a repeated decimal point without touching `1..2`, where the
+        // dots are a range.
         if let Some(c) = self.peek_char() {
             let bad_dot = !index
                 && c == '.'
                 && matches!(self.peek_char_at(1), Some(d) if d.is_ascii_digit());
             if bad_dot || c.is_alphabetic() {
                 self.consume_literal_tail();
-                return Tok {
-                    toktype: TokType::Error(format!("Malformed number literal '{}'", num_str)),
-                    line,
-                    col,
-                    len: 0,
-                };
+                return bad(format!("Malformed number literal '{}'", num_str), line, col);
             }
         }
 
-        if is_float {
+        // A float suffix on a whole number makes a float of it: `5_f32` is the
+        // same value as `5.0_f32`, said with the point left out.
+        if is_float || suffix.is_some_and(NumSuffix::is_float) {
             match num_str.parse::<f64>() {
-                Ok(v) => Tok { toktype: TokType::FloatLiteral(v), line, col, len: 0 },
-                Err(_) => Tok {
-                    toktype: TokType::Error(format!("Invalid float literal '{}'", num_str)),
-                    line,
-                    col,
-                    len: 0,
-                },
+                Ok(v) => Tok { toktype: TokType::FloatLiteral(v, suffix), line, col, len: 0 },
+                Err(_) => bad(format!("Invalid float literal '{}'", num_str), line, col),
             }
         } else {
             match num_str.parse::<i64>() {
-                Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col, len: 0 },
-                Err(_) => Tok {
-                    toktype: TokType::Error(format!("Integer literal '{}' out of range for i64", num_str)),
-                    line,
-                    col,
-                    len: 0,
-                },
+                Ok(v) => Tok { toktype: TokType::IntLiteral(v, suffix), line, col, len: 0 },
+                Err(_) => {
+                    bad(format!("Integer literal '{}' out of range for i64", num_str), line, col)
+                }
             }
         }
     }
 
+    // The word glued to the end of a number, which is meant to be a suffix.
+    // Read whole, valid or not, so a wrong one is named in full by the error.
+    fn read_suffix_word(&mut self) -> String {
+        let mut word = String::new();
+        while let Some(c) = self.peek_char() {
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        word
+    }
+
     fn read_radix_int(&mut self, radix: u32, prefix: char, line: usize, col: usize) -> Tok {
         let mut digits = String::new();
-        let mut bad = false;
+        let mut suffix = None;
+        // A digit of some other base, and a word that was meant to be a suffix
+        // and is not. Kept apart so the error names whichever came first.
+        let mut bad_digit = false;
+        let mut junk = None;
         while let Some(c) = self.peek_char() {
             if c.is_digit(radix) {
                 digits.push(c);
@@ -1503,40 +1649,55 @@ impl Lexer {
             } else if c == '.' && self.peek_char_at(1) == Some('.') {
                 // `0x10..0x20` — the dots are a range, not part of the literal.
                 break;
-            } else if c.is_alphanumeric() || c == '.' {
+            } else if c.is_alphabetic() {
+                // A letter that is no digit of this base opens the suffix:
+                // `0xFF_u8`, `0b1010_i32`. The digits above were taken as
+                // greedily as ever, so a suffix spelled in them is not one --
+                // `0x1_f32` is the number 0x1f32, and every hex float with it.
+                let word = self.read_suffix_word();
+                match NumSuffix::of(&word) {
+                    Some(s) => suffix = Some(s),
+                    None => junk = Some(word),
+                }
+                break;
+            } else if c.is_numeric() || c == '.' {
                 // A digit outside this base, or a decimal point: consume it so the
                 // error covers the whole malformed literal.
-                bad = true;
+                bad_digit = true;
                 self.advance();
             } else {
                 break;
             }
         }
 
-        if bad {
-            return Tok {
-                toktype: TokType::Error(format!("Invalid digit in base-{} literal '0{}{}'", radix, prefix, digits)),
-                line,
-                col,
-                len: 0,
+        if bad_digit || junk.is_some() {
+            let literal = format!("0{}{}", prefix, digits);
+            self.consume_literal_tail();
+            return match junk {
+                Some(word) if !bad_digit => bad(suffix_error(&word, &literal), line, col),
+                _ => bad(
+                    format!("Invalid digit in base-{} literal '{}'", radix, literal),
+                    line,
+                    col,
+                ),
             };
         }
         if digits.is_empty() {
-            return Tok {
-                toktype: TokType::Error(format!("Expected digits after '0{}'", prefix)),
-                line,
-                col,
-                len: 0,
-            };
+            return bad(format!("Expected digits after '0{}'", prefix), line, col);
         }
         match i64::from_str_radix(&digits, radix) {
-            Ok(v) => Tok { toktype: TokType::IntLiteral(v), line, col, len: 0 },
-            Err(_) => Tok {
-                toktype: TokType::Error(format!("Integer literal '0{}{}' out of range for i64", prefix, digits)),
+            // A float suffix makes a float of the number it was written on, as
+            // it does in `5_f32`. The base said how to read the digits, and
+            // nothing more: `0b1010_f32` is 10.0.
+            Ok(v) if suffix.is_some_and(NumSuffix::is_float) => {
+                Tok { toktype: TokType::FloatLiteral(v as f64, suffix), line, col, len: 0 }
+            }
+            Ok(v) => Tok { toktype: TokType::IntLiteral(v, suffix), line, col, len: 0 },
+            Err(_) => bad(
+                format!("Integer literal '0{}{}' out of range for i64", prefix, digits),
                 line,
                 col,
-                len: 0,
-            },
+            ),
         }
     }
 

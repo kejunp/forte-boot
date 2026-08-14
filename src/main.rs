@@ -122,9 +122,9 @@ fn main() {
     // ...but a real shift still lexes as one.
     dump("let n = bits >> 2\n");
 
-    dump("trait Show<T> {\n    fn show(this: T): str\n}\n");
+    dump("trait Show<T> {\n    fn show(&self): str\n}\n");
 
-    dump("impl Show<i32> for Box {\n    fn show(this: i32): str { return \"box\" }\n}\n");
+    dump("impl Show<i32> for Box {\n    fn show(&self): str { return \"box\" }\n}\n");
 
     dump("let n = c as i64 + 1;");
 
@@ -174,7 +174,7 @@ fn main() {
     // A constant is worked out at compile time, so it needs both a type and a
     // value. Only a statement starts with `const`, so the brace below is a
     // block and not a map, whatever its `:` looks like.
-    dump("public const MAX: i32 = 1 << 20\nlet v = {\n    const N: i32 = 2\n    N\n}\n");
+    dump("pub const MAX: i32 = 1 << 20\nlet v = {\n    const N: i32 = 2\n    N\n}\n");
 
     // `&` is an immutable reference and `*` a mutable one — neither a pointer,
     // so nothing dereferences them and `a = b` writes through.
@@ -203,11 +203,11 @@ fn main() {
 
     // An attribute is `%name` with its arguments, and a prefix of what it
     // annotates — so no separator is inserted at the end of the list.
-    dump("%inline\n%repr(C)\npublic fn f();\n");
+    dump("%inline\n%repr(C)\npub fn f();\n");
 
     // An impl makes methods for a struct; anything else that wants a name in
     // front of it goes in a namespace, reached with a `::` like a module.
-    dump("namespace limits {\n    public const MAX: i32 = 255\n}\nlet n = limits::MAX\n");
+    dump("namespace limits {\n    pub const MAX: i32 = 255\n}\nlet n = limits::MAX\n");
 
     // `null` is a type and its one value, so it is what a loop nobody broke
     // out of yields, and what a function with no return type returns.
@@ -217,16 +217,19 @@ fn main() {
     // parameters. `||` splits into two of them where no operand precedes it.
     dump("let f = |x: i32| x * 2\nlet g = || 0\nlet ok = a || b\n");
 
-    // A lifetime is `~a`, one token: `~` spells nothing else, so nothing has
+    // A lifetime is `'a`, one token: `~` spells nothing else, so nothing has
     // to be told apart from the `'a'` of a character literal.
-    dump("fn longest<~a>(x: &~a str, y: &~a str): &~a str;\nstruct Parser<~a> {\n    text: &~a str,\n}\n");
+    dump("fn longest<'a>(x: &'a str, y: &'a str): &'a str;\nstruct Parser<'a> {\n    text: &'a str,\n}\n");
 
-    // It stands where a type parameter stands, bounds included, and a `~_` is
+    // It stands where a type parameter stands, bounds included, and a `'_` is
     // the one with no name worth giving.
-    dump("fn f<~a, ~b: ~a, T: Show + ~a>(x: &~a T) where T: ~a;\nlet p: &~_ i32 = &x\n");
+    dump("fn f<'a, 'b: 'a, T: Show + 'a>(x: &'a T) where T: 'a;\nlet p: &'_ i32 = &x\n");
+
+    // A name for a type, generic parameters and all.
+    dump("type Pair<T> = (T, T)\ntype Ref<'a> = &'a str\nlet p: Pair<i32> = (1, 2)\n");
 
     // A macro is declared with a word and invoked with a sigil. `$x` is one
-    // token, as `%name` and `~a` are.
+    // token, as `%name` and `'a` are.
     dump("macro twice($x:expr) {\n    $x\n    $x\n}\nlet n = @twice(f())\n");
 
     // `%` is the remainder operator too, and where it stands tells them apart.
@@ -234,11 +237,16 @@ fn main() {
 
     // A signature carries `const`, its own generic parameters and a `where`
     // clause, and bounds are joined with `+`.
-    dump("const fn square(n: i32): i32 { n * n }\nimpl<T> Stack<T> where T: Ord + Show {\n    fn len(this): i32;\n}\n");
+    dump("const fn square(n: i32): i32 { n * n }\nimpl<T> Stack<T> where T: Ord + Show {\n    fn len(&self): i32;\n}\n");
 
     // A constant sizes an array, and `_` is both an inferred argument and a
     // digit separator.
     dump("const ROWS: i32 = 8\nlet grid: i32[ROWS][ROWS]\nlet v: Vec<_> = f()\nlet big = 2_147_483_647\n");
+
+    // A number may name its own type, and the `_` in front of the suffix is
+    // that same separator: `5u8` says the same thing. A float suffix on a whole
+    // number makes a float of it.
+    dump("let n = 5_u8\nlet r = 2.6_f32\nlet mask = 0xFF_u8\nlet w = 5_f32\n");
 
     // A closure captures by `&` where it reads and `*` where it writes; `move`
     // takes a copy instead. The `||` after `move` is still two `|`.
@@ -260,7 +268,7 @@ fn main() {
     // statement that answers for it — a block where there is more than one, and
     // the statement itself where there is not. Only a `{` glued to the word
     // opens a body, so the brace below is still the literal's.
-    dump("public unsafe fn write(dst: *u8[], n: u64);\nunsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}\nunsafe free(q)\nunsafe p = P { x: 1 }\n");
+    dump("pub unsafe fn write(dst: *u8[], n: u64);\nunsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}\nunsafe free(q)\nunsafe p = P { x: 1 }\n");
 
     // What the parser makes of a source it can take, and of five it cannot.
     // Each mistake is shown against the line it was written on.
@@ -286,6 +294,10 @@ fn main() {
     // line, which is as far as the reader can see it.
     dump_parse("string.fc", "fn main() {\n    let s = \"unclosed\n}\n");
 
+    // Another it gave up inside of: a word glued to a number that names no
+    // type. The twelve that would have are spelled out, the set being closed.
+    dump_parse("suffix.fc", "fn main() {\n    let n = 5_u9\n}\n");
+
     // One mistake does not hide the next: the parse recovers and goes on, and
     // both are reported against their own lines.
     dump_parse("two.fc", "fn a() { let x = ; }\nfn b() { let y = ; }\n");
@@ -296,6 +308,22 @@ fn main() {
     dump_parse("nomacro.fc", "fn main() {\n    @nope(1);\n}\n");
     dump_parse("arity.fc", "macro one($x:expr) {\n    $x\n}\nfn main() {\n    @one(1, 2);\n}\n");
     dump_parse("frag.fc", "macro n($x:ident) {\n    $x\n}\nfn main() {\n    @n(1 + 2);\n}\n");
+
+    // An import is a tree of the names it reaches, and lowering flattens it: a
+    // group is spelling, and what comes out is one leaf for each name.
+    dump_parse(
+        "import.fc",
+        "pub import shapes::{circle, square::*, poly::{tri, quad}};\n\
+         import super::super::helpers::trim as t;\n\
+         import suite::limits::MAX;\n\
+         pub(suite) fn area(): i32 { suite::limits::MAX }\n\
+         impl Buf {\n\
+             pub fn len(&self): i32;\n\
+             pub fn clear(*self);\n\
+             fn into_vec(self): Vec<u8>;\n\
+         }\n\
+         namespace n { type T = i32 }\n",
+    );
 
     // The closed set of attributes is checked while the CFG is built: a name
     // the compiler does not know is an error naming what was probably meant.
@@ -490,7 +518,7 @@ fn brace_kinds_nest() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::LCurlyBracket,
             TokType::Identifier("f".to_string()),
@@ -505,7 +533,7 @@ fn brace_kinds_nest() {
             TokType::RCurlyBracket,
             // Back in the match body: the comma ending the arm is written.
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::FatArrow,
             TokType::Identifier("h".to_string()),
             TokType::LParen,
@@ -531,7 +559,7 @@ fn fn_body_stays_a_statement_body() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
             TokType::Identifier("g".to_string()),
             TokType::LParen,
@@ -543,7 +571,7 @@ fn fn_body_stays_a_statement_body() {
     );
     // A trait body holds signatures, which are statements too.
     assert_eq!(
-        lex_types("trait Show {\n    fn show(this): str\n    fn id(this): i32\n}\n"),
+        lex_types("trait Show {\n    fn show(&self): str\n    fn id(&self): i32\n}\n"),
         vec![
             TokType::Trait,
             TokType::Identifier("Show".to_string()),
@@ -551,7 +579,8 @@ fn fn_body_stays_a_statement_body() {
             TokType::Fn,
             TokType::Identifier("show".to_string()),
             TokType::LParen,
-            TokType::This,
+            TokType::Ampersand,
+            TokType::SelfKw,
             TokType::RParen,
             TokType::Colon,
             TokType::Str,
@@ -559,7 +588,8 @@ fn fn_body_stays_a_statement_body() {
             TokType::Fn,
             TokType::Identifier("id".to_string()),
             TokType::LParen,
-            TokType::This,
+            TokType::Ampersand,
+            TokType::SelfKw,
             TokType::RParen,
             TokType::Colon,
             TokType::I32,
@@ -627,7 +657,7 @@ fn splits_nested_generic_close() {
         vec![
             TokType::Identifier("bits".to_string()),
             TokType::RShift,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -636,7 +666,7 @@ fn splits_nested_generic_close() {
         vec![
             TokType::Identifier("bits".to_string()),
             TokType::RShiftEquals,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -653,7 +683,7 @@ fn comparison_does_not_open_generics() {
         vec![
             TokType::Identifier("a".to_string()),
             TokType::LessThan,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::And,
             TokType::Identifier("b".to_string()),
             TokType::RShift,
@@ -669,7 +699,7 @@ fn comparison_does_not_open_generics() {
             TokType::LParen,
             TokType::RParen,
             TokType::LessThan,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -692,7 +722,7 @@ fn generic_close_ends_statement() {
             TokType::Let,
             TokType::Identifier("w".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -705,18 +735,18 @@ fn lexes_range_operators() {
     assert_eq!(
         lex_types("0..10"),
         vec![
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::DotDot,
-            TokType::IntLiteral(10),
+            TokType::IntLiteral(10, None),
             TokType::Semicolon,
         ]
     );
     assert_eq!(
         lex_types("0..=10"),
         vec![
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::DotDotEquals,
-            TokType::IntLiteral(10),
+            TokType::IntLiteral(10, None),
             TokType::Semicolon,
         ]
     );
@@ -724,9 +754,9 @@ fn lexes_range_operators() {
     assert_eq!(
         lex_types("0x10..0x20"),
         vec![
-            TokType::IntLiteral(16),
+            TokType::IntLiteral(16, None),
             TokType::DotDot,
-            TokType::IntLiteral(32),
+            TokType::IntLiteral(32, None),
             TokType::Semicolon,
         ]
     );
@@ -743,9 +773,9 @@ fn lexes_range_operators() {
     assert_eq!(
         lex_types("1.5..2.5"),
         vec![
-            TokType::FloatLiteral(1.5),
+            TokType::FloatLiteral(1.5, None),
             TokType::DotDot,
-            TokType::FloatLiteral(2.5),
+            TokType::FloatLiteral(2.5, None),
             TokType::Semicolon,
         ]
     );
@@ -759,9 +789,9 @@ fn lexes_for_in_header() {
             TokType::For,
             TokType::Identifier("i".to_string()),
             TokType::In,
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::DotDot,
-            TokType::IntLiteral(10),
+            TokType::IntLiteral(10, None),
             TokType::LCurlyBracket,
             TokType::RCurlyBracket,
             TokType::Semicolon,
@@ -783,14 +813,14 @@ fn range_terminates_statement() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::DotDot,
-            TokType::IntLiteral(10),
+            TokType::IntLiteral(10, None),
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("y".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -801,13 +831,13 @@ fn range_terminates_statement() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::DotDot,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("y".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -819,11 +849,11 @@ fn range_terminates_statement() {
             TokType::LParen,
             TokType::Identifier("a".to_string()),
             TokType::LBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::DotDot,
             TokType::RBracket,
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RParen,
             TokType::Semicolon,
         ]
@@ -845,9 +875,9 @@ fn a_dot_before_a_number_makes_it_an_index() {
         vec![
             TokType::Identifier("t".to_string()),
             TokType::Dot,
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::Dot,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -859,16 +889,16 @@ fn a_dot_before_a_number_makes_it_an_index() {
             TokType::Let,
             TokType::Identifier("f".to_string()),
             TokType::Equals,
-            TokType::FloatLiteral(5.0),
+            TokType::FloatLiteral(5.0, None),
             TokType::Semicolon,
         ]
     );
     assert_eq!(
         lex_types("0..0.5"),
         vec![
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::DotDot,
-            TokType::FloatLiteral(0.5),
+            TokType::FloatLiteral(0.5, None),
             TokType::Semicolon,
         ]
     );
@@ -983,12 +1013,12 @@ fn control_flow_lexes_as_an_expression() {
             TokType::If,
             TokType::Identifier("c".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             // Nothing before the `}`, so the `1` is the block's value.
             TokType::RCurlyBracket,
             TokType::Else,
             TokType::LCurlyBracket,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
             TokType::Let,
@@ -1013,13 +1043,13 @@ fn control_flow_lexes_as_an_expression() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Comma,
             TokType::Underscore,
             TokType::FatArrow,
-            TokType::IntLiteral(3),
+            TokType::IntLiteral(3, None),
             TokType::Comma,
             // Two closers in a row, and no separator before either.
             TokType::RCurlyBracket,
@@ -1060,7 +1090,7 @@ fn break_carries_a_value_on_its_own_line() {
             TokType::True,
             TokType::LCurlyBracket,
             TokType::Break,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
@@ -1150,11 +1180,11 @@ fn struct_literal_is_not_a_block() {
             TokType::LCurlyValue,
             TokType::Identifier("x".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
             TokType::Identifier("y".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Comma,
             TokType::RCurlyBracket,
             // Outside the literal again, so the statement ends as usual.
@@ -1169,10 +1199,10 @@ fn struct_literal_is_not_a_block() {
             TokType::LCurlyValue,
             TokType::Identifier("x".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Identifier("y".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
@@ -1200,7 +1230,7 @@ fn struct_literal_is_not_a_block() {
             TokType::RCurlyBracket,
             TokType::Else,
             TokType::LCurlyBracket,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Comma,
             TokType::RCurlyBracket,
@@ -1219,7 +1249,7 @@ fn struct_literal_is_not_a_block() {
             TokType::LCurlyValue,
             TokType::Identifier("x".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::RCurlyBracket,
             TokType::Dot,
             TokType::Identifier("norm".to_string()),
@@ -1276,7 +1306,7 @@ fn struct_literal_is_not_a_block() {
     // around it, so its header has to be closed by that `}` — or it would still
     // be waiting when the literal below turned up, and swallow its brace.
     assert_eq!(
-        lex_types("trait S {\n    fn show(this): str\n}\nlet p = Point {\n    x: 1\n    y: 2\n}\n"),
+        lex_types("trait S {\n    fn show(&self): str\n}\nlet p = Point {\n    x: 1\n    y: 2\n}\n"),
         vec![
             TokType::Trait,
             TokType::Identifier("S".to_string()),
@@ -1284,7 +1314,8 @@ fn struct_literal_is_not_a_block() {
             TokType::Fn,
             TokType::Identifier("show".to_string()),
             TokType::LParen,
-            TokType::This,
+            TokType::Ampersand,
+            TokType::SelfKw,
             TokType::RParen,
             TokType::Colon,
             TokType::Str,
@@ -1297,13 +1328,13 @@ fn struct_literal_is_not_a_block() {
             TokType::LCurlyValue,
             TokType::Identifier("x".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             // Still a literal, so still no separator between the fields. Had
             // the stale header swallowed this brace, it would be a block and a
             // `;` would appear here.
             TokType::Identifier("y".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
@@ -1321,14 +1352,14 @@ fn close_brace_ends_the_line() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::Identifier("a".to_string()),
             TokType::RCurlyBracket,
             // The match is a statement; the `-1` below is its own.
             TokType::Semicolon,
             TokType::Minus,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -1339,12 +1370,12 @@ fn close_brace_ends_the_line() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::Identifier("a".to_string()),
             TokType::RCurlyBracket,
             TokType::Minus,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -1370,11 +1401,11 @@ fn close_brace_ends_the_line() {
             TokType::If,
             TokType::Identifier("c".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::RCurlyBracket,
             TokType::Else,
             TokType::LCurlyBracket,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
@@ -1387,13 +1418,13 @@ fn close_brace_ends_the_line() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::LCurlyBracket,
             TokType::Identifier("a".to_string()),
             TokType::RCurlyBracket,
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::FatArrow,
             TokType::Identifier("b".to_string()),
             TokType::RCurlyBracket,
@@ -1415,27 +1446,27 @@ fn lexes_collection_literals() {
             TokType::Identifier("a".to_string()),
             TokType::Equals,
             TokType::LBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RBracket,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("s".to_string()),
             TokType::Equals,
             TokType::LCurlyValue,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("m".to_string()),
             TokType::Equals,
             TokType::LCurlyValue,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
@@ -1451,11 +1482,11 @@ fn lexes_collection_literals() {
             TokType::LCurlyValue,
             TokType::StringLiteral("a".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
             TokType::StringLiteral("b".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Comma,
             TokType::RCurlyBracket,
             TokType::Dot,
@@ -1491,7 +1522,7 @@ fn lexes_collection_literals() {
             TokType::Identifier("m".to_string()),
             TokType::Equals,
             TokType::LCurlyValue,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Colon,
             TokType::LCurlyBracket,
             TokType::Identifier("f".to_string()),
@@ -1580,9 +1611,9 @@ fn header_gives_up_a_literal_brace() {
             // The iterable, not the body: nothing is inserted between its
             // elements, and the comma between them is written.
             TokType::LCurlyValue,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             // The body, still claimed by the `for`, and a statement body.
             TokType::LCurlyBracket,
@@ -1611,13 +1642,13 @@ fn header_gives_up_a_literal_brace() {
             TokType::HashTag,
             TokType::LCurlyValue,
             TokType::LCurlyValue,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Comma,
             TokType::LCurlyValue,
-            TokType::IntLiteral(3),
+            TokType::IntLiteral(3, None),
             TokType::RCurlyBracket,
             TokType::RCurlyBracket,
             TokType::LCurlyBracket,
@@ -1643,11 +1674,11 @@ fn header_gives_up_a_literal_brace() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::Identifier("a".to_string()),
             TokType::Comma,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::FatArrow,
             TokType::Identifier("b".to_string()),
             TokType::Comma,
@@ -1690,7 +1721,7 @@ fn statements_still_make_a_block() {
             TokType::Let,
             TokType::Identifier("a".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             // A statement body: the `let` inside decided it.
             TokType::Semicolon,
             TokType::Identifier("a".to_string()),
@@ -1751,11 +1782,11 @@ fn lexes_open_ranges() {
         toks.drain(..3); // the `let ... =` in front
         toks
     };
-    assert_eq!(range_only("let a = 1.."), vec![TokType::IntLiteral(1), TokType::DotDot]);
-    assert_eq!(range_only("let b = ..10"), vec![TokType::DotDot, TokType::IntLiteral(10)]);
+    assert_eq!(range_only("let a = 1.."), vec![TokType::IntLiteral(1, None), TokType::DotDot]);
+    assert_eq!(range_only("let b = ..10"), vec![TokType::DotDot, TokType::IntLiteral(10, None)]);
     assert_eq!(
         range_only("let c = ..=10"),
-        vec![TokType::DotDotEquals, TokType::IntLiteral(10)]
+        vec![TokType::DotDotEquals, TokType::IntLiteral(10, None)]
     );
     assert_eq!(range_only("let d = .."), vec![TokType::DotDot]);
 
@@ -1783,7 +1814,7 @@ fn lexes_wildcard() {
             TokType::Match,
             TokType::Identifier("x".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::FatArrow,
             TokType::Identifier("a".to_string()),
             TokType::Comma,
@@ -1830,9 +1861,9 @@ fn lexes_wildcard() {
             TokType::For,
             TokType::Underscore,
             TokType::In,
-            TokType::IntLiteral(0),
+            TokType::IntLiteral(0, None),
             TokType::DotDot,
-            TokType::IntLiteral(3),
+            TokType::IntLiteral(3, None),
             TokType::LCurlyBracket,
             TokType::RCurlyBracket,
             TokType::Semicolon,
@@ -1869,7 +1900,7 @@ fn a_name_comes_through_as_it_was_written() {
     // The three a text-level rewrite got wrong, none of which is a name.
     assert_eq!(
         lex_types("2_147_483_647"),
-        vec![TokType::IntLiteral(2_147_483_647), TokType::Semicolon]
+        vec![TokType::IntLiteral(2_147_483_647, None), TokType::Semicolon]
     );
     assert_eq!(
         lex_types("\"a_b\""),
@@ -1910,7 +1941,7 @@ fn wildcard_behaves_like_a_name_but_not_a_type() {
             TokType::Let,
             TokType::Identifier("y".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -1933,7 +1964,7 @@ fn wildcard_behaves_like_a_name_but_not_a_type() {
         vec![
             TokType::Underscore,
             TokType::LessThan,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::And,
             TokType::Identifier("b".to_string()),
             TokType::RShift,
@@ -1946,10 +1977,10 @@ fn wildcard_behaves_like_a_name_but_not_a_type() {
 // A `_` among digits separates them and is dropped from the value.
 #[test]
 fn wildcard_separates_digits() {
-    assert_eq!(lex_types("1_000_000")[0], TokType::IntLiteral(1_000_000));
-    assert_eq!(lex_types("0xFF_FF")[0], TokType::IntLiteral(0xFFFF));
-    assert_eq!(lex_types("0b1010_1010")[0], TokType::IntLiteral(0b1010_1010));
-    assert_eq!(lex_types("1_0.2_5")[0], TokType::FloatLiteral(10.25));
+    assert_eq!(lex_types("1_000_000")[0], TokType::IntLiteral(1_000_000, None));
+    assert_eq!(lex_types("0xFF_FF")[0], TokType::IntLiteral(0xFFFF, None));
+    assert_eq!(lex_types("0b1010_1010")[0], TokType::IntLiteral(0b1010_1010, None));
+    assert_eq!(lex_types("1_0.2_5")[0], TokType::FloatLiteral(10.25, None));
     // Junk that is not a separator is still the malformed literal it was.
     assert!(matches!(lex_types("12abc")[0], TokType::Error(_)));
     assert!(matches!(lex_types("0xFFZZ")[0], TokType::Error(_)));
@@ -1957,6 +1988,77 @@ fn wildcard_separates_digits() {
     assert_eq!(
         lex_types("_1000")[0],
         TokType::Identifier("_1000".to_string())
+    );
+}
+
+// A number may name its own type: `5_u8`, `2.6_f32`. The `_` is the digit
+// separator doing what it always does, so `5u8` says the same thing.
+#[test]
+fn a_number_may_name_its_type() {
+    use lex::tokens::NumSuffix;
+
+    assert_eq!(lex_types("5_u8")[0], TokType::IntLiteral(5, Some(NumSuffix::U8)));
+    assert_eq!(lex_types("5u8")[0], TokType::IntLiteral(5, Some(NumSuffix::U8)));
+    assert_eq!(lex_types("2.6_f32")[0], TokType::FloatLiteral(2.6, Some(NumSuffix::F32)));
+    assert_eq!(
+        lex_types("1_000_i128")[0],
+        TokType::IntLiteral(1000, Some(NumSuffix::I128))
+    );
+    // A based literal takes one too, where the suffix is no digit of its base.
+    assert_eq!(lex_types("0xFF_u8")[0], TokType::IntLiteral(255, Some(NumSuffix::U8)));
+    assert_eq!(
+        lex_types("0b1010_i32")[0],
+        TokType::IntLiteral(10, Some(NumSuffix::I32))
+    );
+    // The digits of a based literal are read as greedily as ever, so a suffix
+    // spelled in them is not one: `0x1_f32` is the number 0x1f32.
+    assert_eq!(lex_types("0x1_f32")[0], TokType::IntLiteral(0x1f32, None));
+
+    // A float suffix on a whole number makes a float of it.
+    assert_eq!(lex_types("5_f32")[0], TokType::FloatLiteral(5.0, Some(NumSuffix::F32)));
+    assert_eq!(
+        lex_types("0b1010_f64")[0],
+        TokType::FloatLiteral(10.0, Some(NumSuffix::F64))
+    );
+
+    // An integer suffix on a float names a type the value cannot have.
+    assert!(matches!(lex_types("2.6_u8")[0], TokType::Error(_)));
+    // A word that names no type at all.
+    assert!(matches!(lex_types("5_u9")[0], TokType::Error(_)));
+    assert!(matches!(lex_types("5_bool")[0], TokType::Error(_)));
+    assert!(matches!(lex_types("0xFF_u9")[0], TokType::Error(_)));
+
+    // The suffix ends the number, so what follows reads as it always did.
+    assert_eq!(
+        lex_types("1_u8..2_u8"),
+        vec![
+            TokType::IntLiteral(1, Some(NumSuffix::U8)),
+            TokType::DotDot,
+            TokType::IntLiteral(2, Some(NumSuffix::U8)),
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("x + 1_i64"),
+        vec![
+            TokType::Identifier("x".to_string()),
+            TokType::Plus,
+            TokType::IntLiteral(1, Some(NumSuffix::I64)),
+            TokType::Semicolon,
+        ]
+    );
+    // A tuple index carries none: the number after a `.` is a member's place,
+    // and `f32` there would be a field name if it were anything.
+    assert_eq!(
+        lex_types("t.0.1"),
+        vec![
+            TokType::Identifier("t".to_string()),
+            TokType::Dot,
+            TokType::IntLiteral(0, None),
+            TokType::Dot,
+            TokType::IntLiteral(1, None),
+            TokType::Semicolon,
+        ]
     );
 }
 
@@ -1971,22 +2073,22 @@ fn lexes_const_declaration() {
             TokType::Colon,
             TokType::I32,
             TokType::Equals,
-            TokType::IntLiteral(20),
+            TokType::IntLiteral(20, None),
             TokType::Semicolon,
         ]
     );
     // Its `;` is inserted at a line break like any other statement's, and it
     // takes a visibility like any other declaration.
     assert_eq!(
-        lex_types("public const PI: f64 = 3.5\nlet r = PI\n"),
+        lex_types("pub const PI: f64 = 3.5\nlet r = PI\n"),
         vec![
-            TokType::Public,
+            TokType::Pub,
             TokType::Const,
             TokType::Identifier("PI".to_string()),
             TokType::Colon,
             TokType::F64,
             TokType::Equals,
-            TokType::FloatLiteral(3.5),
+            TokType::FloatLiteral(3.5, None),
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("r".to_string()),
@@ -2021,7 +2123,7 @@ fn const_makes_a_brace_a_block() {
             TokType::Colon,
             TokType::I32,
             TokType::Equals,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
             TokType::Identifier("N".to_string()),
             TokType::RCurlyBracket,
@@ -2235,9 +2337,9 @@ fn an_operand_keeps_the_ampersand_pair_whole() {
         ("f() && b", TokType::RParen),
         ("xs[0] && b", TokType::RBracket),
         ("if c { x } && b", TokType::RCurlyBracket),
-        ("1 && b", TokType::IntLiteral(1)),
+        ("1 && b", TokType::IntLiteral(1, None)),
         ("true && b", TokType::True),
-        ("this && b", TokType::This),
+        ("self && b", TokType::SelfKw),
     ] {
         let toks = lex_types(source);
         let at = toks.iter().position(|t| *t == left).unwrap();
@@ -2297,6 +2399,119 @@ fn an_operand_keeps_the_ampersand_pair_whole() {
     );
 }
 
+// A glob is one token glued out of `::` and `*`, which is what lets it end a
+// statement where neither half could.
+#[test]
+fn a_glob_is_one_token_and_a_space_undoes_it() {
+    assert_eq!(
+        lex_types("import a::*;"),
+        vec![
+            TokType::Import,
+            TokType::Identifier("a".to_string()),
+            TokType::Glob,
+            TokType::Semicolon,
+        ]
+    );
+    // A space ends the `::` at itself, as a space ends an attribute at its name.
+    assert_eq!(
+        lex_types("import a:: *;"),
+        vec![
+            TokType::Import,
+            TokType::Identifier("a".to_string()),
+            TokType::ColonColon,
+            TokType::Star,
+            TokType::Semicolon,
+        ]
+    );
+    // The glob ends the statement, so the newline inserts the `;` nobody wrote.
+    assert_eq!(
+        lex_types("import a::*\nfn main() {}\n"),
+        vec![
+            TokType::Import,
+            TokType::Identifier("a".to_string()),
+            TokType::Glob,
+            TokType::Semicolon,
+            TokType::Fn,
+            TokType::Identifier("main".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::LCurlyBracket,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A bare `*` still ends nothing: an operand is owed after it.
+    assert_eq!(
+        lex_types("let x = a *\nb\n"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::Identifier("a".to_string()),
+            TokType::Star,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+}
+
+// An import's group is a `{` after a `::`, and nothing else is: it holds entries
+// and so takes no inserted separators, however many lines it runs to.
+#[test]
+fn an_import_group_is_a_value_brace() {
+    let one = lex_types("import a::{b};");
+    assert_eq!(one[3], TokType::LCurlyValue);
+
+    let many = lex_types("import a::{b, c};");
+    assert_eq!(many[3], TokType::LCurlyValue);
+
+    // A group over several lines gathers no semicolons, its commas being
+    // written; the one after the `}` is the statement's own.
+    assert_eq!(
+        lex_types("import a::{\n    b,\n    c\n}\n"),
+        vec![
+            TokType::Import,
+            TokType::Identifier("a".to_string()),
+            TokType::ColonColon,
+            TokType::LCurlyValue,
+            TokType::Identifier("b".to_string()),
+            TokType::Comma,
+            TokType::Identifier("c".to_string()),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+// A visibility's `(suite)` is a prefix of the declaration it marks, so its `)`
+// ends no statement -- the rule `%repr(C)` already follows.
+#[test]
+fn pub_suite_ends_no_statement() {
+    assert_eq!(
+        lex_types("pub(suite)\nfn f();"),
+        vec![
+            TokType::Pub,
+            TokType::LParen,
+            TokType::Suite,
+            TokType::RParen,
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+}
+
+// A root is a word, so a type argument list holding one has to survive it.
+#[test]
+fn a_root_keeps_a_generic_context_open() {
+    let toks = lex_types("let m: Map<str, List<super::Node>> = empty()\n");
+    // The `>>` splits, which is what says the context was still open.
+    let closes = toks.iter().filter(|t| **t == TokType::GreaterThan).count();
+    assert_eq!(closes, 2, "{:?}", toks);
+}
+
 // `*` is prefix and infix both, and where it stands is the whole of what tells
 // a mutable reference from a product.
 #[test]
@@ -2327,7 +2542,7 @@ fn star_is_prefix_and_infix() {
             TokType::Semicolon,
             TokType::Identifier("m".to_string()),
             TokType::StarEquals,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::Semicolon,
         ]
     );
@@ -2387,7 +2602,7 @@ fn lexes_reference_types() {
             TokType::Let,
             TokType::Identifier("w".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2421,13 +2636,13 @@ fn lexes_array_and_view_types() {
             TokType::Colon,
             TokType::I32,
             TokType::LBracket,
-            TokType::IntLiteral(8),
+            TokType::IntLiteral(8, None),
             TokType::RBracket,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2457,9 +2672,9 @@ fn lexes_array_and_view_types() {
             TokType::Star,
             TokType::Identifier("a".to_string()),
             TokType::LBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::DotDot,
-            TokType::IntLiteral(3),
+            TokType::IntLiteral(3, None),
             TokType::RBracket,
             TokType::Semicolon,
         ]
@@ -2478,7 +2693,7 @@ fn lexes_array_and_view_types() {
             TokType::LBracket,
             TokType::RBracket,
             TokType::LBracket,
-            TokType::IntLiteral(3),
+            TokType::IntLiteral(3, None),
             TokType::RBracket,
             TokType::RParen,
             TokType::Semicolon,
@@ -2505,7 +2720,7 @@ fn lexes_array_and_view_types() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2560,7 +2775,7 @@ fn null_is_a_type_and_a_literal() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2619,9 +2834,9 @@ fn every_loop_breaks_with_a_value() {
 #[test]
 fn lexes_namespace_declaration() {
     assert_eq!(
-        lex_types("public namespace limits {\n    const MAX: i32 = 255\n    fn clamp(n: i32): i32;\n}\nlet n = limits::MAX\n"),
+        lex_types("pub namespace limits {\n    const MAX: i32 = 255\n    fn clamp(n: i32): i32;\n}\nlet n = limits::MAX\n"),
         vec![
-            TokType::Public,
+            TokType::Pub,
             TokType::Namespace,
             TokType::Identifier("limits".to_string()),
             TokType::LCurlyBracket,
@@ -2630,7 +2845,7 @@ fn lexes_namespace_declaration() {
             TokType::Colon,
             TokType::I32,
             TokType::Equals,
-            TokType::IntLiteral(255),
+            TokType::IntLiteral(255, None),
             TokType::Semicolon,
             TokType::Fn,
             TokType::Identifier("clamp".to_string()),
@@ -2702,7 +2917,7 @@ fn namespace_paths_use_the_scope_separator() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2714,14 +2929,14 @@ fn namespace_paths_use_the_scope_separator() {
 #[test]
 fn lexes_attributes() {
     assert_eq!(
-        lex_types("%inline\n%repr(C)\npublic fn f();"),
+        lex_types("%inline\n%repr(C)\npub fn f();"),
         vec![
             TokType::AttrName("inline".to_string()),
             TokType::AttrName("repr".to_string()),
             TokType::LParen,
             TokType::Identifier("C".to_string()),
             TokType::RParen,
-            TokType::Public,
+            TokType::Pub,
             TokType::Fn,
             TokType::Identifier("f".to_string()),
             TokType::LParen,
@@ -2736,7 +2951,7 @@ fn lexes_attributes() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
             TokType::AttrName("inline".to_string()),
             TokType::Fn,
@@ -2768,9 +2983,9 @@ fn splits_a_prefix_pipe_pair() {
             TokType::Match,
             TokType::Identifier("n".to_string()),
             TokType::LCurlyBracket,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Pipe,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::FatArrow,
             TokType::Identifier("small".to_string()),
             TokType::Comma,
@@ -2819,7 +3034,7 @@ fn splits_a_prefix_pipe_pair() {
             TokType::Pipe,
             TokType::Identifier("x".to_string()),
             TokType::Star,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RParen,
             TokType::Semicolon,
         ]
@@ -2923,7 +3138,7 @@ fn lexes_const_fn_impl_generics_and_where() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2944,7 +3159,7 @@ fn lexes_move_closures() {
             TokType::Pipe,
             TokType::Identifier("n".to_string()),
             TokType::Plus,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2974,13 +3189,13 @@ fn lexes_grouped_types() {
             TokType::I32,
             TokType::RParen,
             TokType::LBracket,
-            TokType::IntLiteral(8),
+            TokType::IntLiteral(8, None),
             TokType::RBracket,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -2997,14 +3212,14 @@ fn lexes_grouped_types() {
             TokType::I32,
             TokType::RParen,
             TokType::LBracket,
-            TokType::IntLiteral(8),
+            TokType::IntLiteral(8, None),
             TokType::RBracket,
             TokType::GreaterThan,
             TokType::Semicolon,
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -3060,7 +3275,7 @@ fn lexes_the_five_attributes() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -3099,7 +3314,7 @@ fn lexes_the_never_type() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -3117,7 +3332,7 @@ fn lexes_the_never_type() {
             TokType::Let,
             TokType::Identifier("n".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -3137,9 +3352,9 @@ fn lexes_the_never_type() {
 fn lexes_unsafe() {
     // On a signature it stands after the visibility and in front of the `fn`.
     assert_eq!(
-        lex_types("public unsafe fn write(dst: *u8[], n: u64);"),
+        lex_types("pub unsafe fn write(dst: *u8[], n: u64);"),
         vec![
-            TokType::Public,
+            TokType::Pub,
             TokType::Unsafe,
             TokType::Fn,
             TokType::Identifier("write".to_string()),
@@ -3172,7 +3387,7 @@ fn lexes_unsafe() {
             TokType::Let,
             TokType::Identifier("x".to_string()),
             TokType::Equals,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Semicolon,
         ]
     );
@@ -3242,10 +3457,10 @@ fn unsafe_claims_only_a_brace_that_follows_it() {
             TokType::LCurlyValue,
             TokType::Identifier("x".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(1),
+            TokType::IntLiteral(1, None),
             TokType::Identifier("y".to_string()),
             TokType::Colon,
-            TokType::IntLiteral(2),
+            TokType::IntLiteral(2, None),
             TokType::RCurlyBracket,
             TokType::Semicolon,
         ]
