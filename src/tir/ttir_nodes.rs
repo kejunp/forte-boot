@@ -76,9 +76,31 @@ pub enum Ty {
     },
     Run(TyId),
     Tuple(Vec<TyId>),
+    // A fn as a value, which is what a closure is and what a fn handed to one
+    // is. `is_unsafe` rides along because calling through the value needs the
+    // same guard calling the declaration does (section 2); `const` does not,
+    // being a fact about whether the declaration folds rather than about the
+    // value.
     Fn {
-        params: Vec<TyId>,
-        ret:    TyId,
+        params:    Vec<TyId>,
+        ret:       TyId,
+        is_unsafe: bool,
+    },
+    // `let gc x = ...`: the binding owns its value through the collector. It
+    // is a type and not a flag on the binding, which is the question section 8
+    // leaves open answered one way -- so a `gc` value handed to a function is
+    // still one, and the signature can say so.
+    GC(TyId),
+    // A generic parameter: the `T` of `fn f<T>(x: T)`. `index` is its place in
+    // the declaration's own list, which is what an argument at a call is put
+    // in; `name` is for saying which one in a message.
+    //
+    // It is here because nothing monomorphises on the way to the TTIR: a
+    // generic fn arrives with one body and its parameters still standing, and
+    // `x` above has to have a type like anything else.
+    Param {
+        name:  String,
+        index: usize,
     },
     // What an expression the checker could not type is given, so one mistake
     // costs one message and not every message after it.

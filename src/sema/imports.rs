@@ -53,6 +53,7 @@ use crate::tir::lower::Lowerer;
 use crate::tir::tir_nodes::{
     TIRImportLeaf, TIRItemId, TIRItemKind, TIRProgram, TIRVis, TIRBinding,
 };
+use crate::tir::ttir_nodes::TyId;
 
 // What a module is written in. A path names a module and not a file, and this
 // is the whole of the difference between the two.
@@ -74,7 +75,7 @@ const SUITE: &str = "suite";
 // not yours". Whether it leaves is `exported(vis)`.
 //
 // What kind of thing it is, this pass says; what its type is, it does not --
-// see the note over `Type` below.
+// see the note over the type checker's vocabulary below.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Symbol {
     pub name: String,
@@ -898,11 +899,16 @@ fn quoted(names: &[&str]) -> String {
 // for whoever works the types out. They are kept in one piece rather than grown
 // a field at a time, which is what would leave two passes describing one thing
 // differently.
+//
+// A type is a `TyId`, which is a handle into the one arena the checker owns --
+// the `types` of the `TTIRProgram` it is building. There is no second spelling
+// of a type here: `Ty` in `tir::ttir_nodes` is what a type is, in this pass and
+// in the typed tree alike, so nothing has to be translated on the way out.
 
 pub struct FnSig {
     name: String,
     params: Vec<Param>,
-    return_type: Option<Type>,
+    return_type: Option<TyId>,
     is_pub: bool,
     suite_id: usize,
     mangled_name: Option<String>,
@@ -910,7 +916,7 @@ pub struct FnSig {
 
 pub struct Param {
     name: String,
-    ty: Type,
+    ty: TyId,
 }
 
 pub struct StructDef {
@@ -924,44 +930,12 @@ pub type Field = Param;
 
 pub struct Variable {
     name: String,
-    ty: Type,
+    ty: TyId,
     is_mut: bool,
     is_pub: bool,
     suite_id: usize,
 }
 
-pub enum Type {
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
-    U8,
-    U16,
-    U32,
-    U64,
-    U128,
-    F32,
-    F64,
-    Bool,
-    Char,
-    Str,
-    Null,
-    Never,
-    Struct(usize), // Index in the struct table
-    Borrow {
-        ty: usize, // Index into the type arena
-        mutability: bool,
-    },
-    Ptr(usize), // Index into the type arena
-    Array { // [T; N]
-        ty: usize,
-        size: usize,
-    },
-    Slice(usize), // &[T]
-    Tuple(Vec<usize>), // (1, 2, 3)
-    GC(usize),
-}
 
 #[cfg(test)]
 mod tests;
