@@ -204,6 +204,8 @@ fn fits_in_generics(t: &TokType) -> bool {
             // here: a `<` in front of one was a comparison.
             | TokType::Ampersand
             | TokType::Star
+            // A pointer type, e.g. `<ptr u8>`.
+            | TokType::Ptr
             | TokType::I8 | TokType::I16 | TokType::I32 | TokType::I64 | TokType::I128
             | TokType::U8 | TokType::U16 | TokType::U32 | TokType::U64 | TokType::U128
             | TokType::F32 | TokType::F64
@@ -358,6 +360,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "char" => TokType::Char,
         "str" => TokType::Str,
         "never" => TokType::Never,
+        "ptr" => TokType::Ptr,
 
         // Declarations
         "fn" => TokType::Fn,
@@ -377,6 +380,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "namespace" => TokType::Namespace,
         "macro" => TokType::Macro,
         "unsafe" => TokType::Unsafe,
+        "gc" => TokType::Gc,
 
         // Control flow
         "if" => TokType::If,
@@ -394,6 +398,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "as" => TokType::As,
         "where" => TokType::Where,
         "move" => TokType::Move,
+        "addr" => TokType::Addr,
 
         // Literals
         "true" => TokType::True,

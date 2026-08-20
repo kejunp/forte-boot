@@ -23,45 +23,45 @@ impl Parser {
 
             // ---- Struct literals -----------------------------------------
             // <field_init> -> IDENTIFIER : <expression>
-            129 => {
+            130 => {
                 let name = self.text(c[0]);
                 self.at(ASTNodeKind::FieldInit { name, value: c[2] }, c[0])
             }
             // <field_init_list> -> <field_init>
-            130 => self.one(c[0]),
+            131 => self.one(c[0]),
             // <field_init_list> -> <field_init_list> , <field_init>
-            131 => self.grew(c[0], c[2]),
+            132 => self.grew(c[0], c[2]),
             // <field_init_list_opt> -> ε
-            132 => self.here(ASTNodeKind::List(Vec::new())),
+            133 => self.here(ASTNodeKind::List(Vec::new())),
             // <field_init_list_opt> -> <field_init_list>
-            133 => self.pass(c[0]),
-            // <field_init_list_opt> -> <field_init_list> ,
             134 => self.pass(c[0]),
+            // <field_init_list_opt> -> <field_init_list> ,
+            135 => self.pass(c[0]),
 
             // ---- Maps ----------------------------------------------------
             // <map_entry> -> <expression> : <expression>
-            227 => self.at(ASTNodeKind::MapEntry { key: c[0], value: c[2] }, c[0]),
+            230 => self.at(ASTNodeKind::MapEntry { key: c[0], value: c[2] }, c[0]),
             // <map_entry_list> -> <map_entry>
-            228 => self.one(c[0]),
+            231 => self.one(c[0]),
             // <map_entry_list> -> <map_entry_list> , <map_entry>
-            229 => self.grew(c[0], c[2]),
+            232 => self.grew(c[0], c[2]),
             // <map_entry_list_opt> -> ε
             // `{}` is the empty map, and so is `{:}` below: the one spelling
             // that has to be written out is the empty *set*.
-            230 => self.here(ASTNodeKind::List(Vec::new())),
+            233 => self.here(ASTNodeKind::List(Vec::new())),
             // <map_entry_list_opt> -> :
-            231 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
+            234 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
             // <map_entry_list_opt> -> <map_entry_list>
-            232 => self.pass(c[0]),
+            235 => self.pass(c[0]),
             // <map_entry_list_opt> -> <map_entry_list> ,
-            233 => self.pass(c[0]),
+            236 => self.pass(c[0]),
             // <map_literal> -> VALUE_LCURLY <map_entry_list_opt> }
-            234 => self.at(
+            237 => self.at(
                 ASTNodeKind::Map { hashed: false, entries: self.list(c[1]) },
                 c[0],
             ),
             // <map_literal> -> # VALUE_LCURLY <map_entry_list_opt> }
-            235 => self.at(
+            238 => self.at(
                 ASTNodeKind::Map { hashed: true, entries: self.list(c[2]) },
                 c[0],
             ),
@@ -69,18 +69,18 @@ impl Parser {
             // ---- Sets ----------------------------------------------------
             // <set_element_list> -> ,
             // `{,}` is the empty set, written out because `{}` is the empty map.
-            337 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
+            341 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
             // <set_element_list> -> <expression_seq>
-            338 => self.pass(c[0]),
+            342 => self.pass(c[0]),
             // <set_element_list> -> <expression_seq> ,
-            339 => self.pass(c[0]),
+            343 => self.pass(c[0]),
             // <set_literal> -> VALUE_LCURLY <set_element_list> }
-            340 => self.at(
+            344 => self.at(
                 ASTNodeKind::Set { hashed: false, elems: self.list(c[1]) },
                 c[0],
             ),
             // <set_literal> -> # VALUE_LCURLY <set_element_list> }
-            341 => self.at(
+            345 => self.at(
                 ASTNodeKind::Set { hashed: true, elems: self.list(c[2]) },
                 c[0],
             ),

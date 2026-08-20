@@ -19,6 +19,9 @@ pub enum TokType {
     // The empty type: no values at all, so an expression of it argues with
     // nothing beside it. `null` is its opposite — one value, no information.
     Never,
+    // `ptr T`: an address and nothing more. Not a reference — nothing is
+    // checked about what it points at — so only an unsafe statement holds one.
+    Ptr,
 
     // Declarations
     Fn,
@@ -45,6 +48,10 @@ pub enum TokType {
     // Marks a fn whose caller carries an obligation the checker cannot see,
     // and prefixes the statement — usually a block — that discharges one.
     Unsafe,
+    // `let gc x = ...`: the binding owns its value through the collector rather
+    // than through a scope. It stands between the intro and the name, so it
+    // annotates the binding and not the value — see `ASTNodeKind::Variable`.
+    Gc,
 
     // Control flow
     If,
@@ -101,6 +108,11 @@ pub enum TokType {
     // opens a character literal, and which one it is depends on what follows
     // the name -- see `opens_lifetime`.
     Lifetime(String),
+
+    // Takes the address of a place, `addr x`, and is the only thing that makes
+    // a `ptr`. A word rather than a sigil because `&` and `*` are the two
+    // references and neither had a spelling left over.
+    Addr,
 
     // Arithmetic operators
     Plus,

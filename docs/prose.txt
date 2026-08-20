@@ -457,6 +457,46 @@ through it is the reference's own business — "&" says no and "*" says yes.
 So "let p: *i32" never re-aims and still writes into what it refers to, which
 is the pair section 5 lays out beside its "var" counterpart.
 
+<gc_opt>. "gc" stands between the intro and the name — "let gc x", "var gc
+x" — and says who releases the value: the collector rather than the scope the
+binding was written in. It annotates the binding and not the value, which is
+why it sits where it does and why the same value may be bound with it in one
+place and without it in another. It is orthogonal to the intro: "let" and
+"var" still draw the line they always drew, and "gc" says nothing about
+whether the name may be assigned again.
+
+What may stand under one is a heap value or a pointer, and nothing else. A
+map or a set is the first — "let gc table = #{1: 2, 3: 4}" — and a "ptr" the
+second, whichever of the two ways made it:
+
+    let gc table = #{1: 2, 3: 4}     // a hash map, on the heap
+    let gc seen  = {1, 2}            // a set, likewise
+    unsafe let gc p = addr b.p       // a pointer, and still unsafe
+
+Everything else is refused where it is written. A number, a boolean, a
+character, a string literal, a tuple, a closure, a range and an "T[8]" are
+all values that live where they stand, and a collector has nothing to do with
+one; a reference is not a pointer either, since what it borrows is owned
+somewhere else already — that is the whole of why it is not one. The word
+would be saying who releases something that no one releases:
+
+    let gc n = 1                     // refused: this is a number
+    let gc r: &i32 = f()             // refused: this is a reference
+
+The rule is held against the type where one is written and against the value
+where none is, so "let gc p: ptr u8 = alloc()" is a pointer whatever "alloc"
+turns out to return. Where neither settles it — a call, a name, a struct
+literal, a named type — nothing is said until the checker knows what the type
+is; a struct holding what it allocated is exactly the shape a container has
+here (section 8), so a struct literal is where a heap value is most likely to
+be rather than least.
+
+"gc" and "unsafe" are unrelated words about the same statement. An "addr"
+makes a pointer, which is both what a collector may hold and what the caller
+has to answer for, so "let gc p = addr b.p" needs the guard exactly as it
+would without the "gc" — the word buys no licence, and the two are written
+together where both apply.
+
 Both halves after the name are optional, which is what the <const_decl> below
 is contrasted with. The type is inferred from the initializer where one is
 written and written out where none is, "let grid: i32[ROWS][ROWS]"; a
@@ -573,9 +613,11 @@ trailing expression is worth, and what a loop that nobody broke out of yields
 (sections 4 and 5.1). There is no "void" — the type that would have been
 called that has a value, and can be named, passed and stored like any other.
 
-It is not a null pointer. A reference is never null (<ref_type> below), so
-nothing in the language reads "null" as an absent something; it is the
-present nothing-in-particular.
+It is not a null pointer. A reference is never null (<ref_type> below), and
+neither is a "ptr" (<ptr_type>), so nothing in the language reads "null" as
+an absent something; it is the present nothing-in-particular. "let p: ptr T =
+null" is refused, and refused as a type error like any other — the one value
+of the type "null" is not an address, and there is no address it stands for.
 
 "never" is its opposite, and the other type in that list whose values are
 worth counting: it has none. Nothing is ever of type "never", which is why an
@@ -638,6 +680,52 @@ The two compose with everything a type does: "&Point", "*i32", "Vec<&str>",
 "&Map<str, *Node>". A reference binds looser than an array suffix, so
 "&i32[]" is a reference to a run of i32 — the view of <array_suffix> below —
 and an array of references is said with a <grouped_type>, "(&i32)[8]".
+
+<ptr_type>. "ptr T" is an address and nothing else. It is the one type the
+checker has nothing to say about: no lifetime, so nothing says how long what
+it addresses is good for; no aliasing rule, so any number of them may point
+at one place while a "*T" is out on it; and no promise that anything is there
+at all. Everything "&" and "*" are worth is exactly what a "ptr" gives up,
+which is why it is written with a word rather than with a third sigil beside
+them — it is not a third kind of reference.
+
+    fn write(dst: ptr u8, src: ptr u8, n: u64)
+
+    struct Buf {
+        p:   ptr u8,
+        len: u64,
+    }
+
+It takes no <lifetime_opt> for the reason above: there is no lifetime to
+sharpen, and "ptr 'a T" would be a promise the type is not making. It is
+otherwise a type like any other and stands wherever one does — in a field, in
+a signature, in a type argument, after the "as" of a cast — and binds looser
+than an array suffix as a reference does, so "ptr u8[]" points at a run of u8
+and "(ptr u8)[8]" is eight pointers.
+
+What a "ptr" is not is null. There is no absent address, "null" is the one
+value of the type "null" and not an address at all, and the "null" a C header
+writes is answered here by a "ptr" that the code answers for or by a type
+that says the absence outright. That is the same rule <ref_type> keeps, and
+it is kept for the same reason: a type that admits one value nobody meant is
+a type every reader has to check.
+
+Where "ptr" is written is not itself the unsafe thing — a struct may hold one
+and a signature may take one, as "write" does above. What needs the word is
+making one and reaching through one, and "unsafe" is where both go
+(section 4):
+
+    unsafe let p = addr b.len
+    unsafe {
+        write(buf.p, src, n)
+    }
+
+A "ptr" is made by "addr" (section 5) and by a cast from another one, and it
+is not reached by anything a reference is reached by: a "&T" stands for the
+place it refers to and is read and written as that place, and a "ptr" is a
+number until an unsafe statement says otherwise. What a read through one is
+spelled, and whether the arithmetic C does on one is written here at all, is
+open (section 8).
 
 <receiver>. A method borrows its receiver by writing the reference on it:
 "fn norm(&self): f64" reads the value and "fn scale(*self, k: f64)" writes to
@@ -879,6 +967,21 @@ read those as "; or the following }". An <expr_stmt> is the exception: the
 obligations the statement takes on have been met. The checker stops asking
 there, and whoever wrote the word is answering for it.
 
+Three things take one on: a call to an "unsafe fn" (section 2), an "addr",
+and a read or a write through the "ptr" an "addr" gave back (section 3). The
+word covers the whole statement it stands in front of and not the line it is
+written on, so the block form answers for everything under its braces:
+
+    unsafe {
+        let p = addr b.len      // both are answered for
+        write(dst, p, 8)
+    }
+
+It reaches down a statement and not into a declaration. A fn written inside a
+guarded block is a declaration like any other and section 2 already says the
+word tells a body nothing, so its statements answer for themselves — the same
+rule that makes an "unsafe fn" no different inside than out.
+
 What it prefixes is any <statement> at all, and that is the whole rule — the
 familiar block form is not a case of its own but what the rule already says,
 since a block is an expression and an expression is a statement:
@@ -1060,6 +1163,31 @@ for the other direction, since a reference already is what it refers to.
 element reached from one. "&x" asks less: any place at all, and a value with
 no home of its own, which the compiler gives one. Both are rules for the
 checker, as is everything about how long the reference stays good.
+
+"addr x" is the third of them and the odd one: what it gives back is a "ptr"
+and not a reference (section 3), so none of the above is asked of it and none
+of it is promised. It takes a place, as "*x" does — there is no address of a
+value that has none — and it takes nothing else, no lifetime and no claim
+that x outlives what is done with the answer.
+
+It is a word where the other two are sigils because it is not one of them.
+"&" and "*" say which of the two references is wanted and the choice between
+them is the whole of what they say; "addr" is a fourth thing standing where
+they stand, and spelling it as a third sigil would have put it in a series it
+does not belong to.
+
+The word only ever stands inside an "unsafe" statement (section 4). That is
+the one place in the grammar where a rule is about the word above it rather
+than about what is beside it, and it is where the checker stops answering for
+what happens next: an "addr" is the compiler being told that whoever wrote it
+knows something it does not.
+
+    unsafe let p = addr buf[0]
+    let q = addr buf[0]         // error: `addr` needs an `unsafe`
+
+A pointer that a call gave back needs no word of its own, the call having
+been answered for already — "unsafe let p = malloc(n)" is how one usually
+arrives, and the "unsafe" there is the call's.
 
 <postfix_op>. Those are, in order: a field or method access, the "." of a
 tuple member, a "::" reaching into a namespace, a module or a type, a call,
@@ -1719,6 +1847,39 @@ answer is not obvious from the rules alone.
     any other, so an unsafe call inside one writes the word — the opposite
     convention, where the marking on the signature reaches the whole body, is
     the alternative that was not taken.
+  - "ptr T" is a raw pointer and "addr x" makes one, and both are section 3's.
+    Settled as far as the grammar goes: "ptr" is a type and not a third
+    <ref_op>, "addr" is a <unary_op> and not a sigil, and neither takes a
+    lifetime. What is not settled is what may be done with one. There is no
+    spelling here for a read or a write through a pointer, none for the
+    arithmetic C does on one, and none for the cast between a "ptr" and an
+    integer — each of the three is a thing the language will have to say
+    before anything can be written with these that could not be written
+    without them. The one answer given in advance is that none of them will
+    be null: a "ptr" admits no absent address, as a reference admits none.
+  - "gc" is a word on a binding, and what may stand under one is a heap value
+    or a pointer (section 2, <var_decl>). Settled as far as the grammar and
+    the front end go: it sits between the intro and the name so that it
+    annotates the binding, it is orthogonal to "let" and "var", and it buys
+    no licence an "unsafe" would otherwise have to give — "unsafe let gc p =
+    addr b.p" writes both words because the two say different things about
+    the same statement. Lowering turns down what it can see is neither a heap
+    value nor a pointer, which is every literal, tuple, closure, range, array
+    and reference; what it cannot see — a call, a name, a struct literal, a
+    named type — it leaves alone, since the type is the checker's to work
+    out and a struct holding what it allocated is exactly where a heap value
+    is likely to be. So the rule is enforced in two halves, and only the
+    first half exists.
+    What is not settled is nearly everything a collector is. There is no
+    spelling for when it runs, nothing that says whether a "gc" binding may
+    be moved out of or handed to a function that took an ordinary one, and no
+    account of how it meets the "Drop" and the moving-by-default above — a
+    value with a release the compiler places and a value with a release the
+    collector places are two answers to one question, and the language now
+    has both words and only one of the answers. Nor is it said whether "gc"
+    reaches a type ("GC<T>" as a type a signature could take) or stays a
+    property of the binding it is written on, which is the difference between
+    a word the front end spends and one the whole checker carries.
   - A parameter may take bounds inline and in a <where_clause_opt> at once,
     and the two are joined; a <where_pred> must constrain a parameter the
     signature introduced, so "where i32: Show" is refused (section 2).

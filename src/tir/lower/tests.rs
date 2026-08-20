@@ -125,6 +125,108 @@ fn unsafe_becomes_a_flag_on_the_statement() {
     assert!(matches!(stmts[2], TIRStmt::Expr { is_unsafe: false, .. }));
 }
 
+// The last thing in a block with no `;` is the block's value -- unless the word
+// is in front of it, which makes a statement of it and leaves the block `null`
+// (section 4). Both spellings of the tail reach here, the guarded declaration
+// and the guarded expression.
+#[test]
+fn a_block_ending_in_an_unsafe_statement_is_null() {
+    for source in [
+        "fn main() {\n    unsafe free(p)\n}\n",
+        "fn main() {\n    unsafe let b = malloc(n)\n}\n",
+        "fn main() {\n    unsafe {\n        free(p)\n    }\n}\n",
+    ] {
+        let tir = clean(source);
+        let f = only_fn(&tir);
+        match body_of(&tir, f) {
+            TIRExprKind::Block { stmts, tail } => {
+                assert_eq!(stmts.len(), 1, "{}", source);
+                assert!(tail.is_none(), "{}", source);
+                assert!(
+                    matches!(
+                        stmts[0],
+                        TIRStmt::Expr { is_unsafe: true, .. } | TIRStmt::Let { is_unsafe: true, .. }
+                    ),
+                    "{}",
+                    source
+                );
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+}
+
+// A `ptr` lowers to a type of its own -- no `TIRRefOp` and no lifetime, since a
+// pointer draws neither distinction.
+#[test]
+fn a_pointer_lowers_to_a_type_with_nothing_on_it() {
+    let tir = clean("struct Buf {\n    p: ptr u8,\n}\n");
+    let fields = match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::Struct { fields, .. } => fields,
+        other => panic!("{:?}", other),
+    };
+    let inner = match tir.types[fields[0].ty].kind {
+        TIRTypeKind::Ptr(inner) => inner,
+        ref other => panic!("{:?}", other),
+    };
+    assert_eq!(tir.types[inner].kind, TIRTypeKind::Prim(TIRPrim::U8));
+}
+
+// The name a macro put under a `ptr` arrives as the expression it was written
+// as, and becomes a type here as it does anywhere else a substituted name lands
+// in a type position.
+#[test]
+fn a_pointer_holds_a_name_a_macro_put_there() {
+    let tir = clean("macro hold($t:ident) {\n    unsafe let p: ptr $t = addr y\n}\nfn main() {\n    @hold(Node);\n}\n");
+    let pointed = tir.types.iter().any(|t| match t.kind {
+        TIRTypeKind::Ptr(inner) => matches!(
+            &tir.types[inner].kind,
+            TIRTypeKind::Named { path, args } if path == &vec!["Node".to_string()] && args.is_empty()
+        ),
+        _ => false,
+    });
+    assert!(pointed, "no pointer to `Node`: {:#?}", tir.types);
+}
+
+// `addr` is what makes one, and the checker stops asking only where the word
+// was written -- so a guarded statement carries it and a bare one is refused.
+#[test]
+fn addr_is_answered_for_by_the_unsafe_around_it() {
+    let tir = clean("fn main() {\n    unsafe let p = addr x;\n}\n");
+    let f = only_fn(&tir);
+    let stmts = match body_of(&tir, f) {
+        TIRExprKind::Block { stmts, .. } => stmts,
+        other => panic!("{:?}", other),
+    };
+    let init = match stmts[0] {
+        TIRStmt::Let { is_unsafe: true, init: Some(init), .. } => init,
+        ref other => panic!("{:?}", other),
+    };
+    assert!(matches!(
+        tir.exprs[init].kind,
+        TIRExprKind::Unary { op: TIRUnaryOp::Addr, .. }
+    ));
+
+    // The guard reaches down the whole statement, not just its first line.
+    assert!(errors_in("fn main() {\n    unsafe {\n        let p = addr x;\n    }\n}\n")
+        .is_empty());
+
+    let errors = errors_in("fn main() {\n    let p = addr x;\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("`addr` needs an `unsafe`"), "{}", errors[0]);
+}
+
+// The word tells a body nothing, so a declaration written inside a guarded
+// statement starts over: its own statements answer for themselves.
+#[test]
+fn a_declaration_inside_an_unsafe_starts_over() {
+    let errors = errors_in(
+        "fn main() {\n    unsafe {\n        fn f() {\n            let p = addr x;\n        }\n    }\n}\n",
+    );
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("`addr` needs an `unsafe`"), "{}", errors[0]);
+}
+
 // The three payload nodes become one enum, leaving no fourth state to handle.
 #[test]
 fn the_three_payloads_become_one() {
@@ -307,6 +409,9 @@ fn the_whole_language_lowers() {
                       while y { continue }\n\
                       for i in 0..=9 { break }\n\
                       unsafe q = 1;\n\
+                      unsafe let p: ptr u8 = addr x.a;\n\
+                      let gc r = #{1: 2};\n\
+                      unsafe var gc s = addr x.a;\n\
                       match x {\n\
                           1..=2 => a,\n\
                           -3 => b,\n\
@@ -319,12 +424,13 @@ fn the_whole_language_lowers() {
                   namespace n {\n\
                       const K: i32 = 1;\n\
                       var g: i32 = 2;\n\
+                      pub let gc t: ptr u8 = z();\n\
                       enum E { A, B(i32), C { x: i32 }, D = 4 }\n\
                       struct S<T> { priv v: T[] }\n\
                       trait W { fn w<T>(&self, t: T): str where T: Ord; }\n\
                       impl W for S<i32> { priv fn w(&self): str { P { r: 1 } } }\n\
                       impl S<i32> { fn take(self); fn put(*self); }\n\
-                      struct H<'a, 'b: 'a> { v: &'a i32[], w: *'b i32 }\n\
+                      struct H<'a, 'b: 'a> { v: &'a i32[], w: *'b i32, p: ptr u8 }\n\
                   }\n";
     let tir = clean(source);
     assert!(!tir.roots.is_empty());
@@ -421,4 +527,123 @@ fn a_function_attribute_is_refused_on_a_type_alias() {
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("`%inline` goes on a function"), "{}", messages[0]);
     assert!(messages[0].contains("this is a type alias"), "{}", messages[0]);
+}
+
+
+// ---- gc -------------------------------------------------------------------
+
+// The word becomes a flag on the binding, wherever the binding stands: a
+// `<var_decl>` in a block is a `Let` and the same one at file scope a `Global`,
+// and `gc` is written on either.
+#[test]
+fn gc_becomes_a_flag_on_the_binding() {
+    let tir = clean("let gc table = #{1: 2, 3: 4}\nfn main() {\n    let gc seen = {1, 2}\n    var gc m = {\"a\": 1}\n}\n");
+
+    let global = tir.roots.iter().find_map(|&r| match &tir.items[r].kind {
+        TIRItemKind::Global { is_gc, intro, name, .. } => Some((*is_gc, *intro, name.clone())),
+        _ => None,
+    });
+    assert_eq!(global, Some((true, TIRIntro::Let, TIRBinding::Name("table".to_string()))));
+
+    let f = tir.roots.iter().find_map(|&r| match &tir.items[r].kind {
+        TIRItemKind::Fn(f) => Some(f),
+        _ => None,
+    }).expect("a function");
+    let TIRExprKind::Block { stmts, .. } = body_of(&tir, f) else { panic!("a block") };
+    let flags: Vec<(bool, TIRIntro)> = stmts
+        .iter()
+        .map(|s| match s {
+            TIRStmt::Let { is_gc, intro, .. } => (*is_gc, *intro),
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(flags, vec![(true, TIRIntro::Let), (true, TIRIntro::Var)]);
+}
+
+// Left off, the flag is off: `gc` is written or it is not, and a binding
+// without it is the binding the language always had.
+#[test]
+fn a_binding_without_gc_is_unchanged() {
+    let tir = clean("fn main() {\n    let n = 1\n}\n");
+    let TIRExprKind::Block { stmts, .. } = body_of(&tir, only_fn(&tir)) else { panic!("a block") };
+    assert!(matches!(stmts[0], TIRStmt::Let { is_gc: false, .. }));
+}
+
+// What a collector can hold: a map or a set, and a pointer to one. A cast is
+// the second way to make a pointer, `addr` being the first.
+#[test]
+fn gc_takes_a_heap_value_or_a_pointer() {
+    for source in [
+        "fn main() {\n    let gc m = #{1: 2, 3: 4}\n}\n",
+        "fn main() {\n    let gc s = {1, 2}\n}\n",
+        "fn main() {\n    let gc m = {}\n}\n",
+        "unsafe fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n",
+        "unsafe fn f(q: ptr u8) {\n    unsafe let gc r = q as ptr u64\n}\n",
+        "fn main() {\n    let gc p: ptr u8 = alloc()\n}\n",
+        // A named type is the resolver's to follow, and a container a library
+        // wrote is one -- so nothing is said about either here.
+        "fn main() {\n    let gc v: Vec<i32> = empty()\n}\n",
+        "fn main() {\n    let gc v = make()\n}\n",
+        "fn main() {\n    let gc b = Buf { n: 1 }\n}\n",
+    ] {
+        assert!(errors_in(source).is_empty(), "{} was turned down", source);
+    }
+}
+
+// What it cannot: the value is seen to be neither, so the word has nothing to
+// collect and the caret sits on what was written instead.
+#[test]
+fn gc_turns_down_what_is_plainly_neither() {
+    let cases = [
+        ("fn main() {\n    let gc n = 1\n}\n", "a number"),
+        ("fn main() {\n    let gc s = \"hi\"\n}\n", "a string literal"),
+        ("fn main() {\n    let gc b = true\n}\n", "a boolean"),
+        ("fn main() {\n    let gc a = [1, 2, 3]\n}\n", "an array, which is owned where it stands"),
+        ("fn main() {\n    let gc t = (1, 2)\n}\n", "a tuple"),
+        ("fn main() {\n    let gc f = |x: i32| x\n}\n", "a closure"),
+        ("fn main() {\n    let gc r = 0..10\n}\n", "a range"),
+        ("fn main() {\n    let gc n = a + b\n}\n", "a number"),
+        ("fn main() {\n    let gc c = a == b\n}\n", "a boolean"),
+        // A reference is not a pointer: what it borrows is owned elsewhere
+        // already, which is the whole of why it is not one.
+        ("fn main() {\n    let gc r = &x\n}\n", "a reference"),
+        ("fn main() {\n    let gc r: &i32 = f()\n}\n", "a reference"),
+        ("fn main() {\n    let gc n: i32 = f()\n}\n", "a primitive"),
+        ("fn main() {\n    let gc a: i32[8] = f()\n}\n", "an array, which is owned where it stands"),
+    ];
+    for (source, what) in cases {
+        let errors = errors_in(source);
+        assert_eq!(errors.len(), 1, "{}\n{:#?}", source, errors);
+        assert!(
+            errors[0].starts_with("error: `gc` needs a heap value or a pointer"),
+            "{}\n{}",
+            source,
+            errors[0]
+        );
+        assert!(errors[0].contains(&format!("^ this is {}", what))
+                || errors[0].contains(&format!("~ this is {}", what)),
+                "{}\n{}", source, errors[0]);
+    }
+}
+
+// A written type is what a `gc` binding is held against, so an initialiser
+// that disagrees with it is one mistake and not two -- and which of them is
+// wrong is a question about types, which is `sema`'s.
+#[test]
+fn a_written_type_settles_it_alone() {
+    assert!(errors_in("fn main() {\n    let gc p: ptr u8 = 1\n}\n").is_empty());
+    let errors = errors_in("fn main() {\n    let gc n: i32 = #{1: 2}\n}\n");
+    assert_eq!(errors.len(), 1, "{:#?}", errors);
+    assert!(errors[0].contains("this is a primitive"), "{}", errors[0]);
+}
+
+// `gc` and `unsafe` are unrelated words about the same statement: `addr` makes
+// a pointer, which is what the collector may hold and what the caller has to
+// answer for. Written without the guard, only the second is a mistake.
+#[test]
+fn gc_does_not_answer_for_addr() {
+    let errors = errors_in("fn f(b: Buf) {\n    let gc p = addr b.p\n}\n");
+    assert_eq!(errors.len(), 1, "{:#?}", errors);
+    assert!(errors[0].starts_with("error: `addr` needs an `unsafe`"), "{}", errors[0]);
+    assert!(errors_in("fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n").is_empty());
 }

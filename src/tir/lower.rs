@@ -24,6 +24,19 @@ use super::tir_nodes::*;
 // written -- see `docs/prose.txt` section 1, which is where the set is closed.
 const ATTRS: &[&str] = &["symbol", "must_use", "inline", "noinline", "deprecated", "test"];
 
+// What a `gc` binding was found to hold. Three answers and not two because
+// this pass has no types: only what the syntax settles on its own is decided
+// here, and `Unknown` is everything whose type `sema` is the first to know.
+enum Holds {
+    // A heap value or a pointer: what a `gc` binding is for.
+    Held,
+    // Plainly neither, and what it plainly is instead -- the words go under
+    // the caret, so they read on from "this is".
+    Not(&'static str),
+    // Nothing the syntax settles.
+    Unknown,
+}
+
 // What an attribute is being put on, for the one check that needs to know.
 // `%deprecated` goes on anything; the other five are a function's.
 #[derive(Clone, Copy, PartialEq)]
@@ -36,11 +49,15 @@ pub struct Lowerer<'a> {
     parser: &'a Parser,
     tir:    TIRProgram,
     errors: Diagnostics,
+    // Whether what is being lowered stands inside an `unsafe` statement. A
+    // count and not a flag: `unsafe { unsafe f() }` nests, and the inner word
+    // must not put the outer one out when it is done with.
+    guarded: usize,
 }
 
 impl<'a> Lowerer<'a> {
     pub fn new(parser: &'a Parser) -> Lowerer<'a> {
-        Lowerer { parser, tir: TIRProgram::default(), errors: Diagnostics::new() }
+        Lowerer { parser, tir: TIRProgram::default(), errors: Diagnostics::new(), guarded: 0 }
     }
 
     pub fn errors(&self) -> &Diagnostics {
@@ -317,14 +334,18 @@ impl<'a> Lowerer<'a> {
 
             // A `<var_decl>` here is at file or namespace scope, which is what
             // makes it a global; the same node inside a block is a `Let`.
-            ASTNodeKind::Variable { attrs, vis, intro, name, ty, init } => {
+            ASTNodeKind::Variable { attrs, vis, intro, gc, name, ty, init } => {
                 let attrs = self.attrs(&attrs, Target::Other("a variable")).common;
+                if gc {
+                    self.gc_check(ty, init);
+                }
                 let ty = ty.map(|t| self.ty(t));
                 let init = init.map(|i| self.expr(i));
                 TIRItemKind::Global {
                     vis: visibility(vis),
                     attrs,
                     intro: intro_of(intro),
+                    is_gc: gc,
                     name: binding(&name),
                     ty,
                     init,
@@ -464,6 +485,7 @@ impl<'a> Lowerer<'a> {
                 });
                 TIRTypeKind::Ref { op: ref_op(op), life, inner: self.ty(inner) }
             }
+            ASTNodeKind::PtrType(inner) => TIRTypeKind::Ptr(self.ty(inner)),
             ASTNodeKind::Array { elem, len } => {
                 TIRTypeKind::Array { elem: self.ty(elem), len: self.expr(len) }
             }
@@ -532,6 +554,93 @@ impl<'a> Lowerer<'a> {
         self.push_pat(kind, id)
     }
 
+    // ---- gc ---------------------------------------------------------------
+
+    // Holds a `gc` binding against the one rule there is about it: what stands
+    // under one has to be something a collector can hold, which is a value on
+    // the heap or a pointer to one. A number is not collected, and saying `gc`
+    // over one is a mistake about what the word does rather than a shorthand
+    // for anything.
+    //
+    // The type decides where one is written, and the value where none is: a
+    // `let gc x: ptr u8 = f()` says pointer whatever `f` turns out to return,
+    // and turning the initialiser down as well would be reporting one mistake
+    // twice. Neither written leaves nothing to hold it against, which is
+    // `sema`'s to settle along with what the binding's type even is.
+    fn gc_check(&mut self, ty: Option<ASTNodeId>, init: Option<ASTNodeId>) {
+        let (at, holds) = match (ty, init) {
+            (Some(t), _) => (t, self.holds_ty(t)),
+            (None, Some(i)) => (i, self.holds_expr(i)),
+            (None, None) => return,
+        };
+        let Holds::Not(what) = holds else { return };
+        self.errors.push(
+            Diagnostic::error("`gc` needs a heap value or a pointer".to_string(),
+                              self.span(at))
+                .with_label(format!("this is {}", what))
+                .with_help("a map, a set or a `ptr` is what a `gc` binding holds"),
+        );
+    }
+
+    // What a written type says a `gc` binding would hold. A `<named_type>` is
+    // the interesting one and the one nothing can be said about here: `Map<..>`
+    // and the growable containers a library writes are both named types, and
+    // which of them a name reaches is the resolver's to say (section 8).
+    fn holds_ty(&self, id: ASTNodeId) -> Holds {
+        match self.kind(id) {
+            ASTNodeKind::PtrType(_) => Holds::Held,
+            // `_` was written to be worked out; so is this.
+            ASTNodeKind::Named { .. } | ASTNodeKind::Infer => Holds::Unknown,
+            ASTNodeKind::Prim(_) => Holds::Not("a primitive"),
+            // A reference is not a pointer: it is good for a while and says so,
+            // and what it borrows is owned somewhere else already.
+            ASTNodeKind::RefType { .. } => Holds::Not("a reference"),
+            ASTNodeKind::Array { .. } => Holds::Not("an array, which is owned where it stands"),
+            ASTNodeKind::Run(_) => Holds::Not("a run, which only a reference holds"),
+            ASTNodeKind::TupleType(_) => Holds::Not("a tuple"),
+            _ => Holds::Unknown,
+        }
+    }
+
+    // The same question of a value. A literal answers it outright, and so does
+    // an `addr`, which is the only thing that makes a pointer. Everything that
+    // has to be resolved or typed first -- a call, a name, a struct literal, a
+    // block -- is left alone: a struct holding what it allocated is exactly the
+    // shape a container has here, so a struct literal is where a heap value is
+    // most likely to be rather than least.
+    fn holds_expr(&self, id: ASTNodeId) -> Holds {
+        match self.kind(id) {
+            ASTNodeKind::Map { .. } | ASTNodeKind::Set { .. } => Holds::Held,
+            ASTNodeKind::Unary { op: ASTUnaryOp::Addr, .. } => Holds::Held,
+            // `q as ptr u64` makes a pointer of one; a cast to anything else
+            // is worth exactly what that type is worth.
+            ASTNodeKind::Cast { ty, .. } => self.holds_ty(ty),
+
+            ASTNodeKind::Literal(value) => Holds::Not(match value {
+                ASTLit::Int(..) | ASTLit::Float(..) => "a number",
+                ASTLit::Str(_) => "a string literal",
+                ASTLit::Char(_) => "a character",
+                ASTLit::Bool(_) => "a boolean",
+                ASTLit::Null => "`null`",
+            }),
+            ASTNodeKind::ArrayLit(_) => Holds::Not("an array, which is owned where it stands"),
+            ASTNodeKind::TupleLit(_) => Holds::Not("a tuple"),
+            ASTNodeKind::Closure { .. } => Holds::Not("a closure"),
+            ASTNodeKind::Range { .. } => Holds::Not("a range"),
+            ASTNodeKind::Unary { op: ASTUnaryOp::Ref(_), .. } => Holds::Not("a reference"),
+            ASTNodeKind::Unary { op: ASTUnaryOp::Neg, .. } => Holds::Not("a number"),
+            ASTNodeKind::Unary { op: ASTUnaryOp::Not, .. } => Holds::Not("a boolean"),
+            ASTNodeKind::Binary { op, .. } => Holds::Not(match op {
+                ASTBinOp::Eq | ASTBinOp::Ne | ASTBinOp::Lt | ASTBinOp::Gt
+                | ASTBinOp::Le | ASTBinOp::Ge | ASTBinOp::And | ASTBinOp::Or
+                | ASTBinOp::Xor => "a boolean",
+                _ => "a number",
+            }),
+
+            _ => Holds::Unknown,
+        }
+    }
+
     // ---- Statements ------------------------------------------------------
 
     // `None` where the node was a macro declaration the expander should already
@@ -540,25 +649,45 @@ impl<'a> Lowerer<'a> {
         match self.kind(id) {
             // The word becomes a flag: there are exactly two statements it can
             // stand in front of, and a node wrapped round one said no more.
-            ASTNodeKind::Unsafe(inner) => self.stmt(inner, true),
+            // What it guards is lowered with the count up, so an `addr`
+            // anywhere under it is answered for.
+            ASTNodeKind::Unsafe(inner) => {
+                self.guarded += 1;
+                let out = self.stmt(inner, true);
+                self.guarded -= 1;
+                out
+            }
             ASTNodeKind::ExprStmt(e) => {
                 Some(TIRStmt::Expr { is_unsafe, expr: self.expr(e) })
             }
-            ASTNodeKind::Variable { attrs, intro, name, ty, init, .. } => {
+            ASTNodeKind::Variable { attrs, intro, gc, name, ty, init, .. } => {
                 // A `let` in a block takes no visibility, and the grammar gives
                 // it none; attributes are still checked where they were written.
                 self.attrs(&attrs, Target::Other("a variable"));
+                if gc {
+                    self.gc_check(ty, init);
+                }
                 let ty = ty.map(|t| self.ty(t));
                 let init = init.map(|i| self.expr(i));
                 Some(TIRStmt::Let {
                     is_unsafe,
+                    is_gc: gc,
                     intro: intro_of(intro),
                     name: binding(&name),
                     ty,
                     init,
                 })
             }
-            _ => self.item(id).map(TIRStmt::Item),
+            // A declaration written inside an unsafe statement is still a
+            // declaration, and section 2 says the word tells a body nothing --
+            // so the count starts over at one, exactly as it does for the
+            // body of an `unsafe fn`.
+            _ => {
+                let outer = std::mem::replace(&mut self.guarded, 0);
+                let out = self.item(id).map(TIRStmt::Item);
+                self.guarded = outer;
+                out
+            }
         }
     }
 
@@ -637,6 +766,14 @@ impl<'a> Lowerer<'a> {
             },
 
             ASTNodeKind::Unary { op, operand } => {
+                if op == ASTUnaryOp::Addr && self.guarded == 0 {
+                    self.errors.push(
+                        Diagnostic::error("`addr` needs an `unsafe`".to_string(),
+                                          self.span(id))
+                            .with_label("this makes a pointer")
+                            .with_note("write `unsafe` in front of the statement it is in"),
+                    );
+                }
                 TIRExprKind::Unary { op: unary_op(op), operand: self.expr(operand) }
             }
             ASTNodeKind::Binary { op, lhs, rhs } => {
@@ -735,16 +872,34 @@ impl<'a> Lowerer<'a> {
         // `<var_head>` too. Only an expression is the block's value; a
         // declaration there is a statement like any other, and the block yields
         // `null` as one with nothing at the end does.
+        //
+        // `unsafe` is the third thing it holds, and the word makes a statement
+        // of whatever it prefixes: a block ending in one is `null` however well
+        // what follows the word would have read as a value (section 4). It is
+        // taken off here rather than in `stmt`, which is handed statements and
+        // never the bare expression this slot has.
+        let mut is_unsafe = false;
+        let mut tail = tail;
+        while let Some(ASTNodeKind::Unsafe(inner)) = tail.map(|t| self.kind(t)) {
+            is_unsafe = true;
+            tail = Some(inner);
+        }
+        self.guarded += is_unsafe as usize;
         let tail = match tail {
             None => None,
-            Some(t) if self.is_value(t) => Some(self.expr(t)),
-            Some(t) => {
-                if let Some(stmt) = self.stmt(t, false) {
+            Some(t) if !self.is_value(t) => {
+                if let Some(stmt) = self.stmt(t, is_unsafe) {
                     out.push(stmt);
                 }
                 None
             }
+            Some(t) if is_unsafe => {
+                out.push(TIRStmt::Expr { is_unsafe: true, expr: self.expr(t) });
+                None
+            }
+            Some(t) => Some(self.expr(t)),
         };
+        self.guarded -= is_unsafe as usize;
         self.push_expr(TIRExprKind::Block { stmts: out, tail }, id)
     }
 
@@ -756,7 +911,6 @@ impl<'a> Lowerer<'a> {
             | ASTNodeKind::Const { .. }
             | ASTNodeKind::TypeAlias { .. }
             | ASTNodeKind::Fn { .. } => false,
-            ASTNodeKind::Unsafe(inner) => self.is_value(inner),
             _ => true,
         }
     }
@@ -776,7 +930,13 @@ fn visibility(v: ASTVisibility) -> TIRVis {
 }
 
 fn import_leaf(l: &ASTImportLeaf) -> TIRImportLeaf {
-    TIRImportLeaf { path: l.path.clone(), alias: l.alias.clone(), glob: l.glob }
+    TIRImportLeaf {
+        path:  l.path.clone(),
+        alias: l.alias.clone(),
+        glob:  l.glob,
+        line:  l.line,
+        col:   l.col,
+    }
 }
 
 fn self_of(s: ASTSelf) -> TIRSelf {
@@ -833,6 +993,7 @@ fn unary_op(op: ASTUnaryOp) -> TIRUnaryOp {
         ASTUnaryOp::Not => TIRUnaryOp::Not,
         ASTUnaryOp::Neg => TIRUnaryOp::Neg,
         ASTUnaryOp::Ref(r) => TIRUnaryOp::Ref(ref_op(r)),
+        ASTUnaryOp::Addr => TIRUnaryOp::Addr,
     }
 }
 

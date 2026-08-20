@@ -191,6 +191,44 @@ fn parses_unsafe() {
     accepts_body("unsafe fn write(n: u64) {\n    f()\n}");
 }
 
+// `ptr T` is a type and `addr x` makes one. Neither is a reference: "ptr" is no
+// third <ref_op> and "addr" no third sigil, so each is a word, and the pointer
+// takes no lifetime -- how long what it addresses is good for is exactly what
+// it does not say.
+#[test]
+fn parses_pointers() {
+    // A type stands wherever a type stands: a parameter, a return, a field, an
+    // alias, a variant's payload, a type argument and the `as` of a cast.
+    accepts("fn write(dst: ptr u8, src: ptr u8, n: u64);\n");
+    accepts("fn alloc(n: u64): ptr u8;\n");
+    accepts("struct Buf {\n    p: ptr u8,\n    len: u64,\n}\n");
+    accepts("type Raw = ptr u8\n");
+    accepts("enum Slot {\n    Filled(ptr u8),\n}\n");
+    accepts("fn f<T>(p: ptr T): ptr T where T: Ord;\n");
+    accepts_body("let v: Vec<ptr u8> = empty()\nlet m: Map<str, Vec<ptr u8>> = empty()");
+    accepts_body("let q = p as ptr u64\nlet r = p as ptr ptr Node");
+    accepts_body("let t: (ptr u8, u64) = f()");
+    // One nests in the other, and the suffix binds tighter as it does under a
+    // reference: `ptr u8[]` points at a run and `(ptr u8)[8]` is eight of them.
+    accepts_body("let n: ptr ptr Node = f()");
+    accepts_body("let a: ptr u8[] = f()\nlet b: (ptr u8)[8] = g()");
+    // `addr` binds as a <unary_op>, so a postfix chain is inside it and
+    // anything infix is outside.
+    accepts_body("unsafe let p = addr x");
+    accepts_body("unsafe let p = addr b.len");
+    accepts_body("unsafe let p = addr buf[0]");
+    accepts_body("unsafe f(addr x, addr p.q.r)");
+    accepts_body("unsafe let n = addr y + 1");
+    accepts_body("unsafe {\n    let p: ptr u8 = addr b.len\n    write(dst, p, 8)\n}");
+    // A pointer takes no <lifetime_opt>, and neither word is a name any more.
+    assert!(recognise("fn f(p: ptr 'a u8);\n").is_err());
+    assert!(recognise("fn f(p: ptr);\n").is_err());
+    assert!(recognise("fn main() {\n    let ptr = 1\n}\n").is_err());
+    assert!(recognise("fn main() {\n    let addr = 1\n}\n").is_err());
+    // `addr` wants an operand: the word alone is not an expression.
+    assert!(recognise("fn main() {\n    unsafe let p = addr\n}\n").is_err());
+}
+
 // `&` and `|` between two operands. Both already spelled other things -- a
 // reference, a closure's parameters, a pattern's alternatives -- and each of
 // those has to go on reading as it did.

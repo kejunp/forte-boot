@@ -244,11 +244,19 @@
 
 <var_decl>              ::= <var_head> ";"
 
-<var_head>              ::= <var_intro> <binding_name> <type_annotation_opt>
-                            <initializer_opt>
+<var_head>              ::= <var_intro> <gc_opt> <binding_name>
+                            <type_annotation_opt> <initializer_opt>
 
 <var_intro>             ::= "let"
                           | "var"
+
+# `gc` says the binding owns its value through the collector rather than
+# through the scope it was written in. It sits between the intro and the name
+# because it annotates the binding: `let gc x` and `var gc x` are both said,
+# and what may stand on the right is a rule about the value rather than a
+# spelling — only a heap value or a pointer, which `tir::lower` turns down.
+<gc_opt>                ::= <empty>
+                          | "gc"
 
 <initializer_opt>       ::= <empty>
                           | "=" <expression>
@@ -267,6 +275,7 @@
 <const_expr>            ::= <expression>
 
 <type>                  ::= <ref_type>
+                          | <ptr_type>
                           | <base_type> <array_suffix_list>
 
 # A reference may name how long it is good for. Left out, the checker works it
@@ -275,6 +284,10 @@
 
 <ref_op>                ::= "&"
                           | "*"
+
+# A raw pointer takes no <lifetime_opt>: how long it is good for is exactly what
+# a pointer does not say, which is why only an unsafe statement may hold one.
+<ptr_type>              ::= "ptr" <type>
 
 <lifetime>              ::= LIFETIME
 
@@ -495,6 +508,7 @@
 # compares, and there is no reading of the `<` after a cast that is a `<` and a
 # comparison at the same time. `n as (Vec<i32>)` says the other thing.
 <cast_type>             ::= <ref_op> <cast_type>
+                          | "ptr" <cast_type>
                           | <cast_base> <array_suffix_list>
 
 <cast_base>             ::= <primitive_type>
@@ -506,9 +520,13 @@
 <unary>                 ::= <unary_op> <unary>
                           | <postfix>
 
+# "addr" is here and not among the <ref_op>s: what it makes is an address and
+# not a reference, and it is the only one of the four that a safe statement may
+# not write.
 <unary_op>              ::= "!"
                           | "-"
                           | <ref_op>
+                          | "addr"
 
 <postfix>               ::= <primary>
                           | <postfix> <postfix_op>
@@ -816,7 +834,8 @@ CHAR_LITERAL            ::= "'" <char_item> "'"
                           | "for"     | "in"     | "return"   | "break"
                           | "continue"| "match"  | "as"       | "where"
                           | "move"    | "true"   | "false"    | "self"
-                          | "super"   | "suite"  | "unsafe"   | "_"
+                          | "super"   | "suite"  | "unsafe"   | "ptr"
+                          | "addr"    | "gc"     | "_"
 
 <comment>               ::= "//" <line_char_list>
                           | "/*" <any_char_list> "*/"

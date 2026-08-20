@@ -170,6 +170,9 @@ pub enum TIRItemKind {
         vis:   TIRVis,
         attrs: TIRAttrs,
         intro: TIRIntro,
+        // The `gc` the binding was written with, already held against the rule
+        // that only a heap value or a pointer may be under one.
+        is_gc: bool,
         name:  TIRBinding,
         ty:    Option<TIRTypeId>,
         init:  Option<TIRExprId>,
@@ -280,6 +283,10 @@ pub enum TIRTypeKind {
         life:  Option<String>,
         inner: TIRTypeId,
     },
+    // `ptr T`: an address, and nothing about what is at it. No lifetime and no
+    // `TIRRefOp` -- a pointer draws neither distinction, which is why only an
+    // unsafe statement may hold one.
+    Ptr(TIRTypeId),
     // `T[8]`: owned, its length in its type.
     Array {
         elem: TIRTypeId,
@@ -307,6 +314,10 @@ pub enum TIRGenericArg {
 pub enum TIRStmt {
     Let {
         is_unsafe: bool,
+        // As on a `Global`: the word is spent and what is left is the flag.
+        // `gc` and `unsafe` are unrelated -- `unsafe let gc p = addr x` is
+        // both, since `addr` answers to the one and the pointer to the other.
+        is_gc:     bool,
         intro:     TIRIntro,
         name:      TIRBinding,
         ty:        Option<TIRTypeId>,
@@ -597,6 +608,10 @@ pub struct TIRImportLeaf {
     pub path:  Vec<String>,
     pub alias: Option<String>,
     pub glob:  bool,
+    // Where the leaf was written. An item's own position is the `import`'s, and
+    // a group holds a leaf the resolver has to be able to point at by itself.
+    pub line:  usize,
+    pub col:   usize,
 }
 
 // How a method takes its receiver: `self` by value, `&self` to read, `*self` to
@@ -637,6 +652,8 @@ pub enum TIRUnaryOp {
     Neg,
     // Taking a reference: `&x` and `*x`.
     Ref(TIRRefOp),
+    // `addr x`: the address of a place, as a `ptr`.
+    Addr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

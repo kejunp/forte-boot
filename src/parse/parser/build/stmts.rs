@@ -13,11 +13,11 @@ impl Parser {
         Some(match rule_id {
             // ---- Statements ----------------------------------------------
             // <statement> -> <declaration> | <unsafe_stmt> | <expr_stmt>
-            346 | 347 | 348 => self.pass(c[0]),
+            350 | 351 | 352 => self.pass(c[0]),
             // <statement_list> -> ε
-            349 => self.here(ASTNodeKind::List(Vec::new())),
+            353 => self.here(ASTNodeKind::List(Vec::new())),
             // <statement_list> -> <statement_list> <statement>
-            350 => self.grew(c[0], c[1]),
+            354 => self.grew(c[0], c[1]),
 
             // ---- Blocks --------------------------------------------------
             // <block> -> { <statement_list> <block_tail_opt> }
@@ -35,9 +35,9 @@ impl Parser {
 
             // ---- Conditionals --------------------------------------------
             // <header_expr> -> <assignment>
-            169 => self.pass(c[0]),
+            172 => self.pass(c[0]),
             // <if_expr> -> if <header_expr> <block> <elif_list> <else_opt>
-            170 => self.at(
+            173 => self.at(
                 ASTNodeKind::If {
                     cond: c[1],
                     then: c[2],
@@ -49,20 +49,20 @@ impl Parser {
 
             // ---- Loops ---------------------------------------------------
             // <for_expr> -> for <binding_name> in <header_expr> <block>
-            150 => self.at(
+            151 => self.at(
                 ASTNodeKind::For { name: self.binding(c[1]), iter: c[3], body: c[4] },
                 c[0],
             ),
 
             // ---- Loops, continued ----------------------------------------
             // <while_expr> -> while <header_expr> <block>
-            417 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
+            423 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
 
             // ---- unsafe --------------------------------------------------
             // <unsafe_stmt> -> unsafe <expr_stmt>
-            381 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            387 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
             // <unsafe_stmt> -> unsafe <var_decl>
-            382 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            388 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

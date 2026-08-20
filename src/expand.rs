@@ -135,6 +135,7 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         }
         ASTNodeKind::Discriminant(id)
         | ASTNodeKind::Run(id)
+        | ASTNodeKind::PtrType(id)
         | ASTNodeKind::ExprStmt(id)
         | ASTNodeKind::Unsafe(id) => out.push(id),
         ASTNodeKind::MacroDecl { attrs, params, body, .. } => {

@@ -137,6 +137,25 @@ impl Parser {
         }
     }
 
+    // One leaf of an import's tree, standing where its path does. A group holds
+    // several and each is reported on its own, so the position is the leaf's
+    // and not the `import`'s -- see `ASTImportLeaf`.
+    pub(super) fn leaf(
+        &self,
+        path: ASTNodeId,
+        alias: Option<String>,
+        glob: bool,
+    ) -> ASTImportLeaf {
+        let at = self.get_node(path);
+        ASTImportLeaf {
+            path: self.path(path),
+            alias,
+            glob,
+            line: at.line,
+            col: at.col,
+        }
+    }
+
     // The leaves an import's tree has gathered so far.
     pub(super) fn leaves(&self, id: ASTNodeId) -> Vec<ASTImportLeaf> {
         match self.kind(id) {

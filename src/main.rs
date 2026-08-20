@@ -5,6 +5,9 @@ mod lex;
 mod parse;
 mod prep;
 mod tir;
+mod sema;
+
+use std::path::{Path, PathBuf};
 
 use lex::lexer::Lexer;
 use lex::tokens::TokType;
@@ -13,6 +16,7 @@ use expand::Expander;
 use tir::lower::Lowerer;
 use parse::parser::Parser;
 use prep::preprocess;
+use sema::imports::ImportResolver;
 
 fn dump(source: &str) {
     println!("source:\n{}\n", source);
@@ -101,7 +105,107 @@ fn dump_parse(path: &str, source: &str) {
     );
 }
 
+// ---- The compiler ---------------------------------------------------------
+
+// Compiles the suite rooted at `root`. The resolver reads that file and
+// everything it reaches, so this is the first thing here that works on a suite
+// rather than on a source: what a file's own passes had to say and what the
+// resolver had to say about reaching it are one report per file, and they all
+// come out together.
+//
+// `false` where the build stopped. A warning is not that, so a report that is
+// not empty is not the same as a compilation that failed.
+fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
+    let mut resolver = ImportResolver::new(search_paths);
+    // The one failure with no source to quote: nothing imported the root file,
+    // so there is no `import` to point a caret at.
+    let root = match resolver.resolve(root) {
+        Ok(root) => root,
+        Err(why) => {
+            eprintln!("{}", why);
+            return false;
+        }
+    };
+
+    let said = resolver.render();
+    if !said.is_empty() {
+        eprintln!("{}\n", said);
+    }
+    if resolver.has_errors() {
+        return false;
+    }
+
+    // What the suite came to. Every file is here, whether it was written by
+    // hand or reached by an import, in the order the resolver read them.
+    for suite in resolver.suites() {
+        let name = suite.path.strip_prefix(root.parent().unwrap_or(Path::new(".")))
+            .unwrap_or(&suite.path);
+        println!(
+            "{}: {} items, {} named, {} imported",
+            name.display(),
+            suite.tir.roots.len(),
+            suite.symbols.len(),
+            suite.bindings.len()
+        );
+    }
+    true
+}
+
+// `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a
+// module whose path starts at no root; the file's own directory is looked in
+// first either way, and is what `suite` names.
+fn run(args: &[String]) -> bool {
+    let mut root: Option<PathBuf> = None;
+    let mut search_paths = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "-I" => match rest.next() {
+                Some(dir) => search_paths.push(PathBuf::from(dir)),
+                None => {
+                    eprintln!("-I wants a directory after it");
+                    return false;
+                }
+            },
+            other if other.starts_with('-') => {
+                eprintln!("no such option: {}", other);
+                return false;
+            }
+            other if root.is_none() => root = Some(PathBuf::from(other)),
+            other => {
+                eprintln!("only one root file: {} is a second", other);
+                return false;
+            }
+        }
+    }
+    match root {
+        Some(root) => compile(&root, search_paths),
+        None => {
+            eprintln!("usage: fortec <root.fc> [-I <dir>]...");
+            false
+        }
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        // Nothing to compile: show what each pass makes of the language
+        // instead, which is what this program was until there was a resolver
+        // to hand it a file.
+        demos();
+        return;
+    }
+    if !run(&args) {
+        std::process::exit(1);
+    }
+}
+
+// ---- The demos ------------------------------------------------------------
+
+// What the lexer, the parser and lowering make of a source, one piece of the
+// language at a time. Run when nothing was named on the command line.
+fn demos() {
     dump("let x = 25;");
 
     // Same program with no semicolons at all.
@@ -270,6 +374,16 @@ fn main() {
     // opens a body, so the brace below is still the literal's.
     dump("pub unsafe fn write(dst: *u8[], n: u64);\nunsafe {\n    let buf = malloc(n)\n    fill(buf, n)\n}\nunsafe free(q)\nunsafe p = P { x: 1 }\n");
 
+    // `ptr T` is a raw pointer and `addr x` makes one. Neither word ends an
+    // operand, so no separator is inserted after either, and `ptr` binds
+    // looser than an array suffix exactly as `&` does.
+    dump("struct Buf {\n    p: ptr u8,\n}\nunsafe let q = addr b.p\nunsafe let r = q as ptr u64\n");
+
+    // `gc` sits between the intro and the name, so it annotates the binding.
+    // It ends nothing and heads no body: the braces below are still the value
+    // braces a collection literal is written with.
+    dump("let gc table = #{1: 2, 3: 4}\nvar gc seen = {1, 2}\nlet gc_root = 1\n");
+
     // What the parser makes of a source it can take, and of five it cannot.
     // Each mistake is shown against the line it was written on.
     dump_parse("ok.fc", "fn main() {\n    let x = 1  // fine\n    g(x)\n}\n");
@@ -329,6 +443,21 @@ fn main() {
     // the compiler does not know is an error naming what was probably meant.
     dump_parse("attr.fc", "%inlien\nfn f();\n");
     dump_parse("target.fc", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");
+
+    // `gc` says the collector owns what the binding holds, so what stands under
+    // one has to be something to collect: a map, a set, or a pointer to one.
+    dump_parse("gc.fc", "let gc table = #{1: 2, 3: 4}\nfn main() {\n    let gc seen = {1, 2}\n}\n");
+
+    // A number is not collected, and the caret sits on what was written where
+    // the value should have been.
+    dump_parse("gcnum.fc", "fn main() {\n    let gc n = 1\n}\n");
+    dump_parse("gcref.fc", "fn main() {\n    let gc r: &i32 = f()\n}\n");
+
+    // A pointer is the other thing it holds, and `addr` still answers to the
+    // `unsafe` around it: the two words are about the same statement and say
+    // different things.
+    dump_parse("gcaddr.fc", "fn f(b: Buf) {\n    let gc p = addr b.p\n}\n");
+    dump_parse("gcok.fc", "fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n");
 
     // Simplification: the arithmetic folds, the fold settles the branch, the
     // branch leaves one value, and the value lands where the name was.
@@ -405,6 +534,54 @@ fn a_token_knows_how_wide_it_was_written() {
     // the newline it ran past; a diagnostic quoting one line stops at the end
     // of that line, which is where a caret can still be seen.
     assert_eq!(lex_spans("let s = \"oops\n"), vec![(1, 3), (5, 1), (7, 1), (9, 6)]);
+}
+
+// `gc` stands between the intro and the name and ends nothing: no separator is
+// inserted after it, and it is reserved as a whole word only, so `gcx` and
+// `gc_root` still lex as the identifiers they are.
+#[test]
+fn lexes_gc_as_a_binding_modifier() {
+    assert_eq!(
+        lex_types("let gc x = #{1: 2}\n"),
+        vec![
+            TokType::Let,
+            TokType::Gc,
+            TokType::Identifier("x".to_string()),
+            TokType::Equals,
+            TokType::HashTag,
+            TokType::LCurlyValue,
+            TokType::IntLiteral(1, None),
+            TokType::Colon,
+            TokType::IntLiteral(2, None),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // It heads no body, so a `{` after one is decided by what it holds as it
+    // would be after any other name-shaped position: this is a set literal.
+    assert_eq!(
+        lex_types("var gc s = {1, 2}\n"),
+        vec![
+            TokType::Var,
+            TokType::Gc,
+            TokType::Identifier("s".to_string()),
+            TokType::Equals,
+            TokType::LCurlyValue,
+            TokType::IntLiteral(1, None),
+            TokType::Comma,
+            TokType::IntLiteral(2, None),
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    assert_eq!(
+        lex_types("gcx gc_root"),
+        vec![
+            TokType::Identifier("gcx".to_string()),
+            TokType::Identifier("gc_root".to_string()),
+            TokType::Semicolon,
+        ]
+    );
 }
 
 #[test]
@@ -3412,6 +3589,57 @@ fn lexes_unsafe() {
         ]
     );
     for word in ["unsafely", "unsafe_", "_unsafe"] {
+        assert_eq!(
+            lex_types(word),
+            vec![TokType::Identifier(word.to_string()), TokType::Semicolon],
+            "{:?} should still lex as an identifier",
+            word
+        );
+    }
+}
+
+// `ptr` and `addr` are the two words a raw pointer is written with: one names
+// the type and the other makes one. Neither ends an operand, so neither can
+// have a separator inserted after it and a type may run onto the next line.
+#[test]
+fn lexes_ptr_and_addr() {
+    assert_eq!(
+        lex_types("unsafe let p: ptr u8 = addr b\n"),
+        vec![
+            TokType::Unsafe,
+            TokType::Let,
+            TokType::Identifier("p".to_string()),
+            TokType::Colon,
+            TokType::Ptr,
+            TokType::U8,
+            TokType::Equals,
+            TokType::Addr,
+            TokType::Identifier("b".to_string()),
+            TokType::Semicolon,
+        ]
+    );
+    // A pointer stands in a type argument list, which the lexer has to allow
+    // for: a `<` opens a generic context and the first token no type argument
+    // could hold abandons it, taking the `>>` splitting with it.
+    assert_eq!(
+        lex_types("let all: Vec<ptr u8> = empty();"),
+        vec![
+            TokType::Let,
+            TokType::Identifier("all".to_string()),
+            TokType::Colon,
+            TokType::Identifier("Vec".to_string()),
+            TokType::LessThan,
+            TokType::Ptr,
+            TokType::U8,
+            TokType::GreaterThan,
+            TokType::Equals,
+            TokType::Identifier("empty".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Semicolon,
+        ]
+    );
+    for word in ["ptrs", "ptr_", "_ptr", "address", "addr_", "_addr"] {
         assert_eq!(
             lex_types(word),
             vec![TokType::Identifier(word.to_string()), TokType::Semicolon],

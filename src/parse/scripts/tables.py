@@ -27,12 +27,14 @@ TOKENS = {
     'u8': 'U8', 'u16': 'U16', 'u32': 'U32', 'u64': 'U64', 'u128': 'U128',
     'f32': 'F32', 'f64': 'F64',
     'bool': 'Bool', 'char': 'Char', 'str': 'Str', 'never': 'Never',
+    'ptr': 'Ptr',
 
     'fn': 'Fn', 'let': 'Let', 'var': 'Var', 'const': 'Const',
     'struct': 'Struct', 'trait': 'Trait', 'impl': 'Impl', 'type': 'Type',
     'pub': 'Pub', 'priv': 'Priv', 'import': 'Import',
     'suite': 'Suite', 'super': 'Super',
     'enum': 'Enum', 'namespace': 'Namespace', 'unsafe': 'Unsafe',
+    'gc': 'Gc',
     'macro': 'Macro',
 
     'if': 'If', 'elif': 'Elif', 'else': 'Else', 'while': 'While',
@@ -42,7 +44,7 @@ TOKENS = {
     'true': 'True', 'false': 'False', 'self': 'SelfKw', 'null': 'Null',
     '_': 'Underscore',
 
-    'as': 'As', 'where': 'Where', 'move': 'Move',
+    'as': 'As', 'where': 'Where', 'move': 'Move', 'addr': 'Addr',
 
     '+': 'Plus', '-': 'Minus', '*': 'Star', '/': 'Slash', '%': 'Percent',
     '<<': 'LShift', '>>': 'RShift',

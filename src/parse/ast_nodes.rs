@@ -127,6 +127,11 @@ pub enum ASTNodeKind {
         attrs: Vec<ASTNodeId>,
         vis:   ASTVisibility,
         intro: ASTVariableIntro,
+        // The `gc` between the intro and the name: the binding owns its value
+        // through the collector. A flag rather than a node, there being one
+        // word and nothing under it -- as `is_unsafe` is on a `Fn`. What may
+        // stand on the right of one is `tir::lower`'s rule, not the grammar's.
+        gc:    bool,
         name:  ASTBinding,
         ty:    Option<ASTNodeId>,
         init:  Option<ASTNodeId>,
@@ -249,6 +254,10 @@ pub enum ASTNodeKind {
         life:  Option<ASTNodeId>,
         inner: ASTNodeId,
     },
+    // `ptr T`: an address and no more. No lifetime, because a pointer says
+    // nothing about how long what it points at is good for -- which is what
+    // keeps it inside an `unsafe`.
+    PtrType(ASTNodeId),
     // `T[8]`: a fixed array, owned, its length in its type.
     Array {
         elem: ASTNodeId,
@@ -471,6 +480,8 @@ pub enum ASTMark {
     Intro(ASTVariableIntro),
     // `move`, which is a closure's and has nothing under it.
     Move,
+    // `gc`, which is a binding's and has nothing under it either.
+    Gc,
 }
 
 // The leaves that are not nodes: a spelling, and no position under it.
@@ -509,6 +520,11 @@ pub struct ASTImportLeaf {
     pub path:  Vec<String>,
     pub alias: Option<String>,
     pub glob:  bool,
+    // Where this leaf begins, which is not where the `import` does: a group
+    // holds several and the resolver has something to say about each on its
+    // own, so `a::{b, c}` has to be able to point at the `c`.
+    pub line:  usize,
+    pub col:   usize,
 }
 
 // How a method takes its receiver. `&self` reads it, `*self` writes through it,
@@ -553,6 +569,9 @@ pub enum ASTUnaryOp {
     Neg,
     // `&x` and `*x`, which take a reference; neither dereferences.
     Ref(ASTRefOp),
+    // `addr x`, which takes the address of a place as a `ptr`. The one
+    // operator no safe statement may write.
+    Addr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

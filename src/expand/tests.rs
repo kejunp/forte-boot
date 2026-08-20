@@ -197,3 +197,29 @@ fn a_macro_that_never_stops_is_stopped() {
     assert!(!messages.is_empty());
     assert!(messages[0].contains("expanded 64 deep"), "{}", messages[0]);
 }
+
+// A `ptr` holds a type, so substitution has to reach through one: the walk that
+// puts arguments in descends into every child a node has, and a pointer's
+// referent is a child like any other. What arrives is the name shaped as the
+// expression it was written as, which lowering makes a type of -- see
+// `a_pointer_holds_a_name_a_macro_put_there`.
+#[test]
+fn a_name_is_put_in_under_a_pointer() {
+    let source = "macro hold($t:ident) {\n    unsafe let p: ptr $t = addr y\n}\nfn main() {\n    @hold(Node);\n}\n";
+    let (p, root, errors) = expanded(source);
+    assert!(errors.is_empty(), "{:#?}", errors);
+    no_macros_left(&p, &root);
+
+    let mut walk = vec![root.kind.clone()];
+    let mut found = false;
+    while let Some(mut kind) = walk.pop() {
+        if let ASTNodeKind::PtrType(inner) = kind {
+            assert_eq!(p.get_node(inner).kind, ASTNodeKind::Ident("Node".to_string()));
+            found = true;
+        }
+        for id in super::children_mut(&mut kind) {
+            walk.push(p.get_node(*id).kind.clone());
+        }
+    }
+    assert!(found, "no pointer type in the expansion of {}", source);
+}

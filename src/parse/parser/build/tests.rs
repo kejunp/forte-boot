@@ -539,6 +539,9 @@ fn check_tree() {
                       let v = suite::limits::MAX + super::k::n;\n\
                       let w: super::Node = self;\n\
                       import self::inner::q;\n\
+                      unsafe let p: ptr u8 = addr x.a;\n\
+                      let gc r = #{1: 2};\n\
+                      unsafe var gc s = addr x.a;\n\
                       if y { g(#{1: 2}, {,}, [1]) } else { move |z| z + 1 };\n\
                       while y { continue }\n\
                       for i in 0..=9 { break }\n\
@@ -554,12 +557,13 @@ fn check_tree() {
                   }\n\
                   namespace n {\n\
                       const K: i32 = 1;\n\
+                      pub let gc t: ptr u8 = z();\n\
                       enum E { A, B(i32), C { x: i32 }, D = 4 }\n\
                       struct S<T> { priv v: T[] }\n\
                       trait W { fn w<T>(&self, t: T): str where T: Ord; }\n\
                       impl W for S<i32> { priv fn w(&self): str { P { r: 1 } } }\n\
                       impl S<i32> { fn take(self); fn put(*self); }\n\
-                      struct H<'a, 'b: 'a, T: Ord + 'a> { v: &'a T[], w: *'b T }\n\
+                      struct H<'a, 'b: 'a, T: Ord + 'a> { v: &'a T[], w: *'b T, p: ptr T }\n\
                       fn h<'a, T>(x: &'a T, y: &Map<'a, T>): &'a T where T: 'a, 'a: 'b;\n\
                   }\n";
     let (p, root) = tree(source);
@@ -685,6 +689,7 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         }
         ASTNodeKind::Discriminant(id)
         | ASTNodeKind::Run(id)
+        | ASTNodeKind::PtrType(id)
         | ASTNodeKind::ExprStmt(id)
         | ASTNodeKind::Unsafe(id) => out.push(*id),
         ASTNodeKind::MacroDecl { attrs, params, body, .. } => {
@@ -879,6 +884,115 @@ fn a_reference_with_no_lifetime_written_holds_none() {
     assert!(matches!(p.get_node(ty).kind, ASTNodeKind::RefType { life: None, .. }));
 }
 
+// `ptr T` is a type of its own and not a third <ref_op>: it takes no lifetime,
+// and what it holds is whatever a type holds -- a run included, since a pointer
+// binds looser than an array suffix exactly as a reference does.
+#[test]
+fn a_pointer_type_holds_a_type_and_no_lifetime() {
+    let (p, item) = only_item("fn f(dst: ptr u8[], src: ptr ptr Node);\n");
+    let params = match &item.kind {
+        ASTNodeKind::Fn { params, .. } => params.clone(),
+        other => panic!("built {:?}", other),
+    };
+    let ty_of = |p: &Parser, id| match &p.get_node(id).kind {
+        ASTNodeKind::Param { ty: Some(id), .. } => *id,
+        other => panic!("a parameter built {:?}", other),
+    };
+
+    // `ptr u8[]`: the suffix went on the `u8`, so this points at a run.
+    let inner = match p.get_node(ty_of(&p, params[0])).kind {
+        ASTNodeKind::PtrType(inner) => inner,
+        ref other => panic!("a pointer type built {:?}", other),
+    };
+    match p.get_node(inner).kind {
+        ASTNodeKind::Run(elem) => {
+            assert_eq!(p.get_node(elem).kind, ASTNodeKind::Prim(ASTPrimType::U8));
+        }
+        ref other => panic!("the referent built {:?}", other),
+    }
+
+    // `ptr ptr Node`: one nests in the other, no rule of its own needed.
+    let inner = match p.get_node(ty_of(&p, params[1])).kind {
+        ASTNodeKind::PtrType(inner) => inner,
+        ref other => panic!("a pointer type built {:?}", other),
+    };
+    assert!(matches!(p.get_node(inner).kind, ASTNodeKind::PtrType(_)));
+}
+
+// A pointer stands wherever a type stands: in a struct field, in a type
+// argument, in a return type, and after the `as` of a cast.
+#[test]
+fn a_pointer_stands_where_a_type_stands() {
+    let (p, item) = only_item("struct Buf {\n    p: ptr u8,\n    all: Vec<Vec<ptr u8>>,\n}\n");
+    let fields = match &item.kind {
+        ASTNodeKind::Struct { fields, .. } => fields.clone(),
+        other => panic!("built {:?}", other),
+    };
+    let ty_of = |p: &Parser, id| match &p.get_node(id).kind {
+        ASTNodeKind::FieldDecl { ty, .. } => *ty,
+        other => panic!("a field built {:?}", other),
+    };
+    assert!(matches!(p.get_node(ty_of(&p, fields[0])).kind, ASTNodeKind::PtrType(_)));
+    // Nested, so the `>>` that closes both is split as it is anywhere else --
+    // the pointer inside did not cost the lexer the context it needs to.
+    let inner = match &p.get_node(ty_of(&p, fields[1])).kind {
+        ASTNodeKind::Named { args, .. } => args[0],
+        other => panic!("the second field built {:?}", other),
+    };
+    match &p.get_node(inner).kind {
+        ASTNodeKind::Named { args, .. } => {
+            assert!(matches!(p.get_node(args[0]).kind, ASTNodeKind::PtrType(_)));
+        }
+        other => panic!("the nested argument built {:?}", other),
+    }
+
+    let (p, stmts) = statements("unsafe let q = p as ptr u64;");
+    let cast = match &p.get_node(stmts[0]).kind {
+        ASTNodeKind::Unsafe(inner) => match &p.get_node(*inner).kind {
+            ASTNodeKind::Variable { init: Some(id), .. } => *id,
+            other => panic!("the guarded statement built {:?}", other),
+        },
+        other => panic!("built {:?}", other),
+    };
+    match &p.get_node(cast).kind {
+        ASTNodeKind::Cast { ty, .. } => {
+            assert!(matches!(p.get_node(*ty).kind, ASTNodeKind::PtrType(_)));
+        }
+        other => panic!("a cast built {:?}", other),
+    }
+}
+
+// `addr` is a <unary_op>, so it binds as the other three do: looser than a
+// postfix and tighter than anything infix. `addr p.x` is the address of the
+// field and `addr a + b` adds to the address of `a`.
+#[test]
+fn addr_binds_as_a_unary_operator() {
+    let (p, stmts) = statements("unsafe let a = addr p.x;\n    unsafe let b = addr y + 1;");
+    let init_of = |p: &Parser, id| match &p.get_node(id).kind {
+        ASTNodeKind::Unsafe(inner) => match &p.get_node(*inner).kind {
+            ASTNodeKind::Variable { init: Some(id), .. } => *id,
+            other => panic!("the guarded statement built {:?}", other),
+        },
+        other => panic!("built {:?}", other),
+    };
+    match &p.get_node(init_of(&p, stmts[0])).kind {
+        ASTNodeKind::Unary { op, operand } => {
+            assert_eq!(*op, ASTUnaryOp::Addr);
+            assert!(matches!(p.get_node(*operand).kind, ASTNodeKind::Field { .. }));
+        }
+        other => panic!("built {:?}", other),
+    }
+    match &p.get_node(init_of(&p, stmts[1])).kind {
+        ASTNodeKind::Binary { op: ASTBinOp::Add, lhs, .. } => {
+            assert!(matches!(
+                p.get_node(*lhs).kind,
+                ASTNodeKind::Unary { op: ASTUnaryOp::Addr, .. }
+            ));
+        }
+        other => panic!("built {:?}", other),
+    }
+}
+
 // A lifetime is a type argument like any other, and a `where` predicate takes
 // one on either side of its colon.
 #[test]
@@ -1028,4 +1142,45 @@ fn every_rule_has_exactly_one_arm() {
         .map(|(i, _)| format!("{} {}", i, rules[i]))
         .collect();
     assert!(orphans.is_empty(), "rules with no arm:\n  {}", orphans.join("\n  "));
+}
+
+
+// `gc` stands between the intro and the name, so it annotates the binding
+// rather than the value: `let gc x` and `var gc x` are both said, and the word
+// is spent by the time the tree is built.
+#[test]
+fn gc_is_a_flag_on_the_binding() {
+    let (p, stmts) = statements("    let gc m = {1: 2};\n    var gc s = {1};\n    let n = 1;");
+    let flags: Vec<(bool, ASTVariableIntro)> = stmts
+        .iter()
+        .map(|&s| match p.get_node(s).kind.clone() {
+            ASTNodeKind::Variable { gc, intro, .. } => (gc, intro),
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            (true, ASTVariableIntro::Let),
+            (true, ASTVariableIntro::Var),
+            (false, ASTVariableIntro::Let),
+        ]
+    );
+}
+
+// It is a whole word, as every keyword is: `gcx` and `gc_root` are names.
+#[test]
+fn gc_is_reserved_as_a_whole_word_only() {
+    let (p, stmts) = statements("    let gcx = 1;\n    let gc_root = 2;");
+    let names: Vec<ASTBinding> = stmts
+        .iter()
+        .map(|&s| match p.get_node(s).kind.clone() {
+            ASTNodeKind::Variable { gc: false, name, .. } => name,
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![ASTBinding::Name("gcx".to_string()), ASTBinding::Name("gc_root".to_string())]
+    );
 }

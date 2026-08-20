@@ -65,6 +65,9 @@ pub enum Ty {
         life:  RegionId,
         inner: TyId,
     },
+    // `ptr T`. No region: a pointer is what the checker stopped answering for,
+    // and there is nothing here for it to have worked out.
+    Ptr(TyId),
     // `T[8]`. The length is a number by now: an <array_suffix> takes a
     // <const_expr>, and evaluating one is the checker's.
     Array {
