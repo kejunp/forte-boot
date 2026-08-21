@@ -48,7 +48,8 @@ pub enum Info {
     // written down.
     Variable {
         ty:       Option<TyId>,
-        is_mut:   bool,
+        // What may be done with it -- see `Access`.
+        access:   Access,
         is_const: bool,
     },
 
@@ -152,6 +153,65 @@ pub enum Info {
         region: RegionId,
         bounds: Vec<RegionId>,
     },
+}
+
+// What may be done with a name. The language writes it with four words, and
+// they answer two questions that do not depend on each other:
+//
+//     let  x: i32     read it, and that is all
+//     var  x: i32     assign it, and assign a field or an element of it
+//     let  p: &i32    never re-aims, and writes into nothing
+//     let  p: *i32    never re-aims, and writes into what it refers to
+//     var  p: &i32    re-aims as often as you like, and writes into nothing
+//
+// The last two are the pair section 2 lays out: what a `let` fixes is the
+// binding and not the referent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Access {
+    // `let` binds a name that is read and never written, `var` one that may be
+    // assigned again. Mutability is the root binding's and writing reaches
+    // through whatever is reached from it -- a field or an element of a `var`
+    // may be assigned and one of a `let` may not -- so this is one answer for
+    // the whole name and not one per place under it. There is no marking a
+    // single field of a `let` writable, and none weakening one of a `var`.
+    pub is_mut:  bool,
+    // `&T` reads and `*T` writes, and which of the two is the reference's own
+    // business rather than the binding's. `None` where the name is of no
+    // reference type, and so refers to no other place to write into.
+    pub through: Option<TIRRefOp>,
+}
+
+impl Access {
+    // What the four words come to for a name of type `ty`. `is_mut` is the
+    // intro's -- `let` or `var` -- and the rest is read off the type, that
+    // being the one place a `&` or a `*` is written down.
+    pub fn of(is_mut: bool, ty: TyId, types: &[Ty]) -> Access {
+        let through = match &types[ty] {
+            Ty::Ref { op, .. } => Some(*op),
+            // A hole and an `Error` say nothing either way, and neither does a
+            // type that is not a reference.
+            _ => None,
+        };
+        Access { is_mut, through }
+    }
+
+    // Whether the name may be assigned again, and with it any field or element
+    // reached from it.
+    pub fn may_assign(&self) -> bool {
+        self.is_mut
+    }
+
+    // Whether the place it refers to may be written into. A name of no
+    // reference type refers to no other place, so the answer is no.
+    pub fn may_write_through(&self) -> bool {
+        matches!(self.through, Some(TIRRefOp::Mut))
+    }
+
+    // Whether it refers to another place at all, which is what tells
+    // `let x: i32` from `let p: &i32`.
+    pub fn is_reference(&self) -> bool {
+        self.through.is_some()
+    }
 }
 
 // One field of a struct. `vis` is the field's own, so a struct may be exported
@@ -621,14 +681,16 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
         // a `Variable` that says so rather than a kind of its own.
         TTIRItemKind::Const { ty, .. } => Info::Variable {
             ty:       Some(*ty),
-            is_mut:   false,
+            // A constant is never assigned again, whatever its type; a `&` or
+            // a `*` in that type still says what may be written through it.
+            access:   Access::of(false, *ty, &p.types),
             is_const: true,
         },
         TTIRItemKind::Global { intro, name, ty, .. } => {
             let TIRBinding::Name(_) = name else { return None };
             Info::Variable {
                 ty:       Some(*ty),
-                is_mut:   matches!(intro, TIRIntro::Var),
+                access:   Access::of(matches!(intro, TIRIntro::Var), *ty, &p.types),
                 is_const: false,
             }
         }

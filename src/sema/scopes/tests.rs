@@ -2,8 +2,8 @@
 // pass that would build one from source and not written.
 
 use super::*;
-use crate::sema::names::Payload;
-use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRPrim, TIRVis};
+use crate::sema::names::{Access, Payload};
+use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::*;
 
 struct Suite {
@@ -186,7 +186,7 @@ fn a_fn_holds_its_parameters_and_its_slots() {
     // `var` is the half of the pair that may be assigned again.
     assert!(matches!(
         scopes.look_up(inner, "total")[0].info,
-        Info::Variable { is_mut: true, .. }
+        Info::Variable { access: Access { is_mut: true, .. }, .. }
     ));
     // A local is not a thing the linker names.
     assert!(scopes.look_up(inner, "n")[0].symbol.is_none());
@@ -210,7 +210,7 @@ fn a_local_hides_a_global_of_the_same_name() {
     // The global says `var` and has a symbol; the local says neither.
     assert!(matches!(
         scopes.look_up(root, "count")[0].info,
-        Info::Variable { is_mut: true, .. }
+        Info::Variable { access: Access { is_mut: true, .. }, .. }
     ));
     assert!(scopes.look_up(root, "count")[0].symbol.is_some());
     assert!(scopes.look_up(inner, "count")[0].symbol.is_none());
@@ -791,4 +791,99 @@ fn a_suite_holds_a_scope_for_each_of_its_files() {
         scopes.look_up(scopes.module(&["shapes".to_string()]).unwrap(), "area")[0].symbol,
         scopes.look_up(scopes.module(&["boxes".to_string()]).unwrap(), "area")[0].symbol,
     );
+}
+
+// ---- What may be done with a name -----------------------------------------
+
+// Four words and two questions that do not depend on each other. `let` and
+// `var` say whether the binding may be assigned again; `&` and `*` say whether
+// the place it refers to may be written into, and that is the reference's own
+// business rather than the binding's.
+#[test]
+fn the_four_words_answer_two_questions() {
+    let mut s = Suite::new();
+    let i32 = Suite::I32;
+    let read = s.ty(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: i32 });
+    let write = s.ty(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: i32 });
+
+    let body = s.body(
+        vec![
+            ("x", i32, TIRIntro::Let),
+            ("n", i32, TIRIntro::Var),
+            ("p", read, TIRIntro::Let),
+            ("q", write, TIRIntro::Let),
+            ("r", read, TIRIntro::Var),
+        ],
+        Vec::new(),
+    );
+    let f = s.func("go", Vec::new(), Some(body));
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![f] }];
+
+    let scopes = Scopes::of(&s.p);
+    let at = scopes.opened_by(f).expect("a fn opens a scope");
+    let access = |name: &str| match &scopes.look_up(at, name)[0].info {
+        Info::Variable { access, .. } => *access,
+        other => panic!("{:?}", other),
+    };
+
+    // `let x: i32` -- read it, and that is all.
+    assert!(!access("x").may_assign());
+    assert!(!access("x").may_write_through());
+    assert!(!access("x").is_reference());
+
+    // `var n: i32` -- assign it, and a field or an element of it.
+    assert!(access("n").may_assign());
+    assert!(!access("n").may_write_through());
+
+    // `let p: &i32` -- never re-aims, and writes into nothing.
+    assert!(!access("p").may_assign());
+    assert!(!access("p").may_write_through());
+    assert!(access("p").is_reference());
+
+    // `let q: *i32` -- never re-aims, and still writes into what it refers to.
+    // This is the pair section 2 lays out: what a `let` fixes is the binding
+    // and not the referent.
+    assert!(!access("q").may_assign());
+    assert!(access("q").may_write_through());
+
+    // `var r: &i32` -- re-aims as often as you like, and writes into nothing.
+    assert!(access("r").may_assign());
+    assert!(!access("r").may_write_through());
+}
+
+// A global says the same thing a local does, and a constant is the one that is
+// never assigned again whatever its type.
+#[test]
+fn a_global_and_a_constant_answer_the_same_two_questions() {
+    let mut s = Suite::new();
+    let i32 = Suite::I32;
+    let write = s.ty(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: i32 });
+    let counter = s.item(TTIRItemKind::Global {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), intro: TIRIntro::Var,
+        name: TIRBinding::Name("counter".to_string()), ty: i32, init: None,
+    });
+    // `let` at file scope, of a `*` type: fixed binding, writes through.
+    let held = s.item(TTIRItemKind::Global {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), intro: TIRIntro::Let,
+        name: TIRBinding::Name("held".to_string()), ty: write, init: None,
+    });
+    let max = s.item(TTIRItemKind::Const {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "MAX".to_string(), ty: i32, value: 0,
+    });
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![counter, held, max] }];
+
+    let scopes = Scopes::of(&s.p);
+    let at = module_scope(&scopes);
+    let access = |name: &str| match &scopes.look_up(at, name)[0].info {
+        Info::Variable { access, .. } => *access,
+        other => panic!("{:?}", other),
+    };
+    assert!(access("counter").may_assign());
+    assert!(!access("held").may_assign());
+    assert!(access("held").may_write_through());
+    assert!(!access("MAX").may_assign());
+    assert!(!access("MAX").is_reference());
 }

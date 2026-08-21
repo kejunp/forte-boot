@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use crate::sema::imports::Binding;
-use crate::sema::names::{info_of, nested_items, payload_of, Info, Mangler, Name};
+use crate::sema::names::{info_of, nested_items, payload_of, Access, Info, Mangler, Name};
 use crate::tir::tir_nodes::TIRBinding;
 use crate::tir::ttir_nodes::{TTIRGeneric, TTIRItemId, TTIRItemKind, TTIRProgram};
 
@@ -314,9 +314,13 @@ impl Scopes {
                             Entry {
                                 info:   Info::Variable {
                                     ty:       Some(local.ty),
-                                    is_mut:   matches!(
-                                        local.intro,
-                                        crate::tir::tir_nodes::TIRIntro::Var
+                                    access:   Access::of(
+                                        matches!(
+                                            local.intro,
+                                            crate::tir::tir_nodes::TIRIntro::Var
+                                        ),
+                                        local.ty,
+                                        &p.types,
                                     ),
                                     is_const: false,
                                 },

@@ -445,7 +445,7 @@ fn each_kind_of_declaration_gets_its_own_letter() {
              "__N5thing", "__S5thing", "__T5thing"]
     );
     // A `var` is the mutable half of the pair, and a `const` says so instead.
-    assert!(matches!(table.get("__G5thing"), Some(Info::Variable { is_mut: true, .. })));
+    assert!(matches!(table.get("__G5thing"), Some(Info::Variable { access: Access { is_mut: true, .. }, .. })));
     assert!(matches!(table.get("__C5thing"), Some(Info::Variable { is_const: true, .. })));
 }
 
