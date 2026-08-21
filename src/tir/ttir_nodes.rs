@@ -46,6 +46,39 @@ pub struct TTIRProgram {
     pub types:  Vec<Ty>,
 }
 
+// ---- Generics ---------------------------------------------------------------
+// A parameter as declared, and what it is held to. The two kinds share one list
+// because the grammar's does: `<'a, T: Show + 'a>` interleaves them, and whether
+// that is allowed is a rule about a declaration rather than a shape one has.
+//
+// A parameter's place in this list is its index, which is what `Ty::Param` names
+// it by and what an argument at a call is put in. There is no `index` field: the
+// position is the index, and writing it down twice is what would let the two
+// come apart.
+//
+// A `where` clause is gone by here. `fn f<T: Ord>` and `fn f<T> where T: Ord`
+// say the same thing, and this is what a declaration *is* rather than how it was
+// written, so a predicate about a parameter is folded into that parameter's
+// bounds. What is not folded is a predicate about anything else -- `where
+// Vec<T>: Show` has no parameter to belong to, and nothing here holds one yet.
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TTIRGeneric {
+    Type {
+        name:   String,
+        // The traits it is held to, resolved: `T: Show<i32>` is a `Ty::Named`
+        // like any other by now.
+        bounds: Vec<TyId>,
+    },
+    Life {
+        name:   String,
+        // The region it declares, which a `&'a T` in the signature points at.
+        region: RegionId,
+        // What it has to outlive: the `'b` of a `'a: 'b`.
+        bounds: Vec<RegionId>,
+    },
+}
+
 // ---- Types ----------------------------------------------------------------
 // What a type *is*, not how it was written. `<grouped_type>` is gone, `_` is
 // gone, and a name has become the declaration it names.
@@ -120,30 +153,34 @@ pub struct TTIRItem {
 pub enum TTIRItemKind {
     Fn(TTIRFn),
     Struct {
-        vis:    TIRVis,
-        attrs:  TIRAttrs,
-        name:   String,
-        fields: Vec<TTIRFieldDecl>,
+        vis:      TIRVis,
+        attrs:    TIRAttrs,
+        name:     String,
+        generics: Vec<TTIRGeneric>,
+        fields:   Vec<TTIRFieldDecl>,
     },
     Enum {
         vis:      TIRVis,
         attrs:    TIRAttrs,
         name:     String,
+        generics: Vec<TTIRGeneric>,
         variants: Vec<TTIRVariant>,
     },
     Trait {
-        vis:     TIRVis,
-        attrs:   TIRAttrs,
-        name:    String,
-        members: Vec<TTIRItemId>,
+        vis:      TIRVis,
+        attrs:    TIRAttrs,
+        name:     String,
+        generics: Vec<TTIRGeneric>,
+        members:  Vec<TTIRItemId>,
     },
     Impl {
-        vis:     TIRVis,
-        attrs:   TIRAttrs,
+        vis:      TIRVis,
+        attrs:    TIRAttrs,
+        generics: Vec<TTIRGeneric>,
         // The type the impl is written about, and the trait where there is one.
-        ty:      TyId,
-        of:      Option<TTIRItemId>,
-        members: Vec<TTIRItemId>,
+        ty:       TyId,
+        of:       Option<TTIRItemId>,
+        members:  Vec<TTIRItemId>,
     },
     Namespace {
         vis:   TIRVis,
@@ -180,6 +217,7 @@ pub struct TTIRFn {
     // The mangled symbol, or what `%symbol` said instead. Worked out once here
     // rather than by everything downstream that wants to name the function.
     pub symbol:    String,
+    pub generics:  Vec<TTIRGeneric>,
     pub ty:        TyId,
     pub params:    Vec<TTIRLocalId>,
     pub ret:       TyId,

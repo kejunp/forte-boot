@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use crate::sema::names::{info_of, nested_items, Info, Mangler, Name};
 use crate::tir::tir_nodes::TIRBinding;
-use crate::tir::ttir_nodes::{TTIRItemId, TTIRItemKind, TTIRProgram};
+use crate::tir::ttir_nodes::{TTIRGeneric, TTIRItemId, TTIRItemKind, TTIRProgram};
 
 pub type ScopeId = usize;
 
@@ -39,6 +39,10 @@ pub enum ScopeKind {
     Namespace,
     Trait,
     Impl,
+    // A struct and an enum open one too, and hold nothing but their generic
+    // parameters: `T` is a name inside `struct S<T> { v: T }` and nowhere else.
+    Struct,
+    Enum,
     // A fn, holding its parameters and every slot of its body -- see the note
     // above about blocks.
     Function,
@@ -183,22 +187,40 @@ impl Scopes {
                 self.opened[id] = Some(inner);
                 self.items(items, inner, p, m);
             }
+            // Neither holds a name that is looked up, but both take generic
+            // parameters, and a parameter is a name in the scope its
+            // declaration opens -- which is why they open one at all.
+            TTIRItemKind::Struct { generics, .. } => {
+                let inner = self.open(at, ScopeKind::Struct);
+                self.opened[id] = Some(inner);
+                self.generics(generics, inner);
+            }
+            TTIRItemKind::Enum { generics, .. } => {
+                let inner = self.open(at, ScopeKind::Enum);
+                self.opened[id] = Some(inner);
+                self.generics(generics, inner);
+            }
             // A trait's members and an impl's are declared in it and reached
             // through it, so each is a scope of its own rather than a run of
             // names in the module around it.
-            TTIRItemKind::Trait { members, .. } => {
+            TTIRItemKind::Trait { generics, members, .. } => {
                 let inner = self.open(at, ScopeKind::Trait);
                 self.opened[id] = Some(inner);
+                self.generics(generics, inner);
                 self.items(members, inner, p, m);
             }
-            TTIRItemKind::Impl { members, .. } => {
+            TTIRItemKind::Impl { generics, members, .. } => {
                 let inner = self.open(at, ScopeKind::Impl);
                 self.opened[id] = Some(inner);
+                // The impl's own, which every method in it can see: the `T` of
+                // `impl<T> Stack<T>` stands in each of their signatures.
+                self.generics(generics, inner);
                 self.items(members, inner, p, m);
             }
             TTIRItemKind::Fn(f) => {
                 let inner = self.open(at, ScopeKind::Function);
                 self.opened[id] = Some(inner);
+                self.generics(&f.generics, inner);
 
                 // Every slot of the body, parameters among them: `params` are
                 // locals like any other, and a body's list is flat.
@@ -231,6 +253,28 @@ impl Scopes {
                 self.items(&nested, inner, p, m);
             }
             _ => {}
+        }
+    }
+}
+
+// The parameters a declaration was written with, bound in the scope it opened.
+// A parameter names a type without being one, and it is a name in a scope like
+// any other -- which is what a `T` in a signature and a `'a: 'b` both need.
+impl Scopes {
+    fn generics(&mut self, generics: &[TTIRGeneric], at: ScopeId) {
+        for (index, generic) in generics.iter().enumerate() {
+            let (name, info) = match generic {
+                TTIRGeneric::Type { name, bounds } => {
+                    (name.clone(), Info::TypeParam { index, bounds: bounds.clone() })
+                }
+                TTIRGeneric::Life { name, region, bounds } => (
+                    name.clone(),
+                    Info::Lifetime { index, region: *region, bounds: bounds.clone() },
+                ),
+            };
+            // A parameter is not a thing the linker names, and it stands where
+            // it was declared rather than at a line of its own.
+            self.bind(at, name, Entry { info, symbol: None, line: 0, col: 0 });
         }
     }
 }

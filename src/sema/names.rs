@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::{
-    TTIRExprId, TTIRExprKind, TTIRFn, TTIRItemId, TTIRItemKind, TTIRPayload, TTIRProgram,
-    TTIRStmt, Ty, TyId,
+    RegionId, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId, TTIRItemKind,
+    TTIRPayload, TTIRProgram, TTIRStmt, Ty, TyId,
 };
 
 pub type Name = String;
@@ -60,7 +60,7 @@ pub enum Info {
     // the checker has to go on, and a call to one has to stand inside an
     // `unsafe` statement (section 2).
     Function {
-        generics:  Vec<Generic>,
+        generics:  Vec<TTIRGeneric>,
         params:    Vec<(Name, Option<TyId>)>,
         ret:       Option<TyId>,
         is_const:  bool,
@@ -69,12 +69,12 @@ pub enum Info {
 
     // A struct, and what it is made of.
     Struct {
-        generics: Vec<Generic>,
+        generics: Vec<TTIRGeneric>,
         fields:   Vec<Field>,
     },
 
     Enum {
-        generics: Vec<Generic>,
+        generics: Vec<TTIRGeneric>,
         variants: Vec<EnumVariant>,
     },
 
@@ -91,7 +91,7 @@ pub enum Info {
     // so what is held is their names: what each one *is* is a `Function` of its
     // own, found in the trait's own scope.
     Trait {
-        generics: Vec<Generic>,
+        generics: Vec<TTIRGeneric>,
         members:  Vec<Name>,
     },
 
@@ -99,7 +99,7 @@ pub enum Info {
     // nothing new, and once this has been followed there is nothing left of it
     // (section 2).
     TypeAlias {
-        generics: Vec<Generic>,
+        generics: Vec<TTIRGeneric>,
         ty:       TyId,
     },
 
@@ -112,28 +112,24 @@ pub enum Info {
     // A generic parameter, the `T` of `fn f<T: Ord>`. It names a type without
     // being one, which is the whole of why it is not a `TypeAlias`: what it
     // stands for is settled at the call and not at the declaration.
+    //
+    // `index` is its place in the declaration's own list, which is what
+    // `Ty::Param` names it by -- so a `T` found in a scope and a `T` standing in
+    // a signature are known to be the same one.
     TypeParam {
-        bounds: Vec<Name>,
+        index:  usize,
+        bounds: Vec<TyId>,
     },
 
     // A lifetime parameter, the `'a` of `fn f<'a>`. The `~` was the lexer's and
     // the name is what is left, so it is a name in a scope like any other --
-    // which is what a `'a: 'b` needs it to be.
+    // which is what a `'a: 'b` needs it to be. `region` is what a `&'a T` in
+    // the signature points at, and `bounds` what it has to outlive.
     Lifetime {
-        bounds: Vec<Name>,
+        index:  usize,
+        region: RegionId,
+        bounds: Vec<RegionId>,
     },
-}
-
-// A generic parameter as declared. The two kinds share one list because the
-// grammar's does: `<'a, T: Show + 'a>` interleaves them, and whether that is
-// allowed is a rule about a declaration rather than a shape a declaration has.
-//
-// A bound is a `Name` and not a `Type`: what stands on the right of the colon
-// is a trait or a lifetime, and `Type` names neither.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Generic {
-    Type { name: Name, bounds: Vec<Name> },
-    Life { name: Name, bounds: Vec<Name> },
 }
 
 // One field of a struct. `vis` is the field's own, so a struct may be exported
@@ -170,11 +166,11 @@ pub enum Payload {
 // Two things, and both are the TTIR and this table disagreeing about what a
 // declaration is.
 //
-//   - The TTIR keeps no generic list. `Ty::Param` carries a parameter's name
-//     and its place, so a signature that uses one can be written down, but the
-//     `<T: Ord>` it was declared with is gone -- so `generics` is built empty
-//     out of a TTIR and the bounds are lost. Either the TTIR grows the list or
-//     `Info` gives it up; nothing can fill it as things stand.
+//   - A `where` clause about anything but a parameter has nowhere to go. One
+//     about a parameter is folded into its bounds (`TTIRGeneric`), since
+//     `fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing -- but
+//     `where Vec<T>: Show` has no parameter to belong to, and no item holds a
+//     list of loose predicates.
 //   - Four of the variants are built by nothing yet. The TTIR has no
 //     `TypeAlias` item, an alias being a name for a type and not a type; a
 //     `Variant` is reached through its enum; and a `TypeParam` and a `Lifetime`
@@ -564,19 +560,18 @@ impl SymbolTable {
 pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
     Some(match &p.items[at].kind {
         TTIRItemKind::Fn(f) => Info::Function {
-            // Empty out of a TTIR: see the note above.
-            generics:  Vec::new(),
+            generics:  f.generics.clone(),
             params:    params_of(f, p),
             ret:       Some(f.ret),
             is_const:  f.is_const,
             is_unsafe: f.is_unsafe,
         },
-        TTIRItemKind::Struct { fields, .. } => Info::Struct {
-            generics: Vec::new(),
+        TTIRItemKind::Struct { generics, fields, .. } => Info::Struct {
+            generics: generics.clone(),
             fields:   fields.iter().map(field_of).collect(),
         },
-        TTIRItemKind::Enum { variants, .. } => Info::Enum {
-            generics: Vec::new(),
+        TTIRItemKind::Enum { generics, variants, .. } => Info::Enum {
+            generics: generics.clone(),
             variants: variants
                 .iter()
                 .map(|v| EnumVariant {
@@ -592,8 +587,8 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
                 })
                 .collect(),
         },
-        TTIRItemKind::Trait { members, .. } => Info::Trait {
-            generics: Vec::new(),
+        TTIRItemKind::Trait { generics, members, .. } => Info::Trait {
+            generics: generics.clone(),
             members:  members.iter().map(|&m| name_of(m, p)).collect(),
         },
         TTIRItemKind::Namespace { items, .. } => {

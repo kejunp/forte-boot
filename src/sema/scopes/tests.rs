@@ -73,6 +73,7 @@ impl Suite {
             is_unsafe: false,
             name:      name.to_string(),
             symbol:    String::new(),
+            generics:  Vec::new(),
             ty,
             params:    slots,
             ret:       Self::NULL,
@@ -82,6 +83,7 @@ impl Suite {
 
     fn strukt(&mut self, name: &str) -> TTIRItemId {
         self.item(TTIRItemKind::Struct {
+            generics: Vec::new(),
             vis: TIRVis::Pub, attrs: TIRAttrs::default(),
             name: name.to_string(), fields: Vec::new(),
         })
@@ -242,6 +244,7 @@ fn an_impl_holds_its_methods_and_declares_no_name() {
     let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
     let len = s.func("len", Vec::new(), None);
     let imp = s.item(TTIRItemKind::Impl {
+        generics: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![len],
     });
@@ -307,4 +310,125 @@ fn a_scope_can_be_added_to_by_hand() {
     );
     assert_eq!(scopes.look_up(root, "circle").len(), 1);
     assert_eq!(scopes.len(), 1);
+}
+
+// ---- Generic parameters ---------------------------------------------------
+
+// A parameter names a type without being one, and it is a name in the scope its
+// declaration opened -- which is what lets the `T` of a signature be looked up
+// like anything else.
+#[test]
+fn a_fn_holds_its_generic_parameters() {
+    let mut s = Suite::new();
+    let ord = s.strukt("Ord");
+    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new() });
+    let t = s.ty(Ty::Param { name: "T".to_string(), index: 1 });
+    let body = s.body(vec![("x", t, TIRIntro::Let)], Vec::new());
+    let f = s.func("first", vec![t], Some(body));
+    let TTIRItemKind::Fn(held) = &mut s.p.items[f].kind else { panic!() };
+    held.generics = vec![
+        TTIRGeneric::Life { name: "a".to_string(), region: 0, bounds: vec![1] },
+        TTIRGeneric::Type { name: "T".to_string(), bounds: vec![ord_ty] },
+    ];
+    s.p.roots = vec![ord, f];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let inner = scopes.opened_by(f).expect("a fn opens a scope");
+    assert_eq!(names(&scopes, inner), vec!["T", "a", "x"]);
+
+    // Its place in the list is what `Ty::Param` names it by, so a `T` found
+    // here and a `T` standing in the signature are known to be the same one.
+    let Info::TypeParam { index, bounds } = &scopes.look_up(inner, "T")[0].info else {
+        panic!("{:?}", scopes.look_up(inner, "T"))
+    };
+    assert_eq!(*index, 1);
+    assert_eq!(bounds, &vec![ord_ty]);
+
+    // A lifetime is a name in a scope too, which is what a `'a: 'b` needs.
+    let Info::Lifetime { region, bounds, .. } = &scopes.look_up(inner, "a")[0].info else {
+        panic!()
+    };
+    assert_eq!(*region, 0);
+    assert_eq!(bounds, &vec![1]);
+
+    // Neither is a thing the linker names.
+    assert!(scopes.look_up(inner, "T")[0].symbol.is_none());
+}
+
+// A struct and an enum hold no name that is looked up, and both take generic
+// parameters -- so each opens a scope holding nothing else.
+#[test]
+fn a_struct_and_an_enum_hold_their_parameters() {
+    let mut s = Suite::new();
+    let st = s.strukt("Stack");
+    let TTIRItemKind::Struct { generics, .. } = &mut s.p.items[st].kind else { panic!() };
+    *generics = vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }];
+
+    let en = s.item(TTIRItemKind::Enum {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        generics: vec![TTIRGeneric::Type { name: "E".to_string(), bounds: Vec::new() }],
+        name: "Maybe".to_string(), variants: Vec::new(),
+    });
+    s.p.roots = vec![st, en];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    assert_eq!(names(&scopes, scopes.root()), vec!["Maybe", "Stack"]);
+    let inside_st = scopes.opened_by(st).expect("a struct opens a scope");
+    let inside_en = scopes.opened_by(en).expect("an enum opens a scope");
+    assert_eq!(scopes.kind(inside_st), ScopeKind::Struct);
+    assert_eq!(scopes.kind(inside_en), ScopeKind::Enum);
+    assert_eq!(names(&scopes, inside_st), vec!["T"]);
+    assert_eq!(names(&scopes, inside_en), vec!["E"]);
+    // And neither leaks into the module around it.
+    assert!(scopes.look_up(scopes.root(), "T").is_empty());
+}
+
+// An impl's parameters are every method's: the `T` of `impl<T> Stack<T>` stands
+// in each of their signatures, so a method finds it in the scope around.
+#[test]
+fn an_impls_parameters_reach_its_methods() {
+    let mut s = Suite::new();
+    let stack = s.strukt("Stack");
+    let stack_ty = s.ty(Ty::Named { item: stack, args: Vec::new() });
+    let push = s.func("push", Vec::new(), None);
+    let imp = s.item(TTIRItemKind::Impl {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        ty: stack_ty, of: None, members: vec![push],
+    });
+    s.p.roots = vec![stack, imp];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let inside_impl = scopes.opened_by(imp).expect("an impl opens a scope");
+    let inside_fn = scopes.opened_by(push).expect("a fn opens a scope");
+    assert_eq!(names(&scopes, inside_impl), vec!["T", "push"]);
+    // The method has none of its own and finds the impl's from where it stands.
+    assert!(scopes.here(inside_fn, "T").is_empty());
+    assert_eq!(scopes.look_up(inside_fn, "T").len(), 1);
+}
+
+// A parameter of the fn hides one of the impl, as any inner name hides an
+// outer one -- and whether that should be *written* is the checker's rule.
+#[test]
+fn a_fns_parameter_hides_the_impls() {
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let m = s.func("take", Vec::new(), None);
+    let TTIRItemKind::Fn(held) = &mut s.p.items[m].kind else { panic!() };
+    held.generics = vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }];
+    let imp = s.item(TTIRItemKind::Impl {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        ty: buf_ty, of: None, members: vec![m],
+    });
+    s.p.roots = vec![buf, imp];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let inside_fn = scopes.opened_by(m).expect("a fn opens a scope");
+    assert_eq!(scopes.here(inside_fn, "T").len(), 1);
+    assert_eq!(scopes.look_up(inside_fn, "T").len(), 1);
+    // Both are there, each where it was written.
+    let inside_impl = scopes.opened_by(imp).expect("an impl opens a scope");
+    assert_eq!(scopes.here(inside_impl, "T").len(), 1);
 }
