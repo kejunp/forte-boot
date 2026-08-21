@@ -47,6 +47,7 @@ impl Suite {
             name:      name.to_string(),
             symbol:    String::new(),
             generics:  Vec::new(),
+            wheres:    Vec::new(),
             ty,
             params:    Vec::new(),
             ret,
@@ -57,6 +58,7 @@ impl Suite {
     fn strukt(&mut self, name: &str) -> TTIRItemId {
         self.item(TTIRItemKind::Struct {
             generics: Vec::new(),
+            wheres: Vec::new(),
             vis:    TIRVis::Pub,
             attrs:  TIRAttrs::default(),
             name:   name.to_string(),
@@ -207,6 +209,7 @@ fn a_method_is_named_by_the_impl_it_is_in() {
     let bare = s.func("len", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![bare],
     });
@@ -214,11 +217,13 @@ fn a_method_is_named_by_the_impl_it_is_in() {
     let shown = s.func("len", Vec::new());
     let show = s.item(TTIRItemKind::Trait {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "Show".to_string(), members: Vec::new(),
     });
     let for_show = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: Some(show), members: vec![shown],
     });
@@ -396,11 +401,13 @@ fn each_kind_of_declaration_gets_its_own_letter() {
     let st = s.strukt("thing");
     let en = s.item(TTIRItemKind::Enum {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "thing".to_string(), variants: Vec::new(),
     });
     let tr = s.item(TTIRItemKind::Trait {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "thing".to_string(), members: Vec::new(),
     });
@@ -440,6 +447,7 @@ fn an_impl_is_not_in_the_table_but_its_methods_are() {
     let len = s.func("len", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![len],
     });
@@ -462,6 +470,7 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
     let mine = s.func("norm", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: here_ty, of: None, members: vec![mine],
     });
@@ -471,6 +480,7 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
     let theirs = s.func("len", Vec::new());
     let imp2 = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: away_ty, of: None, members: vec![theirs],
     });

@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::{
-    RegionId, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId, TTIRItemKind,
-    TTIRPayload, TTIRProgram, TTIRStmt, Ty, TyId,
+    RegionId, TTIRBound, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
+    TTIRItemKind, TTIRPayload, TTIRProgram, TTIRStmt, TTIRWherePred, Ty, TyId,
 };
 
 pub type Name = String;
@@ -61,6 +61,8 @@ pub enum Info {
     // `unsafe` statement (section 2).
     Function {
         generics:  Vec<TTIRGeneric>,
+        // The predicates with no parameter to fold into -- see `TTIRWherePred`.
+        wheres:    Vec<TTIRWherePred>,
         params:    Vec<(Name, Option<TyId>)>,
         ret:       Option<TyId>,
         is_const:  bool,
@@ -70,11 +72,13 @@ pub enum Info {
     // A struct, and what it is made of.
     Struct {
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         fields:   Vec<Field>,
     },
 
     Enum {
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         variants: Vec<EnumVariant>,
     },
 
@@ -92,6 +96,7 @@ pub enum Info {
     // own, found in the trait's own scope.
     Trait {
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         members:  Vec<Name>,
     },
 
@@ -118,7 +123,7 @@ pub enum Info {
     // a signature are known to be the same one.
     TypeParam {
         index:  usize,
-        bounds: Vec<TyId>,
+        bounds: Vec<TTIRBound>,
     },
 
     // A lifetime parameter, the `'a` of `fn f<'a>`. The `~` was the lexer's and
@@ -166,11 +171,9 @@ pub enum Payload {
 // Two things, and both are the TTIR and this table disagreeing about what a
 // declaration is.
 //
-//   - A `where` clause about anything but a parameter has nowhere to go. One
-//     about a parameter is folded into its bounds (`TTIRGeneric`), since
-//     `fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing -- but
-//     `where Vec<T>: Show` has no parameter to belong to, and no item holds a
-//     list of loose predicates.
+//   - `Info::TypeAlias` is built by nothing. The TTIR has no such item, an
+//     alias being a name for a type and not a type, so it can only ever be
+//     filled by a pass that reads the TIR instead.
 //   - Four of the variants are built by nothing yet. The TTIR has no
 //     `TypeAlias` item, an alias being a name for a type and not a type; a
 //     `Variant` is reached through its enum; and a `TypeParam` and a `Lifetime`
@@ -561,17 +564,20 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
     Some(match &p.items[at].kind {
         TTIRItemKind::Fn(f) => Info::Function {
             generics:  f.generics.clone(),
+            wheres:    f.wheres.clone(),
             params:    params_of(f, p),
             ret:       Some(f.ret),
             is_const:  f.is_const,
             is_unsafe: f.is_unsafe,
         },
-        TTIRItemKind::Struct { generics, fields, .. } => Info::Struct {
+        TTIRItemKind::Struct { generics, wheres, fields, .. } => Info::Struct {
             generics: generics.clone(),
+            wheres:   wheres.clone(),
             fields:   fields.iter().map(field_of).collect(),
         },
-        TTIRItemKind::Enum { generics, variants, .. } => Info::Enum {
+        TTIRItemKind::Enum { generics, wheres, variants, .. } => Info::Enum {
             generics: generics.clone(),
+            wheres:   wheres.clone(),
             variants: variants
                 .iter()
                 .map(|v| EnumVariant {
@@ -587,8 +593,9 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
                 })
                 .collect(),
         },
-        TTIRItemKind::Trait { generics, members, .. } => Info::Trait {
+        TTIRItemKind::Trait { generics, wheres, members, .. } => Info::Trait {
             generics: generics.clone(),
+            wheres:   wheres.clone(),
             members:  members.iter().map(|&m| name_of(m, p)).collect(),
         },
         TTIRItemKind::Namespace { items, .. } => {

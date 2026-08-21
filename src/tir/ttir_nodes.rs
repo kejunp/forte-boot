@@ -66,17 +66,51 @@ pub struct TTIRProgram {
 pub enum TTIRGeneric {
     Type {
         name:   String,
-        // The traits it is held to, resolved: `T: Show<i32>` is a `Ty::Named`
-        // like any other by now.
-        bounds: Vec<TyId>,
+        // What it is held to. One list and not two, because one colon is what
+        // writes both: `<T: Show + 'a>` is a trait and a region at once.
+        bounds: Vec<TTIRBound>,
     },
     Life {
         name:   String,
         // The region it declares, which a `&'a T` in the signature points at.
         region: RegionId,
-        // What it has to outlive: the `'b` of a `'a: 'b`.
+        // What it has to outlive: the `'b` of a `'a: 'b`. Regions only -- a
+        // lifetime implements nothing, and by here that has been settled.
         bounds: Vec<RegionId>,
     },
+}
+
+// One thing something is held to. The TIR has a `TIRBound` of the same two
+// shapes; what is different here is that both sides have been resolved -- a
+// trait is the type it names, and a lifetime is the region it stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TTIRBound {
+    // `T: Show<i32>`, which is a `Ty::Named` like any other by now.
+    Trait(TyId),
+    // `T: 'a`.
+    Life(RegionId),
+}
+
+// One predicate of a `where` clause.
+//
+// A predicate about a parameter is not here: it is folded into that parameter's
+// bounds, since `fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing and
+// this tree is what a declaration *is*. What is left is every predicate with no
+// parameter to fold into -- `where Vec<T>: Show` is about a type that was built
+// rather than declared, and `where 'a: 'b` about two regions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TTIRWherePred {
+    pub subject: TTIRSubject,
+    pub bounds:  Vec<TTIRBound>,
+}
+
+// What a predicate is about. Not a `TTIRBound`: the two read alike and mean
+// opposite things, and the one place the TIR spells them with one type is the
+// one place a reader has to stop and work out which side they are on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TTIRSubject {
+    Type(TyId),
+    Region(RegionId),
 }
 
 // ---- Types ----------------------------------------------------------------
@@ -157,6 +191,7 @@ pub enum TTIRItemKind {
         attrs:    TIRAttrs,
         name:     String,
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         fields:   Vec<TTIRFieldDecl>,
     },
     Enum {
@@ -164,6 +199,7 @@ pub enum TTIRItemKind {
         attrs:    TIRAttrs,
         name:     String,
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         variants: Vec<TTIRVariant>,
     },
     Trait {
@@ -171,12 +207,14 @@ pub enum TTIRItemKind {
         attrs:    TIRAttrs,
         name:     String,
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         members:  Vec<TTIRItemId>,
     },
     Impl {
         vis:      TIRVis,
         attrs:    TIRAttrs,
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
         // The type the impl is written about, and the trait where there is one.
         ty:       TyId,
         of:       Option<TTIRItemId>,
@@ -218,6 +256,7 @@ pub struct TTIRFn {
     // rather than by everything downstream that wants to name the function.
     pub symbol:    String,
     pub generics:  Vec<TTIRGeneric>,
+    pub wheres:    Vec<TTIRWherePred>,
     pub ty:        TyId,
     pub params:    Vec<TTIRLocalId>,
     pub ret:       TyId,

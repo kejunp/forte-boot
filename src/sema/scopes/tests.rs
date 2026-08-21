@@ -74,6 +74,7 @@ impl Suite {
             name:      name.to_string(),
             symbol:    String::new(),
             generics:  Vec::new(),
+            wheres:    Vec::new(),
             ty,
             params:    slots,
             ret:       Self::NULL,
@@ -84,6 +85,7 @@ impl Suite {
     fn strukt(&mut self, name: &str) -> TTIRItemId {
         self.item(TTIRItemKind::Struct {
             generics: Vec::new(),
+            wheres: Vec::new(),
             vis: TIRVis::Pub, attrs: TIRAttrs::default(),
             name: name.to_string(), fields: Vec::new(),
         })
@@ -245,6 +247,7 @@ fn an_impl_holds_its_methods_and_declares_no_name() {
     let len = s.func("len", Vec::new(), None);
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
+        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![len],
     });
@@ -298,6 +301,7 @@ fn a_scope_can_be_added_to_by_hand() {
         Entry {
             info:   Info::Function {
                 generics:  Vec::new(),
+            wheres:    Vec::new(),
                 params:    Vec::new(),
                 ret:       None,
                 is_const:  false,
@@ -328,7 +332,12 @@ fn a_fn_holds_its_generic_parameters() {
     let TTIRItemKind::Fn(held) = &mut s.p.items[f].kind else { panic!() };
     held.generics = vec![
         TTIRGeneric::Life { name: "a".to_string(), region: 0, bounds: vec![1] },
-        TTIRGeneric::Type { name: "T".to_string(), bounds: vec![ord_ty] },
+        // A trait and a region at once: `<T: Ord + 'a>` is both, and one list
+        // holds either because one colon writes both.
+        TTIRGeneric::Type {
+            name:   "T".to_string(),
+            bounds: vec![TTIRBound::Trait(ord_ty), TTIRBound::Life(0)],
+        },
     ];
     s.p.roots = vec![ord, f];
 
@@ -342,7 +351,7 @@ fn a_fn_holds_its_generic_parameters() {
         panic!("{:?}", scopes.look_up(inner, "T"))
     };
     assert_eq!(*index, 1);
-    assert_eq!(bounds, &vec![ord_ty]);
+    assert_eq!(bounds, &vec![TTIRBound::Trait(ord_ty), TTIRBound::Life(0)]);
 
     // A lifetime is a name in a scope too, which is what a `'a: 'b` needs.
     let Info::Lifetime { region, bounds, .. } = &scopes.look_up(inner, "a")[0].info else {
@@ -367,6 +376,7 @@ fn a_struct_and_an_enum_hold_their_parameters() {
     let en = s.item(TTIRItemKind::Enum {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         generics: vec![TTIRGeneric::Type { name: "E".to_string(), bounds: Vec::new() }],
+        wheres: Vec::new(),
         name: "Maybe".to_string(), variants: Vec::new(),
     });
     s.p.roots = vec![st, en];
@@ -394,6 +404,7 @@ fn an_impls_parameters_reach_its_methods() {
     let imp = s.item(TTIRItemKind::Impl {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        wheres: Vec::new(),
         ty: stack_ty, of: None, members: vec![push],
     });
     s.p.roots = vec![stack, imp];
@@ -420,6 +431,7 @@ fn a_fns_parameter_hides_the_impls() {
     let imp = s.item(TTIRItemKind::Impl {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        wheres: Vec::new(),
         ty: buf_ty, of: None, members: vec![m],
     });
     s.p.roots = vec![buf, imp];
@@ -431,4 +443,61 @@ fn a_fns_parameter_hides_the_impls() {
     // Both are there, each where it was written.
     let inside_impl = scopes.opened_by(imp).expect("an impl opens a scope");
     assert_eq!(scopes.here(inside_impl, "T").len(), 1);
+}
+
+// A `where` predicate about a parameter is folded into that parameter's
+// bounds, since `fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing.
+// What is left is every predicate with no parameter to fold into: one about a
+// type that was built rather than declared, and one about two regions.
+#[test]
+fn a_where_clause_keeps_what_no_parameter_can_hold() {
+    let mut s = Suite::new();
+    let ord = s.strukt("Ord");
+    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new() });
+    let show = s.strukt("Show");
+    let show_ty = s.ty(Ty::Named { item: show, args: Vec::new() });
+    let vec = s.strukt("Vec");
+    let t = s.ty(Ty::Param { name: "T".to_string(), index: 0 });
+    let vec_t = s.ty(Ty::Named { item: vec, args: vec![t] });
+
+    let f = s.func("go", vec![t], None);
+    let TTIRItemKind::Fn(held) = &mut s.p.items[f].kind else { panic!() };
+    // `fn go<T: Ord>(x: T) where Vec<T>: Show, 'a: 'b`
+    held.generics = vec![TTIRGeneric::Type {
+        name:   "T".to_string(),
+        bounds: vec![TTIRBound::Trait(ord_ty)],
+    }];
+    held.wheres = vec![
+        TTIRWherePred {
+            subject: TTIRSubject::Type(vec_t),
+            bounds:  vec![TTIRBound::Trait(show_ty)],
+        },
+        TTIRWherePred {
+            subject: TTIRSubject::Region(0),
+            bounds:  vec![TTIRBound::Life(1)],
+        },
+    ];
+    s.p.roots = vec![ord, show, vec, f];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let root = scopes.root();
+    let Info::Function { generics, wheres, .. } = &scopes.look_up(root, "go")[0].info else {
+        panic!()
+    };
+    // The parameter's own bound stayed where it was folded.
+    assert_eq!(generics.len(), 1);
+    assert!(matches!(
+        &generics[0],
+        TTIRGeneric::Type { bounds, .. } if bounds == &vec![TTIRBound::Trait(ord_ty)]
+    ));
+    // And the two with nowhere to fold are here, in the order written.
+    assert_eq!(wheres.len(), 2);
+    assert_eq!(wheres[0].subject, TTIRSubject::Type(vec_t));
+    assert_eq!(wheres[0].bounds, vec![TTIRBound::Trait(show_ty)]);
+    assert_eq!(wheres[1].subject, TTIRSubject::Region(0));
+    assert_eq!(wheres[1].bounds, vec![TTIRBound::Life(1)]);
+
+    // A `where` names nothing, so it puts nothing in the scope.
+    let inner = scopes.opened_by(f).expect("a fn opens a scope");
+    assert_eq!(names(&scopes, inner), vec!["T"]);
 }
