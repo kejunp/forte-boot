@@ -18,10 +18,13 @@
 // an index into it -- so by here a fn is one scope and the braces inside it are
 // spelling. That is the whole of what `sema` had to work out about them.
 
+// Nothing looks a name up yet: the checker is the pass that will, and it is the
+// one still to write. The allow is for that, and comes off with it.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 
+use crate::sema::imports::Binding;
 use crate::sema::names::{info_of, nested_items, payload_of, Info, Mangler, Name};
 use crate::tir::tir_nodes::TIRBinding;
 use crate::tir::ttir_nodes::{TTIRGeneric, TTIRItemId, TTIRItemKind, TTIRProgram};
@@ -33,8 +36,11 @@ pub type ScopeId = usize;
 // where there is one to mean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
-    // A file, which is a module (section 1). The outermost scope there is: the
-    // suite above it holds no names of its own, only the files that do.
+    // The root, above every file and holding nothing: there is nothing above a
+    // suite to name (section 1), so this exists to be the one thing the module
+    // scopes hang from.
+    Suite,
+    // A file, which is a module (section 1).
     Module,
     Namespace,
     Trait,
@@ -72,6 +78,8 @@ struct Scope {
 
 pub struct Scopes {
     scopes: Vec<Scope>,
+    // The scope each file's names stand in, by the path it was reached at.
+    modules: Vec<(Vec<Name>, ScopeId)>,
     // The scope each item opened, for whatever wants to walk into a fn or a
     // namespace it has a handle to. `None` for an item that opens none.
     opened: Vec<Option<ScopeId>>,
@@ -83,22 +91,38 @@ impl Scopes {
         Scopes {
             scopes: vec![Scope {
                 parent: None,
-                kind:   ScopeKind::Module,
+                kind:   ScopeKind::Suite,
                 names:  HashMap::new(),
             }],
+            modules: Vec::new(),
             opened: Vec::new(),
         }
     }
 
-    // Every scope a program opens, and every name in each. `at` is the module
-    // the program was read at, which the symbols want -- see `Mangler::new`.
-    pub fn of(p: &TTIRProgram, at: &[Name]) -> Scopes {
-        let m = Mangler::new(p, at);
+    // Every scope the suite opens, and every name in each. One module scope per
+    // file, all of them under the suite, which holds no names of its own --
+    // there is nothing above a suite to name (section 1).
+    pub fn of(p: &TTIRProgram) -> Scopes {
+        let m = Mangler::new(p);
         let mut s = Scopes::new();
         s.opened = vec![None; p.items.len()];
         let root = s.root();
-        s.items(&p.roots, root, p, &m);
+        for module in &p.modules {
+            let at = s.open(root, ScopeKind::Module);
+            s.modules.push((module.path.clone(), at));
+            s.items(&module.roots, at, p, &m);
+        }
         s
+    }
+
+    // The scope a file's names stand in, by the path it was reached at.
+    pub fn module(&self, path: &[Name]) -> Option<ScopeId> {
+        self.modules.iter().find(|(at, _)| at == path).map(|(_, id)| *id)
+    }
+
+    // Every module of the suite, in the order the files were read.
+    pub fn modules(&self) -> impl Iterator<Item = (&[Name], ScopeId)> {
+        self.modules.iter().map(|(path, id)| (path.as_slice(), *id))
     }
 
     pub fn root(&self) -> ScopeId {
@@ -159,6 +183,33 @@ impl Scopes {
         let mut out: Vec<(&Name, &Vec<Entry>)> = self.scopes[at].names.iter().collect();
         out.sort_by(|a, b| a.0.cmp(b.0));
         out
+    }
+
+    // Puts what a file's imports brought in into that file's scope. The
+    // resolver settles which module each name came from and this is where the
+    // answer lands, so a name written by hand and a name imported are looked up
+    // the same way afterwards.
+    //
+    // Separate from `of` because the two know different halves: `of` walks one
+    // typed suite, and `ImportResolver` has read every file to work out what
+    // reaches what. Whichever runs first, the entries end up in one scope.
+    pub fn bind_imports(&mut self, at: ScopeId, bindings: &[Binding]) {
+        for bound in bindings {
+            self.bind(
+                at,
+                bound.name.clone(),
+                Entry {
+                    info:   Info::Import {
+                        home: bound.home.clone(),
+                        path: bound.path.clone(),
+                    },
+                    // What it names may have one; the name here does not.
+                    symbol: None,
+                    line:   bound.line,
+                    col:    bound.col,
+                },
+            );
+        }
     }
 
     // ---- Building --------------------------------------------------------

@@ -17,12 +17,13 @@
 // says a type is not known yet, which is what the second spelling this module
 // used to have was mostly for.
 
-// Nothing constructs these yet: the pass that walks a scope and fills them in
-// is the next one to write. The allow is theirs and comes off with it, as the
-// one in `tir_nodes` comes off with the pass that reads the TIR.
+// The mangler and the tables it fills are called by tests and by `sema::scopes`
+// and by nothing else yet: the pass that walks a resolved suite and emits from
+// it is the one that will. The allow is for that, and comes off with it.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::{
@@ -114,6 +115,16 @@ pub enum Info {
         ty:       TyId,
     },
 
+    // A name an import brought in. What it names is in another module and this
+    // is the way to it -- the file it came from, and the path inside that file.
+    // It stays a way and does not become the thing: resolving it wants the
+    // other module's own table, and a module is read before the ones that
+    // import it only where nothing is written in a circle.
+    Import {
+        home: PathBuf,
+        path: Vec<Name>,
+    },
+
     // A namespace, and a file besides -- a file is a module and a namespace
     // nests another inside the one it is written in, so the two are reached the
     // same way and there is one thing here for both (section 1). What it holds
@@ -173,14 +184,6 @@ pub enum Payload {
     // `C { x: i32 }`, reached by name.
     Named(Vec<Field>),
 }
-// ---- What is still open ---------------------------------------------------
-// One thing. Nothing here owns the `Ty` arena a `TyId` points into: the pass
-// that fills these in owns it, and what it is filling is the `types` of a
-// `TTIRProgram`. That has to be one arena for the suite and not one per file,
-// since `Ty::Named` names an item of that same program and two files sharing a
-// type have to share the handle for it -- which is the per-file-or-per-suite
-// question `tir::ttir_nodes` leaves open, arriving here.
-
 // ---- Mangling -------------------------------------------------------------
 //
 // The symbol a fn is compiled to. Every part is written as its length and then
@@ -254,13 +257,14 @@ pub struct Mangler {
 }
 
 impl Mangler {
-    // `at` is the module the program was read at -- the file's own path from
-    // the suite root, `a/b/deep.fc` being `["a", "b", "deep"]`. It is the
-    // caller's because nothing in a `TTIRProgram` says which file it came from,
-    // and `sema::imports` is what knows: see `ImportResolver::module_of`.
-    pub fn new(p: &TTIRProgram, at: &[Name]) -> Mangler {
+    // Every module of the suite, each walked from its own path: a file is a
+    // module and its name stands in front of everything it declares, so the
+    // segments start there rather than empty.
+    pub fn new(p: &TTIRProgram) -> Mangler {
         let mut m = Mangler { paths: vec![Vec::new(); p.items.len()] };
-        m.nest(&p.roots, at, p);
+        for module in &p.modules {
+            m.nest(&module.roots, &module.path, p);
+        }
         m.members(p);
         m
     }
@@ -355,8 +359,11 @@ impl Mangler {
             Ty::Param { index, .. } => format!("${}", index),
 
             // Nothing is compiled out of a program that did not type, so a fn
-            // being named cannot hold one of these.
-            Ty::Error => panic!("a type that was never worked out reached the mangler"),
+            // being named can hold neither of these: a hole means the checker
+            // never finished, and an `Error` means it finished and said no.
+            Ty::Var(_) | Ty::Error => {
+                panic!("a type that was never worked out reached the mangler")
+            }
         }
     }
 
@@ -515,9 +522,9 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
-    // Every declaration in `p`, which was read at module `at`.
-    pub fn of(p: &TTIRProgram, at: &[Name]) -> SymbolTable {
-        let m = Mangler::new(p, at);
+    // Every declaration in the suite.
+    pub fn of(p: &TTIRProgram) -> SymbolTable {
+        let m = Mangler::new(p);
         let mut table = SymbolTable { entries: HashMap::new(), clashes: Vec::new() };
         for id in 0..p.items.len() {
             let Some(symbol) = m.symbol_of(id, p) else { continue };

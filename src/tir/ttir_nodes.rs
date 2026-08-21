@@ -33,17 +33,38 @@ pub type TyId = usize;
 // How long a reference is good for, once the checker has settled it. A `'a` in
 // the source and one it worked out for itself are the same thing here.
 pub type RegionId = usize;
+// A hole in a type while the checker is filling it. See `Ty::Var`.
+pub type VarId = usize;
 
+// One program is one *suite* and not one file, which is forced rather than
+// chosen: `Ty::Named` names an item of this same program, and an import reaches
+// a declaration in another file (section 1) -- so two files that share a type
+// have to share the arena, and therefore the items it points into. That is also
+// why `types` is deduplicated across the whole of it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TTIRProgram {
-    pub roots:  Vec<TTIRItemId>,
-    pub items:  Vec<TTIRItem>,
-    pub exprs:  Vec<TTIRExpr>,
-    pub pats:   Vec<TTIRPat>,
-    pub bodies: Vec<TTIRBody>,
+    // The files it was compiled from, each with what it declared, in the order
+    // they were read. Not one flat `roots`: a file is a module (section 1) and
+    // its name stands in front of everything it declares, so which file a root
+    // came from is part of what the program is.
+    pub modules: Vec<TTIRModule>,
+    pub items:   Vec<TTIRItem>,
+    pub exprs:   Vec<TTIRExpr>,
+    pub pats:    Vec<TTIRPat>,
+    pub bodies:  Vec<TTIRBody>,
     // Every type the program mentions, deduplicated by the checker: two `i32`s
     // are one entry, which is what lets a comparison be a handle comparison.
-    pub types:  Vec<Ty>,
+    pub types:   Vec<Ty>,
+}
+
+// One file, and what it declared.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TTIRModule {
+    // Its path from the suite root: `a/b/deep.fc` is `["a", "b", "deep"]`.
+    // What `ImportResolver::module_of` works out, and what stands in front of
+    // every symbol the file compiles to.
+    pub path:  Vec<String>,
+    pub roots: Vec<TTIRItemId>,
 }
 
 // ---- Generics ---------------------------------------------------------------
@@ -117,7 +138,10 @@ pub enum TTIRSubject {
 // What a type *is*, not how it was written. `<grouped_type>` is gone, `_` is
 // gone, and a name has become the declaration it names.
 
-#[derive(Debug, Clone, PartialEq)]
+// `Eq` and `Hash` because the arena interns these: an equal type has to be an
+// equal handle, and that wants them as a key. Nothing here holds a float, so
+// `Eq` is honest.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     Prim(TIRPrim),
     // A struct, an enum or a trait, with the arguments it was given.
@@ -169,6 +193,15 @@ pub enum Ty {
         name:  String,
         index: usize,
     },
+    // A type the checker has not worked out yet: the `_` of `Vec<_>` while it is
+    // still being settled, and the type of every expression before it is.
+    //
+    // None survives into a finished program -- that is what makes this the
+    // *typed* tree, and `sema::types::Types::finish` is where any that did
+    // becomes an `Error` with a message against it. It is here rather than in a
+    // table of the checker's own because inference builds partial types, and a
+    // partial type is a `Ty` with a hole in it.
+    Var(VarId),
     // What an expression the checker could not type is given, so one mistake
     // costs one message and not every message after it.
     Error,

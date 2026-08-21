@@ -8,6 +8,8 @@ use crate::tir::ttir_nodes::*;
 
 struct Suite {
     p: TTIRProgram,
+    // The file these declarations stand in; empty unless a test says.
+    module: Vec<String>,
 }
 
 impl Suite {
@@ -16,7 +18,7 @@ impl Suite {
         p.types.push(Ty::Prim(TIRPrim::I32));
         p.types.push(Ty::Prim(TIRPrim::Null));
         p.types.push(Ty::Prim(TIRPrim::F64));
-        Suite { p }
+        Suite { p, module: Vec::new() }
     }
 
     const I32: TyId = 0;
@@ -111,6 +113,12 @@ impl Suite {
     }
 }
 
+// The one file's scope. `root()` is the suite, which holds no names of its own
+// -- there is nothing above a suite to name.
+fn module_scope(s: &Scopes) -> ScopeId {
+    s.modules().next().expect("a module").1
+}
+
 // The names one scope holds, for reading back.
 fn names(s: &Scopes, at: ScopeId) -> Vec<String> {
     s.sorted(at).into_iter().map(|(n, _)| n.clone()).collect()
@@ -120,13 +128,15 @@ fn names(s: &Scopes, at: ScopeId) -> Vec<String> {
 #[test]
 fn the_module_scope_holds_what_the_file_declares() {
     let mut s = Suite::new();
+    s.module = vec!["shapes".to_string()];
     let f = s.func("main", Vec::new(), None);
     let p = s.strukt("Point");
     let g = s.global("count", TIRIntro::Var);
-    s.p.roots = vec![f, p, g];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![f, p, g] }];
 
-    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     assert_eq!(scopes.kind(root), ScopeKind::Module);
     assert_eq!(names(&scopes, root), vec!["Point", "count", "main"]);
     // And each carries the way to its own entry in the symbol table.
@@ -142,10 +152,11 @@ fn one_name_may_hold_several_declarations() {
     let mut s = Suite::new();
     let a = s.func("add", vec![Suite::I32, Suite::I32], None);
     let b = s.func("add", vec![Suite::F64, Suite::F64], None);
-    s.p.roots = vec![a, b];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![a, b] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let found = scopes.look_up(scopes.root(), "add");
+    let scopes = Scopes::of(&s.p);
+    let found = scopes.look_up(module_scope(&scopes), "add");
     assert_eq!(found.len(), 2);
     let mut symbols: Vec<&str> = found.iter().filter_map(|e| e.symbol.as_deref()).collect();
     symbols.sort();
@@ -165,9 +176,10 @@ fn a_fn_holds_its_parameters_and_its_slots() {
         Vec::new(),
     );
     let f = s.func("sum", vec![Suite::I32], Some(body));
-    s.p.roots = vec![f];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![f] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
+    let scopes = Scopes::of(&s.p);
     let inner = scopes.opened_by(f).expect("a fn opens a scope");
     assert_eq!(scopes.kind(inner), ScopeKind::Function);
     assert_eq!(names(&scopes, inner), vec!["n", "total"]);
@@ -188,10 +200,11 @@ fn a_local_hides_a_global_of_the_same_name() {
     let body = s.body(vec![("count", Suite::I32, TIRIntro::Let)], Vec::new());
     let f = s.func("go", Vec::new(), Some(body));
     let g = s.global("count", TIRIntro::Var);
-    s.p.roots = vec![g, f];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![g, f] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let inner = scopes.opened_by(f).expect("a fn opens a scope");
 
     // The global says `var` and has a symbol; the local says neither.
@@ -213,9 +226,10 @@ fn a_name_is_found_in_the_scope_around() {
     let body = s.body(vec![("n", Suite::I32, TIRIntro::Let)], Vec::new());
     let f = s.func("go", Vec::new(), Some(body));
     let p = s.strukt("Point");
-    s.p.roots = vec![p, f];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![p, f] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
+    let scopes = Scopes::of(&s.p);
     let inner = scopes.opened_by(f).expect("a fn opens a scope");
     assert_eq!(scopes.look_up(inner, "Point").len(), 1);
     assert!(scopes.here(inner, "Point").is_empty());
@@ -235,10 +249,11 @@ fn a_namespace_is_a_scope_of_its_own() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "limits".to_string(), items: vec![max],
     });
-    s.p.roots = vec![ns];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![ns] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let inner = scopes.opened_by(ns).expect("a namespace opens a scope");
     assert_eq!(scopes.kind(inner), ScopeKind::Namespace);
     // The namespace's name is in the module; what is inside it is not.
@@ -263,10 +278,11 @@ fn an_impl_holds_its_methods_and_declares_no_name() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![len],
     });
-    s.p.roots = vec![buf, imp];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![buf, imp] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let inner = scopes.opened_by(imp).expect("an impl opens a scope");
     assert_eq!(scopes.kind(inner), ScopeKind::Impl);
     assert_eq!(names(&scopes, root), vec!["Buf"]);
@@ -279,6 +295,7 @@ fn an_impl_holds_its_methods_and_declares_no_name() {
 #[test]
 fn a_declaration_in_a_body_stands_in_the_fn_that_holds_it() {
     let mut s = Suite::new();
+    s.module = vec!["shapes".to_string()];
     let helper = s.func("helper", vec![Suite::I32], None);
     let value = s.expr(TTIRExprKind::Block {
         stmts: vec![TTIRStmt::Item(helper)],
@@ -287,10 +304,11 @@ fn a_declaration_in_a_body_stands_in_the_fn_that_holds_it() {
     s.p.bodies.push(TTIRBody { locals: Vec::new(), value });
     let body = s.p.bodies.len() - 1;
     let outer = s.func("outer", Vec::new(), Some(body));
-    s.p.roots = vec![outer];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![outer] }];
 
-    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let inner = scopes.opened_by(outer).expect("a fn opens a scope");
     assert_eq!(names(&scopes, root), vec!["outer"]);
     assert_eq!(names(&scopes, inner), vec!["helper"]);
@@ -301,31 +319,36 @@ fn a_declaration_in_a_body_stands_in_the_fn_that_holds_it() {
     );
 }
 
-// A scope may be built by hand as well as walked out of a program: the pass
-// that brings imported names in has nowhere else to put them.
+// What a file's imports brought in stands in that file's scope, so a name
+// written by hand and a name imported are looked up the same way afterwards.
+// The resolver knows which module each came from; this is where that lands.
 #[test]
-fn a_scope_can_be_added_to_by_hand() {
+fn an_imported_name_stands_in_the_scope_that_imported_it() {
     let mut scopes = Scopes::new();
     let root = scopes.root();
-    scopes.bind(
-        root,
-        "circle".to_string(),
-        Entry {
-            info:   Info::Function {
-                generics:  Vec::new(),
-            wheres:    Vec::new(),
-                params:    Vec::new(),
-                ret:       None,
-                is_const:  false,
-                is_unsafe: false,
-            },
-            symbol: Some("__F6shapes6circle".to_string()),
-            line:   1,
-            col:    1,
-        },
+    let at = scopes.open(root, ScopeKind::Module);
+    scopes.bind_imports(
+        at,
+        &[Binding {
+            name: "circle".to_string(),
+            home: std::path::PathBuf::from("shapes.fc"),
+            path: vec!["circle".to_string()],
+            glob: false,
+            via:  0,
+            line: 1,
+            col:  8,
+        }],
     );
-    assert_eq!(scopes.look_up(root, "circle").len(), 1);
-    assert_eq!(scopes.len(), 1);
+
+    let found = scopes.look_up(at, "circle");
+    assert_eq!(found.len(), 1);
+    let Info::Import { home, path } = &found[0].info else { panic!("{:?}", found) };
+    assert!(home.ends_with("shapes.fc"));
+    assert_eq!(path, &vec!["circle".to_string()]);
+    // The name here has no symbol; what it names may have one of its own.
+    assert!(found[0].symbol.is_none());
+    // And it is where the import was written.
+    assert_eq!((found[0].line, found[0].col), (1, 8));
 }
 
 // ---- Generic parameters ---------------------------------------------------
@@ -351,9 +374,10 @@ fn a_fn_holds_its_generic_parameters() {
             bounds: vec![TTIRBound::Trait(ord_ty), TTIRBound::Life(0)],
         },
     ];
-    s.p.roots = vec![ord, f];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![ord, f] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
+    let scopes = Scopes::of(&s.p);
     let inner = scopes.opened_by(f).expect("a fn opens a scope");
     assert_eq!(names(&scopes, inner), vec!["T", "a", "x"]);
 
@@ -391,10 +415,11 @@ fn a_struct_and_an_enum_hold_their_parameters() {
         wheres: Vec::new(),
         name: "Maybe".to_string(), variants: Vec::new(),
     });
-    s.p.roots = vec![st, en];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![st, en] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    assert_eq!(names(&scopes, scopes.root()), vec!["Maybe", "Stack"]);
+    let scopes = Scopes::of(&s.p);
+    assert_eq!(names(&scopes, module_scope(&scopes)), vec!["Maybe", "Stack"]);
     let inside_st = scopes.opened_by(st).expect("a struct opens a scope");
     let inside_en = scopes.opened_by(en).expect("an enum opens a scope");
     assert_eq!(scopes.kind(inside_st), ScopeKind::Struct);
@@ -402,7 +427,7 @@ fn a_struct_and_an_enum_hold_their_parameters() {
     assert_eq!(names(&scopes, inside_st), vec!["T"]);
     assert_eq!(names(&scopes, inside_en), vec!["E"]);
     // And neither leaks into the module around it.
-    assert!(scopes.look_up(scopes.root(), "T").is_empty());
+    assert!(scopes.look_up(module_scope(&scopes), "T").is_empty());
 }
 
 // An impl's parameters are every method's: the `T` of `impl<T> Stack<T>` stands
@@ -419,9 +444,10 @@ fn an_impls_parameters_reach_its_methods() {
         wheres: Vec::new(),
         ty: stack_ty, of: None, members: vec![push],
     });
-    s.p.roots = vec![stack, imp];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![stack, imp] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
+    let scopes = Scopes::of(&s.p);
     let inside_impl = scopes.opened_by(imp).expect("an impl opens a scope");
     let inside_fn = scopes.opened_by(push).expect("a fn opens a scope");
     assert_eq!(names(&scopes, inside_impl), vec!["T", "push"]);
@@ -446,9 +472,10 @@ fn a_fns_parameter_hides_the_impls() {
         wheres: Vec::new(),
         ty: buf_ty, of: None, members: vec![m],
     });
-    s.p.roots = vec![buf, imp];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![buf, imp] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
+    let scopes = Scopes::of(&s.p);
     let inside_fn = scopes.opened_by(m).expect("a fn opens a scope");
     assert_eq!(scopes.here(inside_fn, "T").len(), 1);
     assert_eq!(scopes.look_up(inside_fn, "T").len(), 1);
@@ -489,10 +516,11 @@ fn a_where_clause_keeps_what_no_parameter_can_hold() {
             bounds:  vec![TTIRBound::Life(1)],
         },
     ];
-    s.p.roots = vec![ord, show, vec, f];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![ord, show, vec, f] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let Info::Function { generics, wheres, .. } = &scopes.look_up(root, "go")[0].info else {
         panic!()
     };
@@ -531,10 +559,11 @@ fn a_type_alias_is_a_name_for_the_type_it_follows() {
         wheres: Vec::new(),
         ty: pair,
     });
-    s.p.roots = vec![alias];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![alias] }];
 
-    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     assert_eq!(names(&scopes, root), vec!["Pair"]);
 
     let entry = &scopes.look_up(root, "Pair")[0];
@@ -578,10 +607,11 @@ fn an_enum_holds_its_variants() {
             },
         ],
     });
-    s.p.roots = vec![en];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![en] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let root = scopes.root();
+    let scopes = Scopes::of(&s.p);
+    let root = module_scope(&scopes);
     let inner = scopes.opened_by(en).expect("an enum opens a scope");
     assert_eq!(names(&scopes, root), vec!["Color"]);
     assert_eq!(names(&scopes, inner), vec!["Blue", "Red", "Shade"]);
@@ -614,10 +644,11 @@ fn a_signature_keeps_its_parameter_names() {
         TTIRParam { name: TIRBinding::Discard, slot: None },
     ];
     assert!(held.body.is_none());
-    s.p.roots = vec![sig];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![sig] }];
 
-    let scopes = Scopes::of(&s.p, &[]);
-    let Info::Function { params, .. } = &scopes.look_up(scopes.root(), "show")[0].info else {
+    let scopes = Scopes::of(&s.p);
+    let Info::Function { params, .. } = &scopes.look_up(module_scope(&scopes), "show")[0].info else {
         panic!()
     };
     assert_eq!(params[0].0, "width");
@@ -677,10 +708,25 @@ fn every_kind_of_info_is_built_by_something() {
         name: "limits".to_string(), items: vec![max],
     });
     let count = s.global("count", TIRIntro::Var);
-    s.p.roots = vec![alias, point, color, show, go, limits, count];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![alias, point, color, show, go, limits, count] }];
 
     // Which variants turned up, anywhere in the tree.
-    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
+    let mut scopes = Scopes::of(&s.p);
+    // The one an import produces and a walk of one suite cannot.
+    let module = module_scope(&scopes);
+    scopes.bind_imports(
+        module,
+        &[Binding {
+            name: "circle".to_string(),
+            home: std::path::PathBuf::from("shapes.fc"),
+            path: vec!["circle".to_string()],
+            glob: false,
+            via:  0,
+            line: 1,
+            col:  1,
+        }],
+    );
     let mut seen: Vec<&str> = Vec::new();
     for at in 0..scopes.len() {
         for (_, entries) in scopes.sorted(at) {
@@ -694,6 +740,7 @@ fn every_kind_of_info_is_built_by_something() {
                     Info::Trait { .. } => "Trait",
                     Info::TypeAlias { .. } => "TypeAlias",
                     Info::Namespace(_) => "Namespace",
+                    Info::Import { .. } => "Import",
                     Info::TypeParam { .. } => "TypeParam",
                     Info::Lifetime { .. } => "Lifetime",
                 };
@@ -706,7 +753,42 @@ fn every_kind_of_info_is_built_by_something() {
     seen.sort();
     assert_eq!(
         seen,
-        vec!["Enum", "Function", "Lifetime", "Namespace", "Struct", "Trait",
-             "TypeAlias", "TypeParam", "Variable", "Variant"]
+        vec!["Enum", "Function", "Import", "Lifetime", "Namespace", "Struct",
+             "Trait", "TypeAlias", "TypeParam", "Variable", "Variant"]
+    );
+}
+
+// A program is a suite and not a file, so several modules stand in it -- each
+// with a scope of its own, all under the suite, which holds no names because
+// there is nothing above a suite to name.
+#[test]
+fn a_suite_holds_a_scope_for_each_of_its_files() {
+    let mut s = Suite::new();
+    let here = s.func("area", vec![Suite::I32], None);
+    let there = s.func("area", vec![Suite::I32], None);
+    s.p.modules = vec![
+        TTIRModule { path: vec!["shapes".to_string()], roots: vec![here] },
+        TTIRModule { path: vec!["boxes".to_string()], roots: vec![there] },
+    ];
+
+    let scopes = Scopes::of(&s.p);
+    assert_eq!(scopes.kind(scopes.root()), ScopeKind::Suite);
+    assert!(scopes.sorted(scopes.root()).is_empty());
+
+    let found: Vec<(&[String], ScopeId)> = scopes.modules().collect();
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].0, ["shapes".to_string()]);
+    assert_eq!(scopes.module(&["boxes".to_string()]), Some(found[1].1));
+
+    // One name in two files is two declarations and two symbols, and neither
+    // file can see the other's: an import is what reaches across.
+    for (path, at) in found {
+        assert_eq!(names(&scopes, at), vec!["area"]);
+        let symbol = scopes.look_up(at, "area")[0].symbol.clone().expect("a symbol");
+        assert!(symbol.contains(&path[0]), "{} is not in {}", path[0], symbol);
+    }
+    assert_ne!(
+        scopes.look_up(scopes.module(&["shapes".to_string()]).unwrap(), "area")[0].symbol,
+        scopes.look_up(scopes.module(&["boxes".to_string()]).unwrap(), "area")[0].symbol,
     );
 }

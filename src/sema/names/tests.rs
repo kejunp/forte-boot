@@ -4,16 +4,18 @@
 
 use super::*;
 use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline};
-use crate::tir::ttir_nodes::{TTIRItem, TTIRProgram};
+use crate::tir::ttir_nodes::{TTIRItem, TTIRModule, TTIRProgram};
 
 // A program under construction, with the handful of types a symbol names.
 struct Suite {
     p: TTIRProgram,
+    // The file these declarations stand in; empty unless a test says.
+    module: Vec<String>,
 }
 
 impl Suite {
     fn new() -> Suite {
-        Suite { p: TTIRProgram::default() }
+        Suite { p: TTIRProgram::default(), module: Vec::new() }
     }
 
     fn ty(&mut self, ty: Ty) -> TyId {
@@ -68,15 +70,17 @@ impl Suite {
 
     // The symbol of the fn at `id`, with the program's roots as given.
     fn symbol_of(&mut self, id: TTIRItemId, roots: Vec<TTIRItemId>) -> String {
-        self.p.roots = roots;
-        let m = Mangler::new(&self.p, &[]);
+        let module = self.module.clone();
+        self.p.modules = vec![TTIRModule { path: module, roots: roots }];
+        let m = Mangler::new(&self.p);
         let TTIRItemKind::Fn(f) = &self.p.items[id].kind else { panic!("not a fn") };
         m.symbol(f, id, &self.p)
     }
 
     fn spell_of(&mut self, ty: TyId, roots: Vec<TTIRItemId>) -> String {
-        self.p.roots = roots;
-        Mangler::new(&self.p, &[]).spell(ty, &self.p)
+        let module = self.module.clone();
+        self.p.modules = vec![TTIRModule { path: module, roots: roots }];
+        Mangler::new(&self.p).spell(ty, &self.p)
     }
 }
 
@@ -325,14 +329,18 @@ fn a_file_is_a_segment_like_a_namespace() {
     let mut s = Suite::new();
     let i32 = s.prim(TIRPrim::I32);
     let area = s.func("area", vec![i32]);
-    s.p.roots = vec![area];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![area] }];
 
-    let TTIRItemKind::Fn(f) = &s.p.items[area].kind else { panic!() };
-    let shapes = Mangler::new(&s.p, &["shapes".to_string()]);
-    let boxes = Mangler::new(&s.p, &["boxes".to_string()]);
-    assert_eq!(shapes.symbol(f, area, &s.p), "__F6shapes4area3i32");
-    assert_eq!(boxes.symbol(f, area, &s.p), "__F5boxes4area3i32");
-    assert_ne!(shapes.symbol(f, area, &s.p), boxes.symbol(f, area, &s.p));
+    // The same declaration, read as one file and then as another.
+    let mut symbols = Vec::new();
+    for file in ["shapes", "boxes"] {
+        s.p.modules = vec![TTIRModule { path: vec![file.to_string()], roots: vec![area] }];
+        let m = Mangler::new(&s.p);
+        let TTIRItemKind::Fn(f) = &s.p.items[area].kind else { panic!() };
+        symbols.push(m.symbol(f, area, &s.p));
+    }
+    assert_eq!(symbols, vec!["__F6shapes4area3i32", "__F5boxes4area3i32"]);
 }
 
 // A file in a directory is a module inside a module, so its segments nest the
@@ -345,9 +353,10 @@ fn a_nested_file_and_a_namespace_are_one_run_of_segments() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "limits".to_string(), items: vec![clamp],
     });
-    s.p.roots = vec![ns];
-    let at = ["a".to_string(), "b".to_string(), "deep".to_string()];
-    let m = Mangler::new(&s.p, &at);
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![ns] }];
+    s.p.modules[0].path = vec!["a".to_string(), "b".to_string(), "deep".to_string()];
+    let m = Mangler::new(&s.p);
     let TTIRItemKind::Fn(f) = &s.p.items[clamp].kind else { panic!() };
     assert_eq!(m.symbol(f, clamp, &s.p), "__F1a1b4deep6limits5clamp");
 }
@@ -360,14 +369,16 @@ fn a_nested_file_and_a_namespace_are_one_run_of_segments() {
 #[test]
 fn the_table_is_keyed_by_symbol() {
     let mut s = Suite::new();
+    s.module = vec!["shapes".to_string()];
     let i32 = s.prim(TIRPrim::I32);
     let f64 = s.prim(TIRPrim::F64);
     let addi = s.func("add", vec![i32, i32]);
     let addf = s.func("add", vec![f64, f64]);
     let point = s.strukt("Point");
-    s.p.roots = vec![addi, addf, point];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![addi, addf, point] }];
 
-    let table = SymbolTable::of(&s.p, &["shapes".to_string()]);
+    let table = SymbolTable::of(&s.p);
     let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
     assert_eq!(
         keys,
@@ -423,9 +434,10 @@ fn each_kind_of_declaration_gets_its_own_letter() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "thing".to_string(), items: Vec::new(),
     });
-    s.p.roots = vec![f, st, en, tr, co, gl, ns];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![f, st, en, tr, co, gl, ns] }];
 
-    let table = SymbolTable::of(&s.p, &[]);
+    let table = SymbolTable::of(&s.p);
     let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
     assert_eq!(
         keys,
@@ -451,9 +463,10 @@ fn an_impl_is_not_in_the_table_but_its_methods_are() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         ty: buf_ty, of: None, members: vec![len],
     });
-    s.p.roots = vec![buf, imp];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![buf, imp] }];
 
-    let table = SymbolTable::of(&s.p, &[]);
+    let table = SymbolTable::of(&s.p);
     let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
     assert_eq!(keys, vec!["__F3Buf3len", "__S3Buf"]);
 }
@@ -465,6 +478,7 @@ fn an_impl_is_not_in_the_table_but_its_methods_are() {
 #[test]
 fn an_impl_does_not_repeat_the_module_it_is_in() {
     let mut s = Suite::new();
+    s.module = vec!["shapes".to_string()];
     let here = s.strukt("Point");
     let here_ty = s.ty(Ty::Named { item: here, args: Vec::new() });
     let mine = s.func("norm", Vec::new());
@@ -488,9 +502,10 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "other".to_string(), items: vec![away],
     });
-    s.p.roots = vec![here, imp, other, imp2];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![here, imp, other, imp2] }];
 
-    let m = Mangler::new(&s.p, &["shapes".to_string()]);
+    let m = Mangler::new(&s.p);
     assert_eq!(m.symbol_of(mine, &s.p).as_deref(), Some("__F6shapes5Point4norm"));
     assert_eq!(
         m.symbol_of(theirs, &s.p).as_deref(),
@@ -503,15 +518,17 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
 #[test]
 fn a_type_alias_is_not_a_symbol() {
     let mut s = Suite::new();
+    s.module = vec!["shapes".to_string()];
     let i32 = s.prim(TIRPrim::I32);
     let alias = s.item(TTIRItemKind::TypeAlias {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "Count".to_string(), generics: Vec::new(), wheres: Vec::new(), ty: i32,
     });
     let point = s.strukt("Count");
-    s.p.roots = vec![alias, point];
+    let module = s.module.clone();
+    s.p.modules = vec![TTIRModule { path: module, roots: vec![alias, point] }];
 
-    let table = SymbolTable::of(&s.p, &["shapes".to_string()]);
+    let table = SymbolTable::of(&s.p);
     let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
     assert_eq!(keys, vec!["__S6shapes5Count"]);
 }

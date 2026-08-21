@@ -34,10 +34,9 @@
 //     at the second. A reader can see the first rule and write around it; no
 //     reader can be asked to choose between two globs.
 
-// The type vocabulary at the foot of this file is written and not yet filled:
-// the resolver settles which declaration a name reaches, and what its type is
-// wants a pass that does not exist. The allow is for those, and comes off with
-// the first pass that reads one.
+// Nothing outside `sema` calls into this yet -- the pass that would is the one
+// that turns a resolved suite into a typed tree. The allow is for that, and
+// comes off with it.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -53,7 +52,6 @@ use crate::tir::lower::Lowerer;
 use crate::tir::tir_nodes::{
     TIRImportLeaf, TIRItemId, TIRItemKind, TIRProgram, TIRVis, TIRBinding,
 };
-use crate::tir::ttir_nodes::TyId;
 
 // What a module is written in. A path names a module and not a file, and this
 // is the whole of the difference between the two.
@@ -914,51 +912,11 @@ fn quoted(names: &[&str]) -> String {
 // is a change to `error` and not to this pass, and it is worth making the first
 // time a second pass wants it.
 
-// ---- The type checker's vocabulary ----------------------------------------
-// Written down already and not filled in here. Resolving an import settles
-// which declaration a name reaches; what that declaration's *type* is wants a
-// pass that has read every declaration in the suite, and there is no such pass
-// yet -- so a `Symbol` carries the handle to the item and the tables below wait
-// for whoever works the types out. They are kept in one piece rather than grown
-// a field at a time, which is what would leave two passes describing one thing
-// differently.
-//
-// A type is a `TyId`, which is a handle into the one arena the checker owns --
-// the `types` of the `TTIRProgram` it is building. There is no second spelling
-// of a type here: `Ty` in `tir::ttir_nodes` is what a type is, in this pass and
-// in the typed tree alike, so nothing has to be translated on the way out.
-
-pub struct FnSig {
-    name: String,
-    params: Vec<Param>,
-    return_type: Option<TyId>,
-    is_pub: bool,
-    suite_id: usize,
-    mangled_name: Option<String>,
-}
-
-pub struct Param {
-    name: String,
-    ty: TyId,
-}
-
-pub struct StructDef {
-    name: String,
-    fields: Vec<Field>,
-    is_pub: bool,
-    suite_id: usize,
-}
-
-pub type Field = Param;
-
-pub struct Variable {
-    name: String,
-    ty: TyId,
-    is_mut: bool,
-    is_pub: bool,
-    suite_id: usize,
-}
-
+// The tables a type checker would have wanted here are in `sema::names`
+// instead: an `Info::Function` is what a `FnSig` was, an `Info::Struct` what a
+// `StructDef` was, and an `Info::Variable` what a `Variable` was -- each of
+// them filled from the typed tree, where the types actually are. A `Symbol`
+// here carries the handle to the declaration, which is how the two meet.
 
 #[cfg(test)]
 mod tests;

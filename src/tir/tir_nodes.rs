@@ -642,7 +642,7 @@ pub enum TIRBinding {
 }
 
 // `&` reads and `*` writes; neither is a pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TIRRefOp {
     Imm,
     Mut,
@@ -702,7 +702,7 @@ pub enum TIRRangeOp {
     Inclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TIRPrim {
     I8,
     I16,
