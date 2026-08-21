@@ -501,7 +501,9 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Cast(value) => CFGExprKind::Cast(self.value(value)),
             // The body is lowered with every other one; the handles agree
             // because the two arenas are filled in the same order.
-            TTIRExprKind::Closure { is_move, body } => CFGExprKind::Closure { is_move, body },
+            TTIRExprKind::Closure { captures, body } => {
+                CFGExprKind::Closure { captures, body }
+            }
 
             // An assignment where a value is wanted: the store happens and the
             // answer is `null`, there being nothing else it could be.

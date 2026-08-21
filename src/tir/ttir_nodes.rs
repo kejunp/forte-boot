@@ -481,9 +481,13 @@ pub enum TTIRExprKind {
     },
     // The type is on the expression, so what it is cast *to* needs no field.
     Cast(TTIRExprId),
+    // What it captured, and its body. No `is_move`: the word is the TIR's,
+    // which keeps what was written, and what it came to is a mode on each name
+    // -- "the keyword names the capture mode and not the transfer" (§5). A
+    // `move` closure is one whose captures are every one `Value`.
     Closure {
-        is_move: bool,
-        body:    TTIRBodyId,
+        captures: Vec<TTIRCapture>,
+        body:     TTIRBodyId,
     },
 
     Block {
@@ -518,6 +522,38 @@ pub enum TTIRExprKind {
 pub struct TTIRArm {
     pub pats: Vec<TTIRPatId>,
     pub body: TTIRExprId,
+}
+
+// One name a closure's body used but did not declare.
+//
+// This is the only way a body reaches out of itself: a `TTIRLocalId` is a slot
+// of the body that holds it, so a closure's body cannot name a local of the
+// frame it was written in. `outer` is that name where it lives and `slot` is
+// the closure's own for it, and the two are the whole of the connection.
+//
+// It is also the one place a reference is taken without being written (§5), and
+// so the one place the aliasing rule reaches something nobody spelled out --
+// which is why the position is here. A capture has no expression of its own to
+// take one from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TTIRCapture {
+    pub outer: TTIRLocalId,
+    pub slot:  TTIRLocalId,
+    pub mode:  TTIRCaptureMode,
+    pub line:  usize,
+    pub col:   usize,
+}
+
+// How the body took it: "worked out per name, each taking the least the body
+// asks of it. Reading one takes a `&` of it and assigning to one takes a `*`"
+// (§5), and `move` overrules both at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TTIRCaptureMode {
+    // `&n` where the body reads it, `*n` where it assigns to one.
+    Ref(TIRRefOp),
+    // By value, which "is a copy where the name's type copies and a move where
+    // it does not" -- the same rule every other handing-over follows.
+    Value,
 }
 
 // ---- Patterns -------------------------------------------------------------

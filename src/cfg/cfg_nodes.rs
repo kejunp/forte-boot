@@ -16,7 +16,7 @@
 
 use crate::tir::tir_nodes::{TIRAssignOp, TIRBinOp, TIRBinding, TIRIntro, TIRLit, TIRRangeOp,
                             TIRUnaryOp};
-use crate::tir::ttir_nodes::{TTIRItemId, TTIRPatId, TyId};
+use crate::tir::ttir_nodes::{TTIRItemId, TTIRPatId, TyId, TTIRCapture};
 
 pub type CFGExprId = usize;
 pub type CFGBodyId = usize;
@@ -203,8 +203,9 @@ pub enum CFGExprKind {
     },
     Cast(CFGExprId),
     // A closure's body is a graph of its own.
+    // As the TTIR has it: what it captured, and the graph its body became.
     Closure {
-        is_move: bool,
-        body:    CFGBodyId,
+        captures: Vec<TTIRCapture>,
+        body:     CFGBodyId,
     },
 }

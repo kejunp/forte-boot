@@ -30,12 +30,11 @@
 //     what it refers to. `fn f(): &i32 { let x = 1; &x }` passes this pass.
 //     Whoever compares `Ty::Ref.life` is who closes that, and until then the
 //     name of this file promises more than it does.
-//   - Closure captures. `TTIRExprKind::Closure` holds a body and nothing else,
-//     and a `TTIRLocalId` is a slot of the body that holds it -- so a closure's
-//     body cannot name a local of the frame it was written in, and what it
-//     captured is not in the tree to be read. §5 makes a capture the one place
-//     a reference is taken without being written; until `Closure` carries the
-//     list, nothing here can say so.
+//   - Nothing about a closure's *body* reaching what it captured. The capture
+//     itself is checked -- §5 makes it the one place a reference is taken
+//     without being written, and `TTIRCapture` is what says so -- but the
+//     borrow it takes lasts as long as the name the closure was bound to, and
+//     what the body does with its own slot for it is the body's own business.
 //   - Where a `Drop` runs. Settled in §2 and codegen's, not the checker's.
 
 // The pass that would hand this a TTIR is `sema` itself, which is not written.
@@ -47,8 +46,8 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
-    TTIRBodyId, TTIRExprId, TTIRExprKind, TTIRGeneric, TTIRItemId, TTIRItemKind, TTIRLocalId,
-    TTIRPatId, TTIRPatKind, TTIRProgram, TTIRStmt, Ty, TyId,
+    TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRGeneric, TTIRItemId,
+    TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRProgram, TTIRStmt, Ty, TyId,
 };
 
 // ---- Places ---------------------------------------------------------------
@@ -637,24 +636,31 @@ impl<'a> Checker<'a> {
                 Flow::Normal
             }
 
-            // Its own body, with its own slots. What it captured is not in the
-            // tree -- see the note at the top -- so nothing is said about that.
-            TTIRExprKind::Closure { body, .. } => {
-                let (outer, gone, held, marks, breaks) = (
-                    self.body,
-                    std::mem::take(&mut self.gone),
-                    std::mem::take(&mut self.held),
-                    std::mem::take(&mut self.marks),
-                    std::mem::take(&mut self.breaks),
-                );
-                let generic = self.generic.clone();
-                self.walk_body(body, generic);
-                self.body = outer;
-                self.gone = gone;
-                self.held = held;
-                self.marks = marks;
-                self.breaks = breaks;
-                Flow::Normal
+            // What it captured, and then its body. The captures are taken in
+            // the frame the closure was written in -- they are names of *that*
+            // body -- and the body is walked on its own afterwards.
+            TTIRExprKind::Closure { captures, body } => {
+                for held in &captures {
+                    let place = Place::of(held.outer);
+                    match held.mode {
+                        // "Reading one takes a `&` of it and assigning to one
+                        // takes a `*`" (§5), and the reference is held for as
+                        // long as the closure is.
+                        TTIRCaptureMode::Ref(op) => {
+                            self.captured(&place, op, held.line, held.col);
+                        }
+                        // "By value is a copy where the name's type copies and
+                        // a move where it does not" -- the same rule every
+                        // other handing-over follows.
+                        TTIRCaptureMode::Value => {
+                            let ty = self.p.bodies[self.body].locals[held.outer].ty;
+                            if !self.copies.is_copy(ty, self.p, &self.generic) {
+                                self.gone.moved(place, held.line, held.col);
+                            }
+                        }
+                    }
+                }
+                self.closure(body)
             }
 
             TTIRExprKind::Block { stmts, tail } => self.block(&stmts, tail),
@@ -690,6 +696,57 @@ impl<'a> Checker<'a> {
             }
             TTIRExprKind::Continue => Flow::Left,
         }
+    }
+
+    // A closure's body, walked with nothing of the frame around it: its slots
+    // are its own, the ones it captured among them, and a capture arrives whole
+    // however the name outside it stood.
+    fn closure(&mut self, body: TTIRBodyId) -> Flow {
+        let (outer, gone, held, marks, breaks) = (
+            self.body,
+            std::mem::take(&mut self.gone),
+            std::mem::take(&mut self.held),
+            std::mem::take(&mut self.marks),
+            std::mem::take(&mut self.breaks),
+        );
+        // A closure declares no parameters of its own, so the generics it is
+        // checked under are the ones it was written inside.
+        let generic = self.generic.clone();
+        self.walk_body(body, generic);
+        self.body = outer;
+        self.gone = gone;
+        self.held = held;
+        self.marks = marks;
+        self.breaks = breaks;
+        Flow::Normal
+    }
+
+    // A reference nobody wrote. Held like any other, and reported like any
+    // other -- what changes is only what the secondary says, a reader who did
+    // not write a `&` needing to be told one is there.
+    fn captured(&mut self, place: &Place, op: TIRRefOp, line: usize, col: usize) {
+        if let Some(other) = self
+            .held
+            .iter()
+            .find(|held| {
+                held.place.conflicts(place) && (held.op == TIRRefOp::Mut || op == TIRRefOp::Mut)
+            })
+            .cloned()
+        {
+            let name = self.name(place);
+            self.say(
+                Diagnostic::error(format!("`{}` is borrowed already", name), Span::at(line, col))
+                    .with_label(format!("the closure captures it by `{}`", sigil(op)))
+                    .with_secondary(
+                        Span::at(other.line, other.col),
+                        format!("a `{}` of it is held from", sigil(other.op)),
+                    )
+                    .with_help(
+                        "a place is reached through one `*`, or through any number of `&`, and never both",
+                    ),
+            );
+        }
+        self.held.push(Held { place: place.clone(), op, line, col });
     }
 
     // A run of things each of which is handed over: an argument list, the

@@ -128,6 +128,37 @@ impl Suite {
         self.expr(TTIRExprKind::Field { base, index }, ty)
     }
 
+    // A body of its own begins: the slots declared from here are the inner
+    // body's, and the outer body's are put aside until `shut`.
+    fn open(&mut self) -> Vec<TTIRLocal> {
+        std::mem::take(&mut self.locals)
+    }
+
+    // ...and ends, taking the slots declared since as its own.
+    fn shut(
+        &mut self,
+        outer: Vec<TTIRLocal>,
+        value: TTIRExprId,
+        captures: Vec<(TTIRLocalId, TTIRCaptureMode)>,
+    ) -> TTIRExprId {
+        let locals = std::mem::replace(&mut self.locals, outer);
+        self.p.bodies.push(TTIRBody { locals, value });
+        let body = self.p.bodies.len() - 1;
+        let line = self.line + 1;
+        let held = captures
+            .into_iter()
+            .map(|(outer, mode)| TTIRCapture { outer, slot: 0, mode, line, col: 1 })
+            .collect();
+        self.expr(TTIRExprKind::Closure { captures: held, body }, Self::NULL)
+    }
+
+    // A closure over a body with nothing in it, capturing what it is told to.
+    fn closure(&mut self, captures: Vec<(TTIRLocalId, TTIRCaptureMode)>) -> TTIRExprId {
+        let outer = self.open();
+        let empty = self.expr(TTIRExprKind::Literal(TIRLit::Null), Self::NULL);
+        self.shut(outer, empty, captures)
+    }
+
     fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
         self.expr(TTIRExprKind::Block { stmts, tail }, Self::NULL)
     }
@@ -796,4 +827,103 @@ fn an_element_is_not_ours_to_give_away_either() {
     let hand = s.call(vec![one]);
     let body = s.block(vec![], Some(hand));
     assert_eq!(s.errors(body), "");
+}
+
+// ---- Closures -------------------------------------------------------------
+
+// "A name the body uses but did not declare is captured, and how is worked out
+// per name, each taking the least the body asks of it. Reading one takes a `&`
+// of it and assigning to one takes a `*`" (section 5). The example the prose
+// gives, in three closures over one name.
+#[test]
+fn a_capture_takes_the_least_the_body_asks() {
+    // `let show = || print(n)` takes a `&`, and a second reader may stand
+    // beside it.
+    let mut s = Suite::new();
+    let n = s.slot("n", Suite::I32, TIRIntro::Var);
+    let read_once = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Imm))]);
+    let read_twice = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Imm))]);
+    let hand = s.call(vec![read_once, read_twice]);
+    let body = s.block(vec![], Some(hand));
+    assert_eq!(s.errors(body), "");
+
+    // `let bump = || n = n + 1` takes a `*`, and "one that writes to it may
+    // share it with nothing".
+    let mut s = Suite::new();
+    let n = s.slot("n", Suite::I32, TIRIntro::Var);
+    let writes = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Mut))]);
+    let reads = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Imm))]);
+    let hand = s.call(vec![writes, reads]);
+    let body = s.block(vec![], Some(hand));
+
+    let out = s.errors(body);
+    assert!(out.contains("error: `n` is borrowed already"), "{}", out);
+    // A reader who did not write a `&` is told one is there.
+    assert!(out.contains("the closure captures it by `&`"), "{}", out);
+}
+
+// "a `move` closure captures every name by value instead... By value is a copy
+// where the name's type copies and a move where it does not" (section 5).
+#[test]
+fn a_move_capture_takes_the_value() {
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    let a = s.slot("a", buf, TIRIntro::Let);
+    let owns = s.closure(vec![(a, TTIRCaptureMode::Value)]);
+    let first = s.call(vec![owns]);
+    let read = s.local(a);
+    let after = s.call(vec![read]);
+    let stmts = vec![s.eval(first), s.eval(after)];
+    let body = s.block(stmts, None);
+    assert!(s.errors(body).contains("error: `a` has been moved"));
+
+    // And where the name's type copies, it is a copy and the name stays.
+    let mut s = Suite::new();
+    let n = s.slot("n", Suite::I32, TIRIntro::Let);
+    let owns = s.closure(vec![(n, TTIRCaptureMode::Value)]);
+    let first = s.call(vec![owns]);
+    let read = s.local(n);
+    let after = s.call(vec![read]);
+    let stmts = vec![s.eval(first), s.eval(after)];
+    let body = s.block(stmts, None);
+    assert_eq!(s.errors(body), "");
+}
+
+// A capture is a borrow of a name outside the closure, so it answers to what
+// that name allows: a `*` capture of a `let` is a `*` of a `let`.
+#[test]
+fn a_star_capture_of_a_let_is_refused() {
+    let mut s = Suite::new();
+    let n = s.slot("n", Suite::I32, TIRIntro::Let);
+    let writes = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Mut))]);
+    let reads = s.closure(vec![(n, TTIRCaptureMode::Ref(TIRRefOp::Imm))]);
+    let hand = s.call(vec![writes, reads]);
+    let body = s.block(vec![], Some(hand));
+    // The two closures conflict, which is what this asserts; whether a `*`
+    // capture of a `let` is refused on its own is `sema`'s to decide when it
+    // works the mode out, since the mode is what it would refuse.
+    assert!(s.errors(body).contains("is borrowed already"));
+}
+
+// A closure's body is walked on its own: its slots are its own, and what it
+// captured arrives whole however the name outside it stood.
+#[test]
+fn a_closures_body_is_checked_by_itself() {
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    // The closure's own body, with its own slot, moved twice.
+    let held = s.open();
+    let inner_slot = s.slot("held", buf, TIRIntro::Let);
+    let one = s.local(inner_slot);
+    let first = s.call(vec![one]);
+    let two = s.local(inner_slot);
+    let second = s.call(vec![two]);
+    let stmts = vec![s.eval(first), s.eval(second)];
+    let inner_body = s.block(stmts, None);
+    let closure = s.shut(held, inner_body, Vec::new());
+
+    let outer = s.call(vec![closure]);
+    let body = s.block(vec![], Some(outer));
+    let out = s.errors(body);
+    assert!(out.contains("error: `held` has been moved"), "{}", out);
 }
