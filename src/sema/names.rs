@@ -185,6 +185,16 @@ pub enum Payload {
 // parts would have had to reserve one, and a space or a `<` inside a type's
 // spelling is no different.
 //
+// A symbol opens with `__F`, and the parts follow it: `foo` in the namespace
+// `namespaces`, taking an i32 and a `mytype`, is
+//
+//     __F10namespaces3foo3i326mytype
+//
+// The two underscores are what nothing written in the language can begin with,
+// so a mangled name cannot collide with one a `%symbol` gave or with anything
+// on the other side of a foreign declaration; the `F` says a function, and
+// leaves room for a letter for whatever else has to be named later.
+//
 // The parts, in order:
 //
 //   - where it is declared, one part per segment. A file is a module and a
@@ -204,6 +214,10 @@ pub enum Payload {
 // Built once for a program: where an item is declared is a fact about the
 // program and not about the fn being named, and working it out per fn would be
 // walking the whole tree for each of them.
+// What every mangled name opens with: `__` because nothing written in the
+// language may begin with it, and `F` because this one is a function.
+const FN_PREFIX: &str = "__F";
+
 pub struct Mangler {
     // The segments each item is declared under, by item. Empty for an item at
     // the top of the root module, and for one nothing reaches.
@@ -227,7 +241,7 @@ impl Mangler {
             return given.clone();
         }
 
-        let mut out = String::new();
+        let mut out = String::from(FN_PREFIX);
         for segment in &self.paths[at] {
             part(segment, &mut out);
         }

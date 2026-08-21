@@ -86,15 +86,35 @@ fn attrs(symbol: Option<&str>) -> TIRFnAttrs {
     }
 }
 
-// The one the prose spells out: `add` of two i32 is `3add3i323i32`. Each part
-// is its length and then its characters, and the return type is not a part --
-// nothing tells two fns apart by what they give back.
+// The one the prose spells out: `add` of two i32 is `__F3add3i323i32`. Each
+// part is its length and then its characters, and the return type is not a
+// part -- nothing tells two fns apart by what they give back.
 #[test]
 fn the_example_the_prose_gives() {
     let mut s = Suite::new();
     let i32 = s.prim(TIRPrim::I32);
     let add = s.func("add", vec![i32, i32]);
-    assert_eq!(s.symbol_of(add, vec![add]), "3add3i323i32");
+    assert_eq!(s.symbol_of(add, vec![add]), "__F3add3i323i32");
+}
+
+// The whole of the format in one name: the prefix, where it is declared, its
+// own name, and one part for each parameter. `foo` in the namespace
+// `namespaces`, of an i32 and a `mytype`.
+#[test]
+fn the_whole_format_in_one_name() {
+    let mut s = Suite::new();
+    let i32 = s.prim(TIRPrim::I32);
+    let mytype = s.strukt("mytype");
+    let mytype_ty = s.ty(Ty::Named { item: mytype, args: Vec::new() });
+    let foo = s.func("foo", vec![i32, mytype_ty]);
+    let ns = s.item(TTIRItemKind::Namespace {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "namespaces".to_string(), items: vec![foo],
+    });
+    assert_eq!(
+        s.symbol_of(foo, vec![mytype, ns]),
+        "__F10namespaces3foo3i326mytype"
+    );
 }
 
 // The length is what makes it unambiguous, so nothing is escaped: an `_` in a
@@ -104,15 +124,15 @@ fn the_example_the_prose_gives() {
 fn nothing_has_to_be_escaped() {
     let mut s = Suite::new();
     let f = s.func("my_fn_2", Vec::new());
-    assert_eq!(s.symbol_of(f, vec![f]), "7my_fn_2");
+    assert_eq!(s.symbol_of(f, vec![f]), "__F7my_fn_2");
 
     // `ab` then `c` and `a` then `bc` are four characters either way, and the
     // two symbols still differ.
     let mut s = Suite::new();
     let one = s.func("ab", Vec::new());
     let two = s.func("a", Vec::new());
-    assert_eq!(s.symbol_of(one, vec![one]), "2ab");
-    assert_eq!(s.symbol_of(two, vec![two]), "1a");
+    assert_eq!(s.symbol_of(one, vec![one]), "__F2ab");
+    assert_eq!(s.symbol_of(two, vec![two]), "__F1a");
 }
 
 // Two fns that share a name are told apart by what they take.
@@ -125,9 +145,9 @@ fn a_shared_name_is_told_apart_by_the_parameters() {
     let b = s.func("show", vec![str]);
     let c = s.func("show", vec![i32, i32]);
     let roots = vec![a, b, c];
-    assert_eq!(s.symbol_of(a, roots.clone()), "4show3i32");
-    assert_eq!(s.symbol_of(b, roots.clone()), "4show3str");
-    assert_eq!(s.symbol_of(c, roots), "4show3i323i32");
+    assert_eq!(s.symbol_of(a, roots.clone()), "__F4show3i32");
+    assert_eq!(s.symbol_of(b, roots.clone()), "__F4show3str");
+    assert_eq!(s.symbol_of(c, roots), "__F4show3i323i32");
 }
 
 // `%symbol("malloc")` is the exact name and not a part of one: nothing outside
@@ -155,7 +175,7 @@ fn a_namespace_is_a_segment() {
         name:  "shapes".to_string(),
         items: vec![inner],
     });
-    assert_eq!(s.symbol_of(inner, vec![ns]), "6shapes4area3i32");
+    assert_eq!(s.symbol_of(inner, vec![ns]), "__F6shapes4area3i32");
 }
 
 #[test]
@@ -170,7 +190,7 @@ fn namespaces_nest() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "a".to_string(), items: vec![inner],
     });
-    assert_eq!(s.symbol_of(f, vec![outer]), "1a1b2go");
+    assert_eq!(s.symbol_of(f, vec![outer]), "__F1a1b2go");
 }
 
 // A method's segments are the impl it is written in. `impl Buf` and
@@ -199,8 +219,8 @@ fn a_method_is_named_by_the_impl_it_is_in() {
     });
 
     let roots = vec![buf, imp, show, for_show];
-    assert_eq!(s.symbol_of(bare, roots.clone()), "3Buf3len");
-    assert_eq!(s.symbol_of(shown, roots.clone()), "3Buf4Show3len");
+    assert_eq!(s.symbol_of(bare, roots.clone()), "__F3Buf3len");
+    assert_eq!(s.symbol_of(shown, roots.clone()), "__F3Buf4Show3len");
     // The two differ, which is the whole point of the trait being there.
     assert_ne!(s.symbol_of(bare, roots.clone()), s.symbol_of(shown, roots));
 }
@@ -274,7 +294,7 @@ fn a_generic_type_carries_its_arguments() {
     let f = s.func("take", vec![nested]);
     let mut roots = roots;
     roots.push(f);
-    assert_eq!(s.symbol_of(f, roots), "4take17Map<str,Vec<i32>>");
+    assert_eq!(s.symbol_of(f, roots), "__F4take17Map<str,Vec<i32>>");
 }
 
 // A `%symbol` name is handed over exactly, so it is what the linker sees --
@@ -284,6 +304,6 @@ fn a_mangled_name_and_a_given_one_do_not_collide() {
     let mut s = Suite::new();
     let f = s.func("malloc", Vec::new());
     let mangled = s.symbol_of(f, vec![f]);
-    assert_eq!(mangled, "6malloc");
+    assert_eq!(mangled, "__F6malloc");
     assert_ne!(mangled, "malloc");
 }

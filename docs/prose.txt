@@ -148,9 +148,11 @@ the six:
 
   %symbol("malloc")     Gives a fn the exact symbol name it is compiled to,
                         in place of the mangled one. A name is otherwise
-                        mangled by writing each part as its length and then
-                        its characters — "add" of two i32 is "3add3i323i32" —
-                        so that two functions may share a name. The length is
+                        mangled as "__F" and then each part written as its
+                        length and then its characters — "foo" in the
+                        namespace "namespaces", of an i32 and a "mytype", is
+                        "__F10namespaces3foo3i326mytype" — so that two
+                        functions may share a name. The length is
                         what makes it unambiguous, and it is why nothing has
                         to be escaped on the way in: an "_" inside a name is
                         a character like any other, where a separator between
@@ -1678,11 +1680,15 @@ answer is not obvious from the rules alone.
     "%repr", "%derive" and "%cfg" wait on features that do not exist. Nothing
     says which declarations each of the six may sit on, beyond what its own
     description implies.
-  - A name is mangled by writing each part as its length and then its
-    characters, and "%symbol" gives the exact name instead (section 1).
-    Settled, and the parts are these: where the fn is declared, one part per
-    segment; its own name; and one part for each parameter's type. Four
-    things follow, none of which section 1 spells out.
+  - A name is mangled as "__F" and then each part written as its length and
+    then its characters, and "%symbol" gives the exact name instead
+    (section 1). Settled, and the parts are these: where the fn is declared,
+    one part per segment; its own name; and one part for each parameter's
+    type. The two underscores are what nothing written in the language may
+    begin with, so a mangled name collides with nothing a "%symbol" gave and
+    with nothing on the other side of a foreign declaration; the "F" says a
+    function, and leaves a letter free for whatever else has to be named.
+    Four things follow, none of which section 1 spells out.
     The return type is not a part. Two fns may share a name and are told
     apart by what they take, and nothing tells them apart by what they give
     back, so a return type in the symbol would only make one no caller could
