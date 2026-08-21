@@ -8,7 +8,8 @@ use crate::lex::lexer::Lexer;
 use crate::parse::parser::Parser;
 use crate::prep::preprocess;
 use crate::tir::lower::Lowerer as TIRLowerer;
-use crate::tir::ttir_nodes::TTIRPatKind;
+use crate::tir::ttir_nodes::{TTIRCaptureMode, TTIRPatKind};
+use crate::tir::tir_nodes::TIRRefOp;
 
 // Source to typed tree. The passes before this one must all succeed: what this
 // makes of a tree they turned down is not what is under test.
@@ -148,13 +149,25 @@ fn the_two_ways_of_an_if_agree() {
     assert!(out.contains("one way gives") && out.contains("and the other"), "{}", out);
 }
 
-// The hole, said out loud: an unsuffixed number takes anything, so an `if` on
-// one is accepted. This is the gap the note at the top of `lower.rs` names, and
-// it is here so that closing it breaks a test rather than going unnoticed.
+// A number goes in a hole only numbers fill, so it takes whatever numeric type
+// it is put beside and nothing else.
 #[test]
-fn a_number_is_too_free_and_this_is_where_that_shows() {
+fn a_number_only_goes_where_a_number_goes() {
     let out = refused("fn f() {\n    if 5 { }\n}\n");
-    assert_eq!(out, "", "a number that only numbers could fill would refuse this");
+    assert!(out.contains("an `if` asks a `bool`"), "{}", out);
+    let out = refused("fn f(): str { 5 }\n");
+    assert!(out.contains("gives back") && out.contains("`str`"), "{}", out);
+    // And a whole number is not a fractional one.
+    let out = refused("fn f() {\n    let x: f32 = 1\n    let y: i32 = 1.5\n}\n");
+    assert!(out.contains("`i32`"), "{}", out);
+}
+
+// A number nobody said anything about is what it would have been written as.
+#[test]
+fn a_number_on_its_own_is_an_i32() {
+    let ttir = clean("fn f() {\n    var n = 0\n    let x = 1.5\n}\n");
+    let tys: Vec<&Ty> = ttir.bodies[0].locals.iter().map(|l| &ttir.types[l.ty]).collect();
+    assert_eq!(tys, vec![&Ty::Prim(TIRPrim::I32), &Ty::Prim(TIRPrim::F64)]);
 }
 
 // What this pass cannot do yet says so, once, and gives the expression an
@@ -163,7 +176,6 @@ fn a_number_is_too_free_and_this_is_where_that_shows() {
 fn what_it_cannot_type_yet_says_so() {
     for (source, what) in [
         ("fn f() {\n    let m = {1: 2}\n}\n", "a map"),
-        ("fn f() {\n    let g = |x: i32| x\n}\n", "a closure"),
         ("fn f() {\n    let r = 0..10\n}\n", "a range"),
     ] {
         let out = refused(source);
@@ -356,4 +368,145 @@ fn a_struct_shaped_variant_is_reached_by_name() {
          fn f(s: Shape): i32 {\n    match s {\n        Shape::Box { nope } => 1,\n    }\n}\n",
     );
     assert!(out.contains("carries no `nope`"), "{}", out);
+}
+
+// ---- Closures -------------------------------------------------------------
+
+// "A name the body uses but did not declare is captured, and how is worked out
+// per name, each taking the least the body asks of it. Reading one takes a `&`
+// of it and assigning to one takes a `*`" (section 5). The prose's own example.
+#[test]
+fn a_capture_takes_the_least_the_body_asks() {
+    let ttir = clean(
+        "fn f() {\n\
+         \x20   var n = 0\n\
+         \x20   let show = || n\n\
+         \x20   let bump = || n = n + 1\n\
+         \x20   let own = move || n\n\
+         }\n",
+    );
+    let modes: Vec<TTIRCaptureMode> = ttir
+        .exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            TTIRExprKind::Closure { captures, .. } => captures.first().map(|c| c.mode),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        vec![
+            // `|| n` reads it.
+            TTIRCaptureMode::Ref(TIRRefOp::Imm),
+            // `|| n = n + 1` assigns to it.
+            TTIRCaptureMode::Ref(TIRRefOp::Mut),
+            // "a `move` closure captures every name by value instead".
+            TTIRCaptureMode::Value,
+        ]
+    );
+}
+
+// A closure's parameters are slots of its own body, and a name it did not
+// declare is a slot of its own too -- standing for the one outside it.
+#[test]
+fn a_closure_is_a_body_of_its_own() {
+    let ttir = clean("fn f() {\n    let n = 1\n    let g = |x: i32| x + n\n}\n");
+    let (captures, body) = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Closure { captures, body } => Some((captures.clone(), *body)),
+        _ => None,
+    }).expect("a closure");
+    assert_eq!(captures.len(), 1);
+    // The slot inside stands for the slot outside, and the two are not the same
+    // number: `outer` is the frame's and `slot` is the closure's.
+    let inner = &ttir.bodies[body];
+    assert_eq!(inner.locals.len(), 2, "the parameter and what it caught");
+    assert_eq!(captures[0].slot, 1);
+    assert_eq!(captures[0].outer, 0);
+}
+
+// A name used twice is caught once.
+#[test]
+fn a_name_is_caught_once_however_often_it_is_used() {
+    let ttir = clean("fn f() {\n    let n = 1\n    let g = || n + n + n\n}\n");
+    let captures = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Closure { captures, .. } => Some(captures.clone()),
+        _ => None,
+    }).expect("a closure");
+    assert_eq!(captures.len(), 1);
+}
+
+// A closure inside a closure takes what it needs from the one that took it.
+#[test]
+fn a_closure_inside_a_closure_catches_through_it() {
+    let ttir = clean("fn f() {\n    let n = 1\n    let g = || || n\n}\n");
+    let held: Vec<usize> = ttir
+        .exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            TTIRExprKind::Closure { captures, .. } => Some(captures.len()),
+            _ => None,
+        })
+        .collect();
+    // Both of them caught it: the inner one from the outer, and the outer one
+    // from the fn.
+    assert_eq!(held, vec![1, 1]);
+}
+
+// ---- Method calls ---------------------------------------------------------
+
+// "A method, resolved to the one it calls. `.` and `::` are both gone": the
+// TIR has no method call of its own, and which a call of a field is, is settled
+// here.
+#[test]
+fn a_call_of_a_field_may_be_a_method() {
+    let ttir = clean(
+        "struct Buf {\n    pub n: i32,\n}\n\
+         impl Buf {\n    fn len(&self): i32 { 0 }\n}\n\
+         fn f(b: Buf): i32 { b.len() }\n",
+    );
+    let found = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Method { item, .. } => Some(*item),
+        _ => None,
+    }).expect("a method call");
+    let TTIRItemKind::Fn(f) = &ttir.items[found].kind else { panic!() };
+    assert_eq!(f.name, "len");
+}
+
+// A method is reached through a reference too: "a reference stands for the
+// place it refers to and is read, called, indexed and reached into exactly as
+// that place is".
+#[test]
+fn a_method_is_reached_through_a_reference() {
+    clean(
+        "struct Buf {\n    pub n: i32,\n}\n\
+         impl Buf {\n    fn len(&self): i32 { 0 }\n}\n\
+         fn f(b: &Buf): i32 { b.len() }\n",
+    );
+}
+
+// The receiver is not one of the arguments, so what a call was handed is what
+// is left after it.
+#[test]
+fn a_method_is_held_to_what_it_takes() {
+    let with = "struct Buf {\n    pub n: i32,\n}\n\
+                impl Buf {\n    fn put(&self, x: i32): i32 { x }\n}\n";
+    clean(&format!("{}fn f(b: Buf): i32 {{ b.put(1) }}\n", with));
+    let out = refused(&format!("{}fn f(b: Buf): i32 {{ b.put(\"x\") }}\n", with));
+    assert!(out.contains("argument 1 is `str` and it takes `i32`"), "{}", out);
+    let out = refused(&format!("{}fn f(b: Buf): i32 {{ b.put(1, 2) }}\n", with));
+    assert!(out.contains("`put` takes 1 and was handed 2"), "{}", out);
+}
+
+// A field of the same name wins: it is the nearer thing, and a struct holding
+// a fn is reached before an impl is looked in.
+#[test]
+fn a_field_is_reached_before_an_impl_is() {
+    let out = refused(
+        "struct Buf {\n    pub len: i32,\n}\n\
+         impl Buf {\n    fn len(&self): i32 { 0 }\n}\n\
+         fn f(b: Buf): i32 { b.len() }\n",
+    );
+    // The field is not a fn, so calling it says so rather than finding the
+    // method.
+    assert!(out.contains("`i32` is not a fn"), "{}", out);
 }

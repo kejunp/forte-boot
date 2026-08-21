@@ -50,11 +50,12 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::sema::types::Types;
 use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinOp, TIRBinding, TIRExprId, TIRExprKind, TIRFn, TIRGeneric, TIRItemId,
-    TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRStmt, TIRTypeId,
-    TIRTypeKind, TIRVis,
+    TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRRefOp, TIRStmt,
+    TIRTypeId, TIRTypeKind, TIRVis,
 };
 use crate::tir::ttir_nodes::{
-    TTIRBody, TTIRBodyId, TTIRExpr, TTIRExprId, TTIRExprKind, TTIRFieldDecl, TTIRFn,
+    TTIRBody, TTIRBodyId, TTIRCapture, TTIRCaptureMode, TTIRExpr, TTIRExprId, TTIRExprKind,
+    TTIRFieldDecl, TTIRFn,
     TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
     TTIRParam, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, TTIRVariant, Ty,
     TyId,
@@ -73,14 +74,46 @@ pub struct Lowerer<'a> {
     // pass's work.
     made:   Vec<Option<TTIRItemId>>,
 
-    // The body being built.
-    locals: Vec<TTIRLocal>,
-    // Slots by the name they were bound under, innermost scope last.
-    scopes: Vec<HashMap<String, TTIRLocalId>>,
-    // What the fn being walked gives back, which is what a `return` is held to.
-    ret:    TyId,
+    // The bodies being built, innermost last: a closure is a body inside a
+    // body, and a name it uses but did not declare is one of the frame outside
+    // it. That is the whole of why this is a stack and not a body.
+    frames: Vec<Frame>,
     // The parameters of the declaration being walked, for a `Ty::Param`.
     params: Vec<String>,
+    // What `self` is in the declaration being walked: the type an impl is
+    // written for. `None` outside one, and outside one there is no `self`.
+    // A trait's is not this -- see `receiver_ty`.
+    subject: Option<TyId>,
+}
+
+// One body under construction.
+struct Frame {
+    locals:   Vec<TTIRLocal>,
+    // Slots by the name they were bound under, innermost scope last.
+    scopes:   Vec<HashMap<String, TTIRLocalId>>,
+    // What this body gives back, which is what a `return` in it is held to. A
+    // `return` inside a closure returns from the closure.
+    ret:      TyId,
+    // What it took from the frame outside it. Empty for a fn: only a closure
+    // reaches out of itself.
+    captures: Vec<TTIRCapture>,
+    // The capture each outer slot became, so a name used twice is caught once.
+    caught:   HashMap<TTIRLocalId, usize>,
+    // `move`, which "overrules all of that at once" (§5).
+    is_move:  bool,
+}
+
+impl Frame {
+    fn new(ret: TyId, is_move: bool) -> Frame {
+        Frame {
+            locals:   Vec::new(),
+            scopes:   vec![HashMap::new()],
+            ret,
+            captures: Vec::new(),
+            caught:   HashMap::new(),
+            is_move,
+        }
+    }
 }
 
 impl<'a> Lowerer<'a> {
@@ -92,10 +125,9 @@ impl<'a> Lowerer<'a> {
             errors: Diagnostics::new(),
             names: HashMap::new(),
             made: vec![None; tir.items.len()],
-            locals: Vec::new(),
-            scopes: Vec::new(),
-            ret: 0,
+            frames: Vec::new(),
             params: Vec::new(),
+            subject: None,
         }
     }
 
@@ -289,8 +321,10 @@ impl<'a> Lowerer<'a> {
                         .iter()
                         .map(|p| match p.ty {
                             Some(ty) => self.ty(ty),
-                            // A receiver writes no type: the impl names it.
-                            None => self.types.fresh(),
+                            // "there is no `self: T`: the type is the one the
+                            // impl names, so the annotation only ever repeated
+                            // it" (§3). So the impl is asked instead.
+                            None => self.receiver_ty(&p.name),
                         })
                         .collect();
                     let ret = match f.ret {
@@ -434,26 +468,50 @@ impl<'a> Lowerer<'a> {
                     let made_generics = self.generics(&generics);
                     // "`for_ty` is `Some` where a `for` was written, and then
                     // `ty` is the trait" -- so the two swap round here.
-                    let (subject, _of) = match for_ty {
+                    let (subject, of) = match for_ty {
                         Some(for_ty) => (self.ty(for_ty), self.item_of(ty)),
                         None => (self.ty(ty), None),
                     };
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[i]).collect();
+                    let held = self.subject.replace(subject);
                     self.resolve(&members);
-                    let TTIRItemKind::Impl { generics, ty, of, members, .. } =
+                    self.subject = held;
+                    let TTIRItemKind::Impl { generics, ty, of: written, members, .. } =
                         &mut self.out.items[made].kind
                     else {
                         continue;
                     };
                     *generics = made_generics;
                     *ty = subject;
-                    *of = None;
+                    *written = of;
                     *members = inner;
                     self.params.clear();
                 }
 
                 TIRItemKind::Import { .. } => {}
+            }
+        }
+    }
+
+    // What `self` is. An impl names the type it is written for, and that is the
+    // whole of what a receiver's type comes from.
+    //
+    // A trait's is another matter: the type is whatever answers the trait, and
+    // `Ty` has no way to say "the one this is about". So a trait's receiver is
+    // an `Error` -- said once here rather than left as a hole that would be
+    // reported as one the checker forgot.
+    fn receiver_ty(&mut self, name: &TIRBinding) -> TyId {
+        let TIRBinding::SelfRecv(how) = name else { return self.types.fresh() };
+        let Some(subject) = self.subject else { return self.types.error() };
+        match how {
+            // "A bare `self` takes the value whole and so moves it."
+            crate::tir::tir_nodes::TIRSelf::Value => subject,
+            crate::tir::tir_nodes::TIRSelf::Ref => {
+                self.types.intern(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: subject })
+            }
+            crate::tir::tir_nodes::TIRSelf::Mut => {
+                self.types.intern(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: subject })
             }
         }
     }
@@ -626,9 +684,17 @@ impl<'a> Lowerer<'a> {
                     held.body = Some(body);
                     self.params.clear();
                 }
+                TIRItemKind::Impl { ty, for_ty, members, .. } => {
+                    let subject = match for_ty {
+                        Some(for_ty) => self.ty(for_ty),
+                        None => self.ty(ty),
+                    };
+                    let held = self.subject.replace(subject);
+                    self.bodies(&members);
+                    self.subject = held;
+                }
                 TIRItemKind::Namespace { items, .. }
-                | TIRItemKind::Trait { members: items, .. }
-                | TIRItemKind::Impl { members: items, .. } => self.bodies(&items),
+                | TIRItemKind::Trait { members: items, .. } => self.bodies(&items),
                 _ => {}
             }
         }
@@ -637,8 +703,7 @@ impl<'a> Lowerer<'a> {
     // One fn's body: a slot for every parameter, then the expression, then the
     // two put together.
     fn body(&mut self, made: TTIRItemId, f: &TIRFn, value: TIRExprId) -> TTIRBodyId {
-        self.locals = Vec::new();
-        self.scopes = vec![HashMap::new()];
+        self.frames.push(Frame::new(0, false));
 
         let (arg_tys, ret) = {
             let TTIRItemKind::Fn(held) = &self.out.items[made].kind else {
@@ -649,14 +714,19 @@ impl<'a> Lowerer<'a> {
             };
             (params.clone(), *ret)
         };
-        self.ret = ret;
+        self.frames.last_mut().expect("a frame").ret = ret;
 
         // A parameter is a slot like any other, and the slot is what the body
         // names it by.
         let mut params = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
             let ty = arg_tys.get(i).copied().unwrap_or_else(|| self.types.fresh());
-            let slot = self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let);
+            // A receiver binds under the word it was written with.
+            let held = match p.name {
+                TIRBinding::SelfRecv(_) => TIRBinding::Name("self".to_string()),
+                _ => p.name.clone(),
+            };
+            let slot = self.bind(held, ty, crate::tir::tir_nodes::TIRIntro::Let);
             params.push(TTIRParam { name: p.name.clone(), slot: Some(slot) });
         }
         let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
@@ -682,8 +752,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn finish_body(&mut self, value: TTIRExprId) -> TTIRBodyId {
-        let locals = std::mem::take(&mut self.locals);
-        self.out.bodies.push(TTIRBody { locals, value });
+        let frame = self.frames.pop().expect("a frame");
+        self.out.bodies.push(TTIRBody { locals: frame.locals, value });
         self.out.bodies.len() - 1
     }
 
@@ -693,18 +763,86 @@ impl<'a> Lowerer<'a> {
         ty: TyId,
         intro: crate::tir::tir_nodes::TIRIntro,
     ) -> TTIRLocalId {
-        self.locals.push(TTIRLocal { name: name.clone(), ty, intro, line: 1, col: 1 });
-        let slot = self.locals.len() - 1;
+        let at = self.frames.len() - 1;
+        self.into_frame(at, name, ty, intro)
+    }
+
+    fn into_frame(
+        &mut self,
+        at: usize,
+        name: TIRBinding,
+        ty: TyId,
+        intro: crate::tir::tir_nodes::TIRIntro,
+    ) -> TTIRLocalId {
+        let frame = &mut self.frames[at];
+        frame.locals.push(TTIRLocal { name: name.clone(), ty, intro, line: 1, col: 1 });
+        let slot = frame.locals.len() - 1;
         if let TIRBinding::Name(name) = name {
-            if let Some(scope) = self.scopes.last_mut() {
+            if let Some(scope) = frame.scopes.last_mut() {
                 scope.insert(name, slot);
             }
         }
         slot
     }
 
-    fn slot(&self, name: &str) -> Option<TTIRLocalId> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name).copied())
+    // The slot a name stands for, seen from the innermost body. A name of a
+    // frame further out is captured on the way in -- once per frame it has to
+    // cross, so a closure inside a closure takes it from the one that took it.
+    fn slot(&mut self, name: &str) -> Option<TTIRLocalId> {
+        let depth = self.frames.len();
+        for at in (0..depth).rev() {
+            let found = self.frames[at]
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name).copied());
+            let Some(mut held) = found else { continue };
+            for inner in at + 1..depth {
+                held = self.catch(inner, held, name);
+            }
+            return Some(held);
+        }
+        None
+    }
+
+    // One name of the frame outside `at`, given a slot inside it. "A name the
+    // body uses but did not declare is captured, and how is worked out per
+    // name, each taking the least the body asks of it" -- so it starts at a
+    // `&` and is sharpened to a `*` where the body assigns to it.
+    fn catch(&mut self, at: usize, outer: TTIRLocalId, name: &str) -> TTIRLocalId {
+        if let Some(&held) = self.frames[at].caught.get(&outer) {
+            return self.frames[at].captures[held].slot;
+        }
+        let held = &self.frames[at - 1].locals[outer];
+        let (ty, intro) = (held.ty, held.intro);
+        let slot = self.into_frame(at, TIRBinding::Name(name.to_string()), ty, intro);
+        let mode = if self.frames[at].is_move {
+            TTIRCaptureMode::Value
+        } else {
+            TTIRCaptureMode::Ref(TIRRefOp::Imm)
+        };
+        let frame = &mut self.frames[at];
+        frame.captures.push(TTIRCapture { outer, slot, mode, line: 1, col: 1 });
+        let held = frame.captures.len() - 1;
+        frame.caught.insert(outer, held);
+        slot
+    }
+
+    // "assigning to one takes a `*`" -- the least the body asks of it, once it
+    // turns out to ask that much. A `move` closure is already by value and
+    // there is nothing to sharpen.
+    fn assigns_to(&mut self, slot: TTIRLocalId) {
+        let Some(frame) = self.frames.last_mut() else { return };
+        if frame.is_move {
+            return;
+        }
+        if let Some(held) = frame.captures.iter_mut().find(|c| c.slot == slot) {
+            held.mode = TTIRCaptureMode::Ref(TIRRefOp::Mut);
+        }
+    }
+
+    fn locals(&self) -> &[TTIRLocal] {
+        &self.frames[self.frames.len() - 1].locals
     }
 
     fn make(&mut self, kind: TTIRExprKind, ty: TyId, at: TIRExprId) -> TTIRExprId {
@@ -746,7 +884,8 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::Literal { value, suffix } => {
                 let ty = match (&value, suffix) {
                     (_, Some(prim)) => self.types.prim(prim),
-                    (TIRLit::Int(_) | TIRLit::Float(_), None) => self.types.fresh(),
+                    (TIRLit::Int(_), None) => self.types.fresh_whole(),
+                    (TIRLit::Float(_), None) => self.types.fresh_fractional(),
                     (TIRLit::Str(_), None) => self.types.prim(TIRPrim::Str),
                     (TIRLit::Char(_), None) => self.types.prim(TIRPrim::Char),
                     (TIRLit::Bool(_), None) => self.types.prim(TIRPrim::Bool),
@@ -760,7 +899,7 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::Name(path) => {
                 if path.len() == 1 {
                     if let Some(slot) = self.slot(&path[0]) {
-                        let ty = self.locals[slot].ty;
+                        let ty = self.locals()[slot].ty;
                         return self.make(TTIRExprKind::Local(slot), ty, id);
                     }
                 }
@@ -825,6 +964,11 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::Assign { op, place, value } => {
                 let (p, v) = (self.expr(place), self.expr(value));
+                // "assigning to one takes a `*`" -- the least the body asks of
+                // it turns out to be more than a read.
+                if let TTIRExprKind::Local(slot) = self.out.exprs[p].kind {
+                    self.assigns_to(slot);
+                }
                 let (pt, vt) = (self.out.exprs[p].ty, self.out.exprs[v].ty);
                 if self.types.unify(vt, pt).is_err() {
                     let (vt, pt) = (self.spell(vt), self.spell(pt));
@@ -840,7 +984,16 @@ impl<'a> Lowerer<'a> {
                 self.make(TTIRExprKind::Assign { op, place: p, value: v }, ty, id)
             }
 
+            // "A method, resolved to the one it calls. `.` and `::` are both
+            // gone: which separator was written mattered to the resolver and to
+            // nobody after it." The TIR has no method call of its own -- one is
+            // a call of a field -- so which it is, is settled here.
             TIRExprKind::Call { callee, args } => {
+                if let TIRExprKind::Field { base, name } = self.tir.exprs[callee].kind.clone() {
+                    if let Some(made) = self.method(base, &name, &args, id) {
+                        return made;
+                    }
+                }
                 let c = self.expr(callee);
                 let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
                 let ty = self.calling(c, &made, id);
@@ -1000,7 +1153,8 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::Return(value) => {
                 let v = value.map(|v| self.expr(v));
                 if let Some(v) = v {
-                    let (found, ret) = (self.out.exprs[v].ty, self.ret);
+                    let ret = self.frames.last().expect("a frame").ret;
+                    let found = self.out.exprs[v].ty;
                     if self.types.unify(found, ret).is_err() {
                         let (found, ret) = (self.spell(found), self.spell(ret));
                         self.errors.push(
@@ -1028,15 +1182,34 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::StructLit { base, fields } => self.struct_lit(base, &fields, id),
             TIRExprKind::Match { scrutinee, arms } => self.matching(scrutinee, &arms, id),
 
+            TIRExprKind::Closure { is_move, params, body } => {
+                self.closure(is_move, &params, body, id)
+            }
+
             // Everything still to come. Each is one message and an `Error`.
             TIRExprKind::For { .. } => self.not_yet("a `for`", id),
-            TIRExprKind::Closure { .. } => self.not_yet("a closure", id),
             TIRExprKind::Map { .. } => self.not_yet("a map", id),
             TIRExprKind::Set { .. } => self.not_yet("a set", id),
             TIRExprKind::Range { .. } => self.not_yet("a range", id),
             TIRExprKind::Path { .. } => self.not_yet("a `::` path into a value", id),
             TIRExprKind::TypeArgs { .. } => self.not_yet("type arguments at a call", id),
-            TIRExprKind::SelfExpr => self.not_yet("`self`", id),
+            // `self` is the receiver's slot, and the receiver is a parameter
+            // like any other -- "a receiver comes first and comes only in a
+            // method" is the checker's, and this is where it is taken as read.
+            TIRExprKind::SelfExpr => match self.slot("self") {
+                Some(slot) => {
+                    let ty = self.locals()[slot].ty;
+                    self.make(TTIRExprKind::Local(slot), ty, id)
+                }
+                None => {
+                    self.errors.push(
+                        Diagnostic::error("`self` is not in a method".to_string(), self.at(id))
+                            .with_label("nothing here has a receiver")
+                            .with_help("a receiver is written `self`, `&self` or `*self`"),
+                    );
+                    self.errored(id)
+                }
+            },
         }
     }
 
@@ -1047,7 +1220,7 @@ impl<'a> Lowerer<'a> {
         tail: Option<TIRExprId>,
         at: TIRExprId,
     ) -> TTIRExprId {
-        self.scopes.push(HashMap::new());
+        self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
         let mut made = Vec::new();
         for stmt in stmts {
             match stmt {
@@ -1091,7 +1264,7 @@ impl<'a> Lowerer<'a> {
             }
         }
         let tail = tail.map(|t| self.expr(t));
-        self.scopes.pop();
+        self.frames.last_mut().expect("a frame").scopes.pop();
         // "A block is an expression, and its value is the trailing expression
         // -- the one left without a `;`. A block with no trailing expression is
         // `null`."
@@ -1310,10 +1483,10 @@ impl<'a> Lowerer<'a> {
         for arm in arms {
             // The alternatives of one arm bind into one scope: `P(x) | Q(x)` is
             // one `x` and one body.
-            self.scopes.push(HashMap::new());
+            self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
             let pats: Vec<TTIRPatId> = arm.pats.iter().map(|&p| self.pat(p, want)).collect();
             let body = self.expr(arm.body);
-            self.scopes.pop();
+            self.frames.last_mut().expect("a frame").scopes.pop();
 
             let found = self.out.exprs[body].ty;
             ty = Some(match ty {
@@ -1393,7 +1566,8 @@ impl<'a> Lowerer<'a> {
             TIRPatKind::Lit { negated, value, suffix } => {
                 let ty = match (&value, suffix) {
                     (_, Some(prim)) => self.types.prim(prim),
-                    (TIRLit::Int(_) | TIRLit::Float(_), None) => self.types.fresh(),
+                    (TIRLit::Int(_), None) => self.types.fresh_whole(),
+                    (TIRLit::Float(_), None) => self.types.fresh_fractional(),
                     (TIRLit::Str(_), None) => self.types.prim(TIRPrim::Str),
                     (TIRLit::Char(_), None) => self.types.prim(TIRPrim::Char),
                     (TIRLit::Bool(_), None) => self.types.prim(TIRPrim::Bool),
@@ -1659,5 +1833,143 @@ impl<'a> Lowerer<'a> {
             Some(TTIRPayload::Named(fields)) => fields.iter().map(|f| f.ty).collect(),
             _ => Vec::new(),
         }
+    }
+}
+
+// ---- Closures and methods -------------------------------------------------
+
+impl<'a> Lowerer<'a> {
+    // A closure is a body inside a body. Its parameters are slots of its own,
+    // and every name it uses but did not declare is taken from the frame it was
+    // written in -- which is what `catch` does as each name is met.
+    fn closure(
+        &mut self,
+        is_move: bool,
+        params: &[crate::tir::tir_nodes::TIRParam],
+        body: TIRExprId,
+        at: TIRExprId,
+    ) -> TTIRExprId {
+        // What it gives back is worked out from what its body comes to: a
+        // closure writes no return type, there being nowhere to write one.
+        let ret = self.types.fresh();
+        self.frames.push(Frame::new(ret, is_move));
+
+        let mut arg_tys = Vec::new();
+        for p in params {
+            let ty = match p.ty {
+                Some(ty) => self.ty(ty),
+                None => self.types.fresh(),
+            };
+            arg_tys.push(ty);
+            self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let);
+        }
+
+        let value = self.expr(body);
+        let found = self.out.exprs[value].ty;
+        if self.types.unify(found, ret).is_err() {
+            let (found, ret) = (self.spell(found), self.spell(ret));
+            self.errors.push(
+                Diagnostic::error(
+                    format!("this closure gives back `{}` and `{}` at once", found, ret),
+                    self.at(at),
+                )
+                .with_label("it is worth one type"),
+            );
+        }
+
+        // The frame comes off, and what it caught comes with it.
+        let captures = self.frames.last().expect("a frame").captures.clone();
+        let made = self.finish_body(value);
+        let ty = self.types.intern(Ty::Fn { params: arg_tys, ret, is_unsafe: false });
+        self.make(TTIRExprKind::Closure { captures, body: made }, ty, at)
+    }
+
+    // A call of a field, where the field turns out to be a method. `None` where
+    // it is not one -- a field holding a fn is called like anything else, and
+    // that is a `Call` of a `Field`.
+    fn method(
+        &mut self,
+        base: TIRExprId,
+        name: &str,
+        args: &[TIRExprId],
+        at: TIRExprId,
+    ) -> Option<TTIRExprId> {
+        let recv = self.expr(base);
+        let held = self.out.exprs[recv].ty;
+        // A field of the same name wins: it is the nearer thing, and a struct
+        // holding a fn is reached before an impl is looked in.
+        if self.field_of(held, name).is_some() {
+            return None;
+        }
+        let item = self.method_of(held, name)?;
+
+        let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return None };
+        let (fn_ty, takes_self) = (
+            f.ty,
+            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(_))),
+        );
+        let Ty::Fn { params, ret, .. } = self.types.get(fn_ty).clone() else { return None };
+
+        // The receiver is the first parameter, so what is left is what the call
+        // was handed.
+        let wanted: Vec<TyId> = if takes_self { params[1..].to_vec() } else { params.clone() };
+        if wanted.len() != made.len() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` takes {} and was handed {}", name, wanted.len(), made.len()),
+                    self.at(at),
+                )
+                .with_label("the wrong number of arguments"),
+            );
+        } else {
+            for (i, (&want, &got)) in wanted.iter().zip(made.iter()).enumerate() {
+                let found = self.out.exprs[got].ty;
+                if self.types.unify(found, want).is_err() {
+                    let (found, want) = (self.spell(found), self.spell(want));
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("argument {} is `{}` and it takes `{}`", i + 1, found, want),
+                            self.at(at),
+                        )
+                        .with_label("this is what it was handed"),
+                    );
+                }
+            }
+        }
+        Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+    }
+
+    // The method of that name written for that type. "an impl makes methods for
+    // its type and holds nothing else" (§8), so this is every impl whose
+    // subject is the type, and the member of it with that name.
+    fn method_of(&mut self, ty: TyId, name: &str) -> Option<TTIRItemId> {
+        // A reference stands for the place it refers to, so a method of the
+        // referent is a method of the reference.
+        let held = match self.types.get(ty).clone() {
+            Ty::Ref { inner, .. } => inner,
+            _ => ty,
+        };
+        let of = match self.types.get(held).clone() {
+            Ty::Named { item, .. } => item,
+            _ => return None,
+        };
+        for item in &self.out.items {
+            let TTIRItemKind::Impl { ty: subject, members, .. } = &item.kind else { continue };
+            let Ty::Named { item: written, .. } = self.types.get(*subject).clone() else {
+                continue;
+            };
+            if written != of {
+                continue;
+            }
+            for &member in members {
+                if let TTIRItemKind::Fn(f) = &self.out.items[member].kind {
+                    if f.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+        }
+        None
     }
 }

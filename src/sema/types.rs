@@ -50,17 +50,33 @@ pub struct Mismatch {
     pub wanted: TyId,
 }
 
+// What may fill a hole. Most take anything; a number's takes numbers, which is
+// what lets `let x: i64 = 5` put an i64 there and `if 5` be refused. Without
+// the distinction a literal is either too fixed to be put anywhere or too free
+// to be refused anywhere, and neither is what a reader means by `5`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fills {
+    Anything,
+    // `5`: any of the twelve numeric primitives, and `i32` where nothing says
+    // otherwise -- which is the one place this guesses rather than works out.
+    Whole,
+    // `5.0`: the two floats, and `f64` by default.
+    Fractional,
+}
+
 pub struct Types {
     arena: Vec<Ty>,
     // What is already in the arena, so an equal type is an equal handle.
     index: HashMap<Ty, TyId>,
     // What each hole was filled with, or `None` while it is still a hole.
     vars:  Vec<Option<TyId>>,
+    // What each hole will take.
+    fills: Vec<Fills>,
 }
 
 impl Types {
     pub fn new() -> Types {
-        Types { arena: Vec::new(), index: HashMap::new(), vars: Vec::new() }
+        Types { arena: Vec::new(), index: HashMap::new(), vars: Vec::new(), fills: Vec::new() }
     }
 
     // ---- The arena -------------------------------------------------------
@@ -110,7 +126,22 @@ impl Types {
     // A type not worked out yet. Handed back as a `TyId` like any other, so
     // nothing downstream has to know whether it is looking at one.
     pub fn fresh(&mut self) -> TyId {
+        self.hole(Fills::Anything)
+    }
+
+    // A hole a number goes in. What an unsuffixed literal is: `5` is not an
+    // `i32` until something says so, and it is never a `str`.
+    pub fn fresh_whole(&mut self) -> TyId {
+        self.hole(Fills::Whole)
+    }
+
+    pub fn fresh_fractional(&mut self) -> TyId {
+        self.hole(Fills::Fractional)
+    }
+
+    fn hole(&mut self, fills: Fills) -> TyId {
         self.vars.push(None);
+        self.fills.push(fills);
         let var = self.vars.len() - 1;
         self.intern(Ty::Var(var))
     }
@@ -193,7 +224,25 @@ impl Types {
             return Ok(self.error());
         }
 
+        // `never` has no values, so it has nothing to disagree about, and the
+        // other side is what the pair is worth.
+        //
+        // Asked before the holes: `match c { 1 => 5, _ => panic() }` is worth
+        // what the `5` is, and a hole that took `never` instead would make the
+        // whole thing `never`.
+        if self.is(a, TIRPrim::Never) {
+            return Ok(b);
+        }
+        if self.is(b, TIRPrim::Never) {
+            return Ok(a);
+        }
+
         // A hole becomes whatever was put in it.
+        //
+        // Asked before `null` and not after, which is the other half of the
+        // same care: `null` belongs to every type, so a hole meeting one and
+        // nothing else *is* a `null` -- and a hole left open would be a type
+        // the checker never worked out rather than one it did.
         if let Ty::Var(var) = self.arena[a] {
             return self.fill(var, b);
         }
@@ -201,13 +250,12 @@ impl Types {
             return self.fill(var, a);
         }
 
-        // `never` has no values, so it has nothing to disagree about, and
-        // `null` belongs to every type (section 8). Either way the other side
-        // is what the pair is worth.
-        if self.agrees_by_itself(a) {
+        // "`null` belongs to every type" (section 8): the billion-dollar bet,
+        // taken in `NULL_BELONGS` and spent here.
+        if NULL_BELONGS && self.is(a, TIRPrim::Null) {
             return Ok(b);
         }
-        if self.agrees_by_itself(b) {
+        if NULL_BELONGS && self.is(b, TIRPrim::Null) {
             return Ok(a);
         }
 
@@ -277,13 +325,8 @@ impl Types {
         }
     }
 
-    // Whether one type is asked nothing of, whatever stands beside it.
-    fn agrees_by_itself(&self, id: TyId) -> bool {
-        match &self.arena[id] {
-            Ty::Prim(TIRPrim::Never) => true,
-            Ty::Prim(TIRPrim::Null) => NULL_BELONGS,
-            _ => false,
-        }
+    fn is(&self, id: TyId, prim: TIRPrim) -> bool {
+        matches!(&self.arena[id], Ty::Prim(held) if *held == prim)
     }
 
     fn fill(&mut self, var: VarId, with: TyId) -> Result<TyId, Mismatch> {
@@ -291,6 +334,35 @@ impl Types {
         if self.occurs(var, with) {
             let found = self.intern(Ty::Var(var));
             return Err(Mismatch { found, wanted: with });
+        }
+        // A number's hole takes numbers. Meeting another hole, the two agree on
+        // what will fill them both -- a `5` beside a `5` is still a number and
+        // still not settled.
+        let wants = self.fills[var];
+        if wants != Fills::Anything {
+            let held = self.shallow(with);
+            match self.arena[held].clone() {
+                Ty::Var(other) => {
+                    let theirs = self.fills[other];
+                    let both = match (wants, theirs) {
+                        (a, Fills::Anything) => a,
+                        (Fills::Anything, b) => b,
+                        (a, b) if a == b => a,
+                        // A whole number and a fractional one are two things.
+                        _ => {
+                            let found = self.intern(Ty::Var(var));
+                            return Err(Mismatch { found, wanted: with });
+                        }
+                    };
+                    self.fills[other] = both;
+                }
+                Ty::Prim(prim) if takes(wants, prim) => {}
+                Ty::Error => {}
+                _ => {
+                    let found = self.intern(Ty::Var(var));
+                    return Err(Mismatch { found, wanted: with });
+                }
+            }
         }
         self.vars[var] = Some(with);
         Ok(with)
@@ -352,9 +424,29 @@ impl Types {
     // and it is the caller that has the spans to say where -- so what comes
     // back is the list, not a report.
     pub fn finish(mut self) -> (Vec<Ty>, Vec<VarId>) {
-        let open: Vec<VarId> = (0..self.vars.len()).filter(|&v| self.vars[v].is_none()).collect();
-        // A hole that stands is an `Error`, so nothing below has to carry a
-        // case for a type that was never settled.
+        // A number nobody said anything about is what it would have been
+        // written as: `let n = 0` is an i32 and `let x = 0.0` an f64. That is
+        // the one guess in here, and it is the one every language that lets a
+        // number stand on its own has to make.
+        let mut open = Vec::new();
+        for var in 0..self.vars.len() {
+            if self.vars[var].is_some() {
+                continue;
+            }
+            match self.fills[var] {
+                Fills::Whole => {
+                    let held = self.prim(TIRPrim::I32);
+                    self.vars[var] = Some(held);
+                }
+                Fills::Fractional => {
+                    let held = self.prim(TIRPrim::F64);
+                    self.vars[var] = Some(held);
+                }
+                // A hole that stands is an `Error`, so nothing below has to
+                // carry a case for a type that was never settled.
+                Fills::Anything => open.push(var),
+            }
+        }
         let error = self.error();
         for var in &open {
             self.vars[*var] = Some(error);
@@ -429,6 +521,22 @@ impl Types {
 
     fn spell_all(&self, ids: &[TyId], name: &dyn Fn(TTIRItemId) -> String) -> String {
         ids.iter().map(|&i| self.spell(i, name)).collect::<Vec<_>>().join(", ")
+    }
+}
+
+// Whether a hole of this kind takes that primitive.
+fn takes(wants: Fills, prim: TIRPrim) -> bool {
+    match wants {
+        Fills::Anything => true,
+        Fills::Whole => matches!(
+            prim,
+            TIRPrim::I8 | TIRPrim::I16 | TIRPrim::I32 | TIRPrim::I64 | TIRPrim::I128
+                | TIRPrim::U8 | TIRPrim::U16 | TIRPrim::U32 | TIRPrim::U64 | TIRPrim::U128
+                | TIRPrim::F32 | TIRPrim::F64
+        ),
+        // "A float suffix on a whole number makes a float of it", so a whole
+        // number goes in a float; a fractional one does not go anywhere else.
+        Fills::Fractional => matches!(prim, TIRPrim::F32 | TIRPrim::F64),
     }
 }
 
