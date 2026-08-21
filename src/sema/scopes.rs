@@ -43,6 +43,9 @@ pub enum ScopeKind {
     // parameters: `T` is a name inside `struct S<T> { v: T }` and nowhere else.
     Struct,
     Enum,
+    // An alias takes parameters too: the `T` of `type Pair<T> = (T, T)` is a
+    // name inside it and nowhere else.
+    TypeAlias,
     // A fn, holding its parameters and every slot of its body -- see the note
     // above about blocks.
     Function,
@@ -200,6 +203,11 @@ impl Scopes {
                 self.opened[id] = Some(inner);
                 self.generics(generics, inner);
             }
+            TTIRItemKind::TypeAlias { generics, .. } => {
+                let inner = self.open(at, ScopeKind::TypeAlias);
+                self.opened[id] = Some(inner);
+                self.generics(generics, inner);
+            }
             // A trait's members and an impl's are declared in it and reached
             // through it, so each is a scope of its own rather than a run of
             // names in the module around it.
@@ -295,6 +303,7 @@ fn declared_name(id: TTIRItemId, p: &TTIRProgram) -> Option<Name> {
         | TTIRItemKind::Enum { name, .. }
         | TTIRItemKind::Trait { name, .. }
         | TTIRItemKind::Namespace { name, .. }
+        | TTIRItemKind::TypeAlias { name, .. }
         | TTIRItemKind::Const { name, .. } => name.clone(),
         TTIRItemKind::Global { name, .. } => match name {
             TIRBinding::Name(name) => name.clone(),

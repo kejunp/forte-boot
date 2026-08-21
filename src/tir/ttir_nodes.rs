@@ -220,6 +220,24 @@ pub enum TTIRItemKind {
         of:       Option<TTIRItemId>,
         members:  Vec<TTIRItemId>,
     },
+    // `type Pair<T> = (T, T)`. It survives as a *name* and not as a type: no
+    // `Ty` mentions it, the alias having been followed and what it named left
+    // in its place. What is left here is what a reader wrote -- the name is in
+    // scope, `Pair<i32>` is what they typed, and a message about it has to be
+    // able to say so.
+    //
+    // So there is nothing to compile and no symbol: an alias makes no new type
+    // and no code, and `prefix_of` in `sema::names` gives it no letter.
+    TypeAlias {
+        vis:      TIRVis,
+        attrs:    TIRAttrs,
+        name:     String,
+        generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
+        // What it names, followed: `type Raw = ptr u8` holds the `ptr u8`.
+        ty:       TyId,
+    },
+
     Namespace {
         vis:   TIRVis,
         attrs: TIRAttrs,

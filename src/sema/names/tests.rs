@@ -497,3 +497,21 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
         Some("__F6shapes10other::Buf3len")
     );
 }
+
+// An alias is a name in a scope and nothing to compile, so it gets no letter
+// and stands in no symbol table -- while a struct of the same name does.
+#[test]
+fn a_type_alias_is_not_a_symbol() {
+    let mut s = Suite::new();
+    let i32 = s.prim(TIRPrim::I32);
+    let alias = s.item(TTIRItemKind::TypeAlias {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "Count".to_string(), generics: Vec::new(), wheres: Vec::new(), ty: i32,
+    });
+    let point = s.strukt("Count");
+    s.p.roots = vec![alias, point];
+
+    let table = SymbolTable::of(&s.p, &["shapes".to_string()]);
+    let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, vec!["__S6shapes5Count"]);
+}

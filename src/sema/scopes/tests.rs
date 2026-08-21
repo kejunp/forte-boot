@@ -501,3 +501,42 @@ fn a_where_clause_keeps_what_no_parameter_can_hold() {
     let inner = scopes.opened_by(f).expect("a fn opens a scope");
     assert_eq!(names(&scopes, inner), vec!["T"]);
 }
+
+// ---- Type aliases ---------------------------------------------------------
+
+// An alias makes no new type, so what it is is the type it names -- and the
+// name in front of that type is what a reader wrote, so it is in scope like
+// anything else. It takes parameters too, and those are its own.
+#[test]
+fn a_type_alias_is_a_name_for_the_type_it_follows() {
+    let mut s = Suite::new();
+    let t = s.ty(Ty::Param { name: "T".to_string(), index: 0 });
+    let pair = s.ty(Ty::Tuple(vec![t, t]));
+    let alias = s.item(TTIRItemKind::TypeAlias {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "Pair".to_string(),
+        generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        wheres: Vec::new(),
+        ty: pair,
+    });
+    s.p.roots = vec![alias];
+
+    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
+    let root = scopes.root();
+    assert_eq!(names(&scopes, root), vec!["Pair"]);
+
+    let entry = &scopes.look_up(root, "Pair")[0];
+    let Info::TypeAlias { generics, ty, .. } = &entry.info else { panic!("{:?}", entry) };
+    // The type it names, followed: nothing here is an alias any more.
+    assert_eq!(*ty, pair);
+    assert_eq!(generics.len(), 1);
+
+    // It makes no code, so the linker never names it.
+    assert!(entry.symbol.is_none());
+
+    // Its parameter is its own, and stands in the scope it opened.
+    let inner = scopes.opened_by(alias).expect("an alias opens a scope");
+    assert_eq!(scopes.kind(inner), ScopeKind::TypeAlias);
+    assert_eq!(names(&scopes, inner), vec!["T"]);
+    assert!(scopes.look_up(root, "T").is_empty());
+}

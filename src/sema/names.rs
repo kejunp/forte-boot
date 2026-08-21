@@ -105,6 +105,9 @@ pub enum Info {
     // (section 2).
     TypeAlias {
         generics: Vec<TTIRGeneric>,
+        wheres:   Vec<TTIRWherePred>,
+        // What it names, followed. An alias makes no new type: this is the
+        // type, and the alias is the name written in front of it.
         ty:       TyId,
     },
 
@@ -171,9 +174,10 @@ pub enum Payload {
 // Two things, and both are the TTIR and this table disagreeing about what a
 // declaration is.
 //
-//   - `Info::TypeAlias` is built by nothing. The TTIR has no such item, an
-//     alias being a name for a type and not a type, so it can only ever be
-//     filled by a pass that reads the TIR instead.
+//   - `Info::Variant` is built by nothing. A variant is reached through its
+//     enum -- `Color::Red` -- and this is a table of what a program *declares*,
+//     so nothing here walks into one. It is for the scope an import puts a
+//     variant's name in when one is brought in on its own.
 //   - Four of the variants are built by nothing yet. The TTIR has no
 //     `TypeAlias` item, an alias being a name for a type and not a type; a
 //     `Variant` is reached through its enum; and a `TypeParam` and a `Lifetime`
@@ -228,10 +232,10 @@ pub enum Payload {
 // letter for the kind of thing being named, so a struct and a fn of one name in
 // one module are two symbols.
 //
-// `None` for the two with no name of their own: an `impl` is reached through
-// the type it is written for, and a global bound to `_` was deliberately not
-// named. There is no letter for a type alias -- the TTIR has no such item,
-// an alias being a name for a type and not a type.
+// `None` for the three the linker never sees: an `impl`, which is reached
+// through the type it is written for; a global bound to `_`, which was
+// deliberately not named; and a type alias, which makes no new type and no
+// code -- it is a name in a scope and nothing to compile.
 fn prefix_of(kind: &TTIRItemKind) -> Option<&'static str> {
     Some(match kind {
         TTIRItemKind::Fn(_) => "__F",
@@ -244,7 +248,7 @@ fn prefix_of(kind: &TTIRItemKind) -> Option<&'static str> {
             TIRBinding::Name(_) => "__G",
             _ => return None,
         },
-        TTIRItemKind::Impl { .. } => return None,
+        TTIRItemKind::Impl { .. } | TTIRItemKind::TypeAlias { .. } => return None,
     })
 }
 
@@ -446,6 +450,7 @@ fn name_of(id: TTIRItemId, p: &TTIRProgram) -> String {
         | TTIRItemKind::Enum { name, .. }
         | TTIRItemKind::Trait { name, .. }
         | TTIRItemKind::Namespace { name, .. }
+        | TTIRItemKind::TypeAlias { name, .. }
         | TTIRItemKind::Const { name, .. } => name.clone(),
         TTIRItemKind::Global { name, .. } => match name {
             crate::tir::tir_nodes::TIRBinding::Name(name) => name.clone(),
@@ -597,6 +602,13 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
             generics: generics.clone(),
             wheres:   wheres.clone(),
             members:  members.iter().map(|&m| name_of(m, p)).collect(),
+        },
+        // An alias makes no new type, so what it is is the type it names and
+        // the name written in front of it.
+        TTIRItemKind::TypeAlias { generics, wheres, ty, .. } => Info::TypeAlias {
+            generics: generics.clone(),
+            wheres:   wheres.clone(),
+            ty:       *ty,
         },
         TTIRItemKind::Namespace { items, .. } => {
             // The names it declares. What each one is, its own entry says --

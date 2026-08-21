@@ -152,9 +152,11 @@ pub enum TIRItemKind {
         value: TIRExprId,
     },
 
-    // `type MyType = i32`. It survives to here and no further: an alias is a
-    // name for a type and not a type, so once the resolver has followed it
-    // there is nothing left of it -- which is why the TTIR has no such item.
+    // `type MyType = i32`. An alias is a name for a type and not a type, so
+    // once the resolver has followed it there is nothing of it left in any
+    // type -- no `Ty` names one. The declaration itself survives into the TTIR
+    // even so, because the *name* does: it is in scope, it is what a reader
+    // wrote, and a message about it has to be able to say so.
     TypeAlias {
         vis:      TIRVis,
         attrs:    TIRAttrs,
