@@ -1678,6 +1678,30 @@ answer is not obvious from the rules alone.
     "%repr", "%derive" and "%cfg" wait on features that do not exist. Nothing
     says which declarations each of the six may sit on, beyond what its own
     description implies.
+  - A name is mangled by writing each part as its length and then its
+    characters, and "%symbol" gives the exact name instead (section 1).
+    Settled, and the parts are these: where the fn is declared, one part per
+    segment; its own name; and one part for each parameter's type. Four
+    things follow, none of which section 1 spells out.
+    The return type is not a part. Two fns may share a name and are told
+    apart by what they take, and nothing tells them apart by what they give
+    back, so a return type in the symbol would only make one no caller could
+    work out. Nor is a lifetime: a region is worked out rather than written,
+    and two fns differing in one are the same code.
+    A type is one part however long its spelling runs, and the spelling is
+    the language's own -- "&i32", "ptr u8", "i32[8]", "(i32,str)",
+    "Vec<i32>", "gc str". The length in front of it is what lets a "<" or a
+    space stand inside a symbol unescaped, which is the same reason an "_"
+    may stand inside a name.
+    A method's segments are the impl it is written in: the type, and the
+    trait where there is one, since "impl Buf" and "impl Show for Buf" may
+    both hold a "len" and only the trait tells the two apart.
+    A generic parameter is written by its place and not by its name, so
+    "f<T>(x: T)" and "f<U>(x: U)" are one symbol -- as they are one function
+    written twice.
+    What is not settled is what happens when a generic fn is compiled. If
+    nothing monomorphises, one symbol is right; if something does, each
+    instance wants its own and the arguments have to reach the name.
   - Every loop takes a "break x" and yields "null" where none is given
     (section 5.1), and "null" belongs to every type, so the operand of a
     break and the "null" of a loop that ended by itself always agree. Settled
