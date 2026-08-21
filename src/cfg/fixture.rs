@@ -47,6 +47,8 @@ impl Fixture {
             name:  TIRBinding::Name(name.to_string()),
             ty,
             intro: TIRIntro::Let,
+            line:  1,
+            col:   1,
         });
         self.locals.len() - 1
     }

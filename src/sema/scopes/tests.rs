@@ -53,6 +53,8 @@ impl Suite {
                     name: TIRBinding::Name(name.to_string()),
                     ty,
                     intro,
+                    line: 1,
+                    col: 1,
                 })
                 .collect(),
             value,

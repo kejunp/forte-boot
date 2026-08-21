@@ -367,6 +367,12 @@ pub struct TTIRLocal {
     pub name:  TIRBinding,
     pub ty:    TyId,
     pub intro: TIRIntro,
+    // Where it was bound. A slot is not an expression and had none until the
+    // checker wanted one: "the value was moved here, and it was bound there"
+    // is two places, and only one of them is a line anybody wrote an
+    // expression on.
+    pub line:  usize,
+    pub col:   usize,
 }
 
 // ---- Statements -----------------------------------------------------------
