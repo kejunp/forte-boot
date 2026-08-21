@@ -1,5 +1,6 @@
 pub mod imports;
-mod names;
+pub mod names;
 mod types;
-mod scopes;
+pub mod scopes;
 mod borrows;
+pub mod lower;

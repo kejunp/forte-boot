@@ -17,6 +17,8 @@ use tir::lower::Lowerer;
 use parse::parser::Parser;
 use prep::preprocess;
 use sema::imports::ImportResolver;
+use sema::names;
+use sema::scopes::Scopes;
 
 fn dump(source: &str) {
     println!("source:\n{}\n", source);
@@ -135,20 +137,43 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         return false;
     }
 
-    // What the suite came to. Every file is here, whether it was written by
-    // hand or reached by an import, in the order the resolver read them.
+    // Every file, in the order the resolver read them, turned into the typed
+    // tree. This is where the compiler stops being about what was written and
+    // starts being about what it means.
+    let mut stopped = false;
     for suite in resolver.suites() {
         let name = suite.path.strip_prefix(root.parent().unwrap_or(Path::new(".")))
             .unwrap_or(&suite.path);
+        let at = resolver.module_of(&suite.path);
+        let (ttir, errors) = sema::lower::Lowerer::new(&suite.tir).lower(at);
+        if !errors.is_empty() {
+            let shown = name.display().to_string();
+            let quoted = Source::new(&shown, &suite.text);
+            eprintln!("{}\n", errors.render(&quoted));
+        }
+        if errors.has_errors() {
+            stopped = true;
+            continue;
+        }
+
+        // What the checker made of it, and what every pass built on it can now
+        // read: the symbols it compiles to, and the names it holds.
+        let symbols = names::SymbolTable::of(&ttir);
+        let scopes = Scopes::of(&ttir);
         println!(
-            "{}: {} items, {} named, {} imported",
+            "{}: {} items, {} symbols, {} types, {} bodies",
             name.display(),
-            suite.tir.roots.len(),
-            suite.symbols.len(),
-            suite.bindings.len()
+            ttir.items.len(),
+            symbols.len(),
+            ttir.types.len(),
+            ttir.bodies.len()
         );
+        for (symbol, _) in symbols.sorted() {
+            println!("    {}", symbol);
+        }
+        let _ = scopes;
     }
-    true
+    !stopped
 }
 
 // `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a

@@ -1,0 +1,1183 @@
+// Lowering: the TIR to the TTIR.
+//
+//     prep -> lex -> parse -> expand -> lower -> TIR -> [ sema ] -> TTIR
+//                                                        ^^^^^^
+//
+// Everything above this reads what was written; this is the first pass that
+// answers questions about it. A name becomes the declaration it names, a type
+// becomes what it is rather than how it was spelled, and every expression comes
+// out with a type over it -- which is the whole of what makes the tree below
+// this one the *typed* tree.
+//
+// It runs in three passes over the TIR, and it has to:
+//
+//   1. `declare`  -- a TTIR item for every declaration, with its name and
+//      nothing else settled. A struct may name one declared after it, so
+//      nothing can resolve a name until every name exists.
+//   2. `resolve`  -- the types each declaration wrote: a struct's fields, a
+//      fn's signature, a global's type. By now every name is findable.
+//   3. `bodies`   -- what each fn does, with a type worked out for every
+//      expression in it.
+//
+// What it does not do yet, and says so where it meets one: a `match`, a `for`,
+// a closure, a method call, a struct or variant literal, a map or a set, a
+// range, and a call with type arguments written at it. Each of those gets a
+// `Ty::Error` and one message, which is what that type is for -- "so one
+// mistake costs one message and not every message after it". The tree it hands
+// on is honest about what it could not work out rather than quietly wrong about
+// it, which is the difference between a pass that is unfinished and one that
+// lies.
+//
+// Regions are not worked out either: every `Ty::Ref` gets region 0. Comparing
+// them is a pass of its own (§3), and `types::unify` already leaves them alone.
+//
+// One more thing it gets wrong, and knowingly. A number with no suffix is a
+// hole, so that `let x: i64 = 5` puts an i64 there and `let y: u8 = 5` a u8 --
+// which is what a hole is for. The cost is that the hole will take *anything*:
+// `if 5 { }` is accepted, the 5 having become a `bool`. What is wanted is a
+// hole that only numbers fill, which is one more kind of hole than `Types` has.
+// Until it has one, a number is too free rather than too fixed, and that is the
+// direction that accepts a wrong program rather than refusing a right one.
+
+// Nothing has called this until now: the driver stops at the TIR, and this is
+// what carries it past. The allow covers the parts of the surface no caller has
+// reached yet.
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+
+use crate::error::{Diagnostic, Diagnostics, Span};
+use crate::sema::types::Types;
+use crate::tir::tir_nodes::{
+    TIRAttrs, TIRBinOp, TIRBinding, TIRExprId, TIRExprKind, TIRFn, TIRGeneric, TIRItemId,
+    TIRItemKind, TIRLit, TIRPrim, TIRProgram, TIRStmt, TIRTypeId, TIRTypeKind, TIRVis,
+};
+use crate::tir::ttir_nodes::{
+    TTIRBody, TTIRBodyId, TTIRExpr, TTIRExprId, TTIRExprKind, TTIRFieldDecl, TTIRFn,
+    TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
+    TTIRParam, TTIRPayload, TTIRProgram, TTIRStmt, TTIRVariant, Ty, TyId,
+};
+
+pub struct Lowerer<'a> {
+    tir:    &'a TIRProgram,
+    out:    TTIRProgram,
+    types:  Types,
+    errors: Diagnostics,
+
+    // Every declaration by the name it is reached at: `limits::MAX` as well as
+    // `MAX`, so a path finds what a bare name finds and no more.
+    names:  HashMap<String, TTIRItemId>,
+    // The TTIR item each TIR item became, so the second pass can find the first
+    // pass's work.
+    made:   Vec<Option<TTIRItemId>>,
+
+    // The body being built.
+    locals: Vec<TTIRLocal>,
+    // Slots by the name they were bound under, innermost scope last.
+    scopes: Vec<HashMap<String, TTIRLocalId>>,
+    // What the fn being walked gives back, which is what a `return` is held to.
+    ret:    TyId,
+    // The parameters of the declaration being walked, for a `Ty::Param`.
+    params: Vec<String>,
+}
+
+impl<'a> Lowerer<'a> {
+    pub fn new(tir: &'a TIRProgram) -> Lowerer<'a> {
+        Lowerer {
+            tir,
+            out: TTIRProgram::default(),
+            types: Types::new(),
+            errors: Diagnostics::new(),
+            names: HashMap::new(),
+            made: vec![None; tir.items.len()],
+            locals: Vec::new(),
+            scopes: Vec::new(),
+            ret: 0,
+            params: Vec::new(),
+        }
+    }
+
+    pub fn errors(&self) -> &Diagnostics {
+        &self.errors
+    }
+
+    // The three passes, and the arena at the end of them. Every hole the
+    // checker left is settled by `Types::finish`, and one that was never filled
+    // is an expression whose type was never worked out -- reported here,
+    // because this is what has the spans.
+    pub fn lower(mut self, at: Vec<String>) -> (TTIRProgram, Diagnostics) {
+        let roots: Vec<TIRItemId> = self.tir.roots.clone();
+        self.declare(&roots, &[]);
+        self.resolve(&roots);
+        let made: Vec<TTIRItemId> = roots.iter().filter_map(|&r| self.made[r]).collect();
+        self.bodies(&roots);
+
+        self.out.modules = vec![TTIRModule { path: at, roots: made }];
+        let (arena, open) = self.types.finish();
+        if !open.is_empty() {
+            // Nothing points at one of these any more -- `finish` turned each
+            // into an `Error` -- but a type nobody worked out is a fact worth
+            // one message.
+            self.errors.push(
+                Diagnostic::warning(
+                    format!("{} types were never worked out", open.len()),
+                    Span::at(1, 1),
+                )
+                .with_label("the checker did not settle everything")
+                .with_note("an expression whose type is `?` is one of these"),
+            );
+        }
+        self.out.types = arena;
+        (self.out, self.errors)
+    }
+
+    fn span(&self, item: TIRItemId) -> Span {
+        Span::at(self.tir.items[item].line, self.tir.items[item].col)
+    }
+
+    fn at(&self, expr: TIRExprId) -> Span {
+        Span::at(self.tir.exprs[expr].line, self.tir.exprs[expr].col)
+    }
+
+    fn push(&mut self, kind: TTIRItemKind, at: TIRItemId) -> TTIRItemId {
+        let held = &self.tir.items[at];
+        self.out.items.push(TTIRItem { kind, line: held.line, col: held.col });
+        self.out.items.len() - 1
+    }
+
+    // ---- 1. Declaring ----------------------------------------------------
+
+    // A TTIR item for every declaration, holding its name and nothing settled.
+    // Two passes and not one because a declaration may name one written after
+    // it, and a name cannot be followed before it exists.
+    fn declare(&mut self, items: &[TIRItemId], within: &[String]) {
+        for &id in items {
+            let (name, kind) = match &self.tir.items[id].kind {
+                TIRItemKind::Fn(f) => (f.name.clone(), self.blank_fn(f)),
+                TIRItemKind::Struct { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::Struct {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        generics: Vec::new(), wheres: Vec::new(), fields: Vec::new(),
+                    },
+                ),
+                TIRItemKind::Enum { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::Enum {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        generics: Vec::new(), wheres: Vec::new(), variants: Vec::new(),
+                    },
+                ),
+                TIRItemKind::Trait { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::Trait {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        generics: Vec::new(), wheres: Vec::new(), members: Vec::new(),
+                    },
+                ),
+                TIRItemKind::TypeAlias { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::TypeAlias {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        generics: Vec::new(), wheres: Vec::new(), ty: 0,
+                    },
+                ),
+                TIRItemKind::Const { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::Const {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        ty: 0, value: 0,
+                    },
+                ),
+                TIRItemKind::Global { vis, intro, name, .. } => {
+                    let TIRBinding::Name(held) = name else { continue };
+                    (
+                        held.clone(),
+                        TTIRItemKind::Global {
+                            vis: *vis, attrs: TIRAttrs::default(), intro: *intro,
+                            name: name.clone(), ty: 0, init: None,
+                        },
+                    )
+                }
+                TIRItemKind::Namespace { vis, name, .. } => (
+                    name.clone(),
+                    TTIRItemKind::Namespace {
+                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        items: Vec::new(),
+                    },
+                ),
+                // An impl declares no name of its own; its members do.
+                TIRItemKind::Impl { .. } => (
+                    String::new(),
+                    TTIRItemKind::Impl {
+                        vis: TIRVis::Unwritten, attrs: TIRAttrs::default(),
+                        generics: Vec::new(), wheres: Vec::new(), ty: 0, of: None,
+                        members: Vec::new(),
+                    },
+                ),
+                // Gone by here: what it reached is the resolver's, and this
+                // pass is handed one file at a time.
+                TIRItemKind::Import { .. } => continue,
+            };
+
+            let made = self.push(kind, id);
+            self.made[id] = Some(made);
+            if !name.is_empty() {
+                // By the bare name and by the path it is reached at, so
+                // `limits::MAX` and a `MAX` inside `limits` are one entry each.
+                let mut path = within.to_vec();
+                path.push(name.clone());
+                self.names.insert(path.join("::"), made);
+                self.names.entry(name).or_insert(made);
+            }
+
+            // Down into whatever holds more declarations.
+            match &self.tir.items[id].kind {
+                TIRItemKind::Namespace { name, items, .. } => {
+                    let mut inner = within.to_vec();
+                    inner.push(name.clone());
+                    let items = items.clone();
+                    self.declare(&items, &inner);
+                }
+                TIRItemKind::Trait { members, .. } | TIRItemKind::Impl { members, .. } => {
+                    let members = members.clone();
+                    self.declare(&members, within);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // A fn with its name and nothing else: the signature is the second pass's.
+    fn blank_fn(&self, f: &TIRFn) -> TTIRItemKind {
+        TTIRItemKind::Fn(TTIRFn {
+            vis: f.vis,
+            attrs: f.attrs.clone(),
+            is_const: f.is_const,
+            is_unsafe: f.is_unsafe,
+            name: f.name.clone(),
+            symbol: String::new(),
+            generics: Vec::new(),
+            wheres: Vec::new(),
+            ty: 0,
+            params: Vec::new(),
+            ret: 0,
+            body: None,
+        })
+    }
+}
+
+// ---- 2. Resolving what was written ----------------------------------------
+
+impl<'a> Lowerer<'a> {
+    fn resolve(&mut self, items: &[TIRItemId]) {
+        for &id in items {
+            let Some(made) = self.made[id] else { continue };
+            match self.tir.items[id].kind.clone() {
+                TIRItemKind::Fn(f) => {
+                    self.params = names_of(&f.generics);
+                    let generics = self.generics(&f.generics);
+                    let params: Vec<TTIRParam> = f
+                        .params
+                        .iter()
+                        .map(|p| TTIRParam { name: p.name.clone(), slot: None })
+                        .collect();
+                    let arg_tys: Vec<TyId> = f
+                        .params
+                        .iter()
+                        .map(|p| match p.ty {
+                            Some(ty) => self.ty(ty),
+                            // A receiver writes no type: the impl names it.
+                            None => self.types.fresh(),
+                        })
+                        .collect();
+                    let ret = match f.ret {
+                        Some(ret) => self.ty(ret),
+                        // "A `<return_type_opt>` left out is `null`" (§2).
+                        None => self.types.null(),
+                    };
+                    let ty = self.types.intern(Ty::Fn {
+                        params: arg_tys,
+                        ret,
+                        is_unsafe: f.is_unsafe,
+                    });
+                    let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
+                        continue;
+                    };
+                    held.generics = generics;
+                    held.params = params;
+                    held.ret = ret;
+                    held.ty = ty;
+                    self.params.clear();
+                }
+
+                TIRItemKind::Struct { name: _, generics, fields, .. } => {
+                    self.params = names_of(&generics);
+                    let made_generics = self.generics(&generics);
+                    let made_fields: Vec<TTIRFieldDecl> = fields
+                        .iter()
+                        .map(|f| TTIRFieldDecl {
+                            vis:   f.vis,
+                            attrs: f.attrs.clone(),
+                            name:  f.name.clone(),
+                            ty:    self.ty(f.ty),
+                        })
+                        .collect();
+                    let TTIRItemKind::Struct { generics, fields, .. } =
+                        &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *generics = made_generics;
+                    *fields = made_fields;
+                    self.params.clear();
+                }
+
+                TIRItemKind::Enum { generics, variants, .. } => {
+                    self.params = names_of(&generics);
+                    let made_generics = self.generics(&generics);
+                    let made_variants: Vec<TTIRVariant> = variants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| TTIRVariant {
+                            attrs:   v.attrs.clone(),
+                            name:    v.name.clone(),
+                            payload: self.payload(&v.payload),
+                            // Counted. What a written `D = 4` comes to wants
+                            // the const evaluator, and there is none -- so one
+                            // is counted like any other, which is wrong and is
+                            // said out loud rather than hidden.
+                            value:   i as i64,
+                        })
+                        .collect();
+                    for v in &variants {
+                        if let crate::tir::tir_nodes::TIRPayload::Discriminant(at) = v.payload {
+                            self.errors.push(
+                                Diagnostic::error(
+                                    format!("`{}` is given a number and it is counted instead", v.name),
+                                    self.at(at),
+                                )
+                                .with_label("this is not worked out")
+                                .with_note("working out a constant is the const evaluator's, and there is none yet"),
+                            );
+                        }
+                    }
+                    let TTIRItemKind::Enum { generics, variants, .. } =
+                        &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *generics = made_generics;
+                    *variants = made_variants;
+                    self.params.clear();
+                }
+
+                TIRItemKind::TypeAlias { generics, ty, .. } => {
+                    self.params = names_of(&generics);
+                    let made_generics = self.generics(&generics);
+                    let named = self.ty(ty);
+                    let TTIRItemKind::TypeAlias { generics, ty, .. } =
+                        &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *generics = made_generics;
+                    *ty = named;
+                    self.params.clear();
+                }
+
+                TIRItemKind::Const { ty, .. } => {
+                    let held = self.ty(ty);
+                    let TTIRItemKind::Const { ty, .. } = &mut self.out.items[made].kind else {
+                        continue;
+                    };
+                    *ty = held;
+                }
+
+                TIRItemKind::Global { ty, .. } => {
+                    let held = match ty {
+                        Some(ty) => self.ty(ty),
+                        None => self.types.fresh(),
+                    };
+                    let TTIRItemKind::Global { ty, .. } = &mut self.out.items[made].kind else {
+                        continue;
+                    };
+                    *ty = held;
+                }
+
+                TIRItemKind::Namespace { items, .. } => {
+                    let inner: Vec<TTIRItemId> =
+                        items.iter().filter_map(|&i| self.made[i]).collect();
+                    self.resolve(&items);
+                    let TTIRItemKind::Namespace { items, .. } = &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *items = inner;
+                }
+
+                TIRItemKind::Trait { members, .. } => {
+                    let inner: Vec<TTIRItemId> =
+                        members.iter().filter_map(|&i| self.made[i]).collect();
+                    self.resolve(&members);
+                    let TTIRItemKind::Trait { members, .. } = &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *members = inner;
+                }
+
+                TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
+                    self.params = names_of(&generics);
+                    let made_generics = self.generics(&generics);
+                    // "`for_ty` is `Some` where a `for` was written, and then
+                    // `ty` is the trait" -- so the two swap round here.
+                    let (subject, _of) = match for_ty {
+                        Some(for_ty) => (self.ty(for_ty), self.item_of(ty)),
+                        None => (self.ty(ty), None),
+                    };
+                    let inner: Vec<TTIRItemId> =
+                        members.iter().filter_map(|&i| self.made[i]).collect();
+                    self.resolve(&members);
+                    let TTIRItemKind::Impl { generics, ty, of, members, .. } =
+                        &mut self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    *generics = made_generics;
+                    *ty = subject;
+                    *of = None;
+                    *members = inner;
+                    self.params.clear();
+                }
+
+                TIRItemKind::Import { .. } => {}
+            }
+        }
+    }
+
+    fn generics(&mut self, held: &[TIRGeneric]) -> Vec<TTIRGeneric> {
+        held.iter()
+            .map(|g| match g {
+                TIRGeneric::Type { name, .. } => TTIRGeneric::Type {
+                    name:   name.clone(),
+                    // A bound is a trait, and holding one to it wants the pass
+                    // that checks traits. Kept empty rather than guessed at.
+                    bounds: Vec::new(),
+                },
+                TIRGeneric::Life { name, .. } => TTIRGeneric::Life {
+                    name:   name.clone(),
+                    region: 0,
+                    bounds: Vec::new(),
+                },
+            })
+            .collect()
+    }
+
+    fn payload(&mut self, held: &crate::tir::tir_nodes::TIRPayload) -> TTIRPayload {
+        use crate::tir::tir_nodes::TIRPayload;
+        match held {
+            TIRPayload::None | TIRPayload::Discriminant(_) => TTIRPayload::None,
+            TIRPayload::Tuple(tys) => {
+                TTIRPayload::Tuple(tys.iter().map(|&t| self.ty(t)).collect())
+            }
+            TIRPayload::Named(fields) => TTIRPayload::Named(
+                fields
+                    .iter()
+                    .map(|f| TTIRFieldDecl {
+                        vis:   f.vis,
+                        attrs: f.attrs.clone(),
+                        name:  f.name.clone(),
+                        ty:    self.ty(f.ty),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    // The declaration a type names, where it names one.
+    fn item_of(&mut self, ty: TIRTypeId) -> Option<TTIRItemId> {
+        let TIRTypeKind::Named { path, .. } = &self.tir.types[ty].kind else { return None };
+        self.names.get(&path.join("::")).copied()
+    }
+
+    // ---- Types -----------------------------------------------------------
+
+    // What a written type is. "`<grouped_type>` is gone, `_` is gone, and a
+    // name has become the declaration it names."
+    fn ty(&mut self, id: TIRTypeId) -> TyId {
+        let at = Span::at(self.tir.types[id].line, self.tir.types[id].col);
+        match self.tir.types[id].kind.clone() {
+            TIRTypeKind::Prim(prim) => self.types.prim(prim),
+
+            TIRTypeKind::Named { path, args } => {
+                // A parameter of the declaration this stands in, which is a
+                // name that is not a declaration.
+                if path.len() == 1 {
+                    if let Some(index) = self.params.iter().position(|p| *p == path[0]) {
+                        return self.types.intern(Ty::Param { name: path[0].clone(), index });
+                    }
+                }
+                let args: Vec<TyId> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        crate::tir::tir_nodes::TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
+                        // A lifetime argument names a region, and regions are
+                        // another pass's.
+                        crate::tir::tir_nodes::TIRGenericArg::Life(_) => None,
+                    })
+                    .collect();
+                match self.names.get(&path.join("::")).copied() {
+                    // "an alias is a name for a type and not a type, so once
+                    // the resolver has followed it there is nothing left of it"
+                    Some(item) => match &self.out.items[item].kind {
+                        TTIRItemKind::TypeAlias { ty, .. } => *ty,
+                        _ => self.types.intern(Ty::Named { item, args }),
+                    },
+                    None => {
+                        let name = path.join("::");
+                        self.errors.push(
+                            Diagnostic::error(format!("no type is called `{}`", name), at)
+                                .with_label("nothing is declared under this name")
+                                .with_help("a type is a struct, an enum, a trait or an alias"),
+                        );
+                        self.types.error()
+                    }
+                }
+            }
+
+            // Region 0 for every one: how long a reference is good for is a
+            // pass of its own, and `types::unify` leaves them alone.
+            TIRTypeKind::Ref { op, inner, .. } => {
+                let inner = self.ty(inner);
+                self.types.intern(Ty::Ref { op, life: 0, inner })
+            }
+            TIRTypeKind::Ptr(inner) => {
+                let inner = self.ty(inner);
+                self.types.intern(Ty::Ptr(inner))
+            }
+            TIRTypeKind::Run(elem) => {
+                let elem = self.ty(elem);
+                self.types.intern(Ty::Run(elem))
+            }
+            TIRTypeKind::Tuple(members) => {
+                let members: Vec<TyId> = members.iter().map(|&m| self.ty(m)).collect();
+                self.types.intern(Ty::Tuple(members))
+            }
+
+            // "An `<array_suffix>` takes a `<const_expr>`, and evaluating one
+            // is the checker's" -- which wants a const evaluator this pass has
+            // not got. A written number is taken as it stands; anything else
+            // has to wait.
+            TIRTypeKind::Array { elem, len } => {
+                let elem = self.ty(elem);
+                match &self.tir.exprs[len].kind {
+                    TIRExprKind::Literal { value: TIRLit::Int(n), .. } => {
+                        self.types.intern(Ty::Array { elem, len: *n as u64 })
+                    }
+                    _ => {
+                        self.errors.push(
+                            Diagnostic::error(
+                                "an array's length has to be a written number".to_string(),
+                                self.at(len),
+                            )
+                            .with_label("this is not one")
+                            .with_note("working out a constant is the const evaluator's, and there is none yet"),
+                        );
+                        self.types.error()
+                    }
+                }
+            }
+
+            // "`_`, a type argument left to be worked out" -- which is a hole,
+            // and holes are what `Types` is for.
+            TIRTypeKind::Infer => self.types.fresh(),
+        }
+    }
+}
+
+// The names a declaration's parameters were written with, in order: a
+// `Ty::Param` names its by place, and this is the list it indexes.
+fn names_of(generics: &[TIRGeneric]) -> Vec<String> {
+    generics
+        .iter()
+        .map(|g| match g {
+            TIRGeneric::Type { name, .. } | TIRGeneric::Life { name, .. } => name.clone(),
+        })
+        .collect()
+}
+
+// ---- 3. Bodies ------------------------------------------------------------
+
+impl<'a> Lowerer<'a> {
+    fn bodies(&mut self, items: &[TIRItemId]) {
+        for &id in items {
+            match self.tir.items[id].kind.clone() {
+                TIRItemKind::Fn(f) => {
+                    let Some(made) = self.made[id] else { continue };
+                    let Some(value) = f.body else { continue };
+                    self.params = names_of(&f.generics);
+                    let body = self.body(made, &f, value);
+                    let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
+                        continue;
+                    };
+                    held.body = Some(body);
+                    self.params.clear();
+                }
+                TIRItemKind::Namespace { items, .. }
+                | TIRItemKind::Trait { members: items, .. }
+                | TIRItemKind::Impl { members: items, .. } => self.bodies(&items),
+                _ => {}
+            }
+        }
+    }
+
+    // One fn's body: a slot for every parameter, then the expression, then the
+    // two put together.
+    fn body(&mut self, made: TTIRItemId, f: &TIRFn, value: TIRExprId) -> TTIRBodyId {
+        self.locals = Vec::new();
+        self.scopes = vec![HashMap::new()];
+
+        let (arg_tys, ret) = {
+            let TTIRItemKind::Fn(held) = &self.out.items[made].kind else {
+                return self.finish_body(0)
+            };
+            let Ty::Fn { params, ret, .. } = &self.types.get(held.ty).clone() else {
+                return self.finish_body(0)
+            };
+            (params.clone(), *ret)
+        };
+        self.ret = ret;
+
+        // A parameter is a slot like any other, and the slot is what the body
+        // names it by.
+        let mut params = Vec::new();
+        for (i, p) in f.params.iter().enumerate() {
+            let ty = arg_tys.get(i).copied().unwrap_or_else(|| self.types.fresh());
+            let slot = self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let);
+            params.push(TTIRParam { name: p.name.clone(), slot: Some(slot) });
+        }
+        let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
+            return self.finish_body(0)
+        };
+        held.params = params;
+
+        let out = self.expr(value);
+        // "a body that could fall off the end of a `never` is refused" is the
+        // checker's; what is held here is that a body gives back what it said.
+        let found = self.out.exprs[out].ty;
+        if self.types.unify(found, ret).is_err() {
+            let (found, ret) = (self.spell(found), self.spell(ret));
+            self.errors.push(
+                Diagnostic::error(
+                    format!("this body gives back `{}` and the signature says `{}`", found, ret),
+                    self.at(value),
+                )
+                .with_label("this is what it comes to"),
+            );
+        }
+        self.finish_body(out)
+    }
+
+    fn finish_body(&mut self, value: TTIRExprId) -> TTIRBodyId {
+        let locals = std::mem::take(&mut self.locals);
+        self.out.bodies.push(TTIRBody { locals, value });
+        self.out.bodies.len() - 1
+    }
+
+    fn bind(
+        &mut self,
+        name: TIRBinding,
+        ty: TyId,
+        intro: crate::tir::tir_nodes::TIRIntro,
+    ) -> TTIRLocalId {
+        self.locals.push(TTIRLocal { name: name.clone(), ty, intro, line: 1, col: 1 });
+        let slot = self.locals.len() - 1;
+        if let TIRBinding::Name(name) = name {
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.insert(name, slot);
+            }
+        }
+        slot
+    }
+
+    fn slot(&self, name: &str) -> Option<TTIRLocalId> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name).copied())
+    }
+
+    fn make(&mut self, kind: TTIRExprKind, ty: TyId, at: TIRExprId) -> TTIRExprId {
+        let held = &self.tir.exprs[at];
+        self.out.exprs.push(TTIRExpr { kind, ty, line: held.line, col: held.col });
+        self.out.exprs.len() - 1
+    }
+
+    fn spell(&self, ty: TyId) -> String {
+        let items = &self.out.items;
+        self.types.spell(ty, &|item| match &items[item].kind {
+            TTIRItemKind::Struct { name, .. }
+            | TTIRItemKind::Enum { name, .. }
+            | TTIRItemKind::Trait { name, .. } => name.clone(),
+            _ => "?".to_string(),
+        })
+    }
+
+    // What this pass cannot work out yet. One message and an `Error`, which is
+    // what keeps the rest of the body being checked.
+    fn not_yet(&mut self, what: &str, at: TIRExprId) -> TTIRExprId {
+        self.errors.push(
+            Diagnostic::error(format!("`sema` cannot type {} yet", what), self.at(at))
+                .with_label("this is not worked out")
+                .with_note("the tree below this holds an `Error` where its type would be"),
+        );
+        let ty = self.types.error();
+        self.make(TTIRExprKind::Literal(TIRLit::Null), ty, at)
+    }
+}
+
+// ---- Expressions ----------------------------------------------------------
+
+impl<'a> Lowerer<'a> {
+    fn expr(&mut self, id: TIRExprId) -> TTIRExprId {
+        match self.tir.exprs[id].kind.clone() {
+            // A number with no suffix is a hole: what it is depends on what it
+            // is put beside, which is what inference is for.
+            TIRExprKind::Literal { value, suffix } => {
+                let ty = match (&value, suffix) {
+                    (_, Some(prim)) => self.types.prim(prim),
+                    (TIRLit::Int(_) | TIRLit::Float(_), None) => self.types.fresh(),
+                    (TIRLit::Str(_), None) => self.types.prim(TIRPrim::Str),
+                    (TIRLit::Char(_), None) => self.types.prim(TIRPrim::Char),
+                    (TIRLit::Bool(_), None) => self.types.prim(TIRPrim::Bool),
+                    (TIRLit::Null, None) => self.types.null(),
+                };
+                self.make(TTIRExprKind::Literal(value), ty, id)
+            }
+
+            // A name: a slot of this body first, and a declaration after --
+            // "the innermost scope that has it answers".
+            TIRExprKind::Name(path) => {
+                if path.len() == 1 {
+                    if let Some(slot) = self.slot(&path[0]) {
+                        let ty = self.locals[slot].ty;
+                        return self.make(TTIRExprKind::Local(slot), ty, id);
+                    }
+                }
+                match self.names.get(&path.join("::")).copied() {
+                    Some(item) => {
+                        let ty = self.item_ty(item);
+                        self.make(TTIRExprKind::Item(item), ty, id)
+                    }
+                    None => {
+                        let name = path.join("::");
+                        self.errors.push(
+                            Diagnostic::error(format!("nothing is called `{}`", name), self.at(id))
+                                .with_label("no such name here")
+                                .with_help("a name is a local, a parameter, or something declared"),
+                        );
+                        let ty = self.types.error();
+                        self.make(TTIRExprKind::Literal(TIRLit::Null), ty, id)
+                    }
+                }
+            }
+
+            TIRExprKind::Block { stmts, tail } => self.block(&stmts, tail, id),
+
+            TIRExprKind::Unary { op, operand } => {
+                let held = self.expr(operand);
+                let inner = self.out.exprs[held].ty;
+                let ty = match op {
+                    crate::tir::tir_nodes::TIRUnaryOp::Not => self.types.prim(TIRPrim::Bool),
+                    crate::tir::tir_nodes::TIRUnaryOp::Neg => inner,
+                    crate::tir::tir_nodes::TIRUnaryOp::Ref(op) => {
+                        self.types.intern(Ty::Ref { op, life: 0, inner })
+                    }
+                    crate::tir::tir_nodes::TIRUnaryOp::Addr => {
+                        self.types.intern(Ty::Ptr(inner))
+                    }
+                };
+                self.make(TTIRExprKind::Unary { op, operand: held }, ty, id)
+            }
+
+            TIRExprKind::Binary { op, lhs, rhs } => {
+                let (l, r) = (self.expr(lhs), self.expr(rhs));
+                let (lt, rt) = (self.out.exprs[l].ty, self.out.exprs[r].ty);
+                if self.types.unify(lt, rt).is_err() {
+                    let (lt, rt) = (self.spell(lt), self.spell(rt));
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("`{}` and `{}` are not one type", lt, rt),
+                            self.at(id),
+                        )
+                        .with_label("the two sides disagree"),
+                    );
+                }
+                // A comparison and a logical operator give back a `bool`
+                // whatever they were handed; the rest give back what they took.
+                let ty = if answers_bool(op) {
+                    self.types.prim(TIRPrim::Bool)
+                } else {
+                    lt
+                };
+                self.make(TTIRExprKind::Binary { op, lhs: l, rhs: r }, ty, id)
+            }
+
+            TIRExprKind::Assign { op, place, value } => {
+                let (p, v) = (self.expr(place), self.expr(value));
+                let (pt, vt) = (self.out.exprs[p].ty, self.out.exprs[v].ty);
+                if self.types.unify(vt, pt).is_err() {
+                    let (vt, pt) = (self.spell(vt), self.spell(pt));
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("`{}` cannot be assigned to `{}`", vt, pt),
+                            self.at(id),
+                        )
+                        .with_label("this is what is put there"),
+                    );
+                }
+                let ty = self.types.null();
+                self.make(TTIRExprKind::Assign { op, place: p, value: v }, ty, id)
+            }
+
+            TIRExprKind::Call { callee, args } => {
+                let c = self.expr(callee);
+                let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
+                let ty = self.calling(c, &made, id);
+                self.make(TTIRExprKind::Call { callee: c, args: made }, ty, id)
+            }
+
+            TIRExprKind::If { cond, then, els } => {
+                let c = self.expr(cond);
+                let want = self.types.prim(TIRPrim::Bool);
+                let got = self.out.exprs[c].ty;
+                if self.types.unify(got, want).is_err() {
+                    let got = self.spell(got);
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("an `if` asks a `bool` and this is `{}`", got),
+                            self.at(cond),
+                        )
+                        .with_label("this is the condition"),
+                    );
+                }
+                let t = self.expr(then);
+                let e = els.map(|e| self.expr(e));
+                let tt = self.out.exprs[t].ty;
+                let ty = match e {
+                    Some(e) => {
+                        let et = self.out.exprs[e].ty;
+                        match self.types.unify(tt, et) {
+                            Ok(one) => one,
+                            Err(_) => {
+                                let (tt, et) = (self.spell(tt), self.spell(et));
+                                self.errors.push(
+                                    Diagnostic::error(
+                                        format!("one way gives `{}` and the other `{}`", tt, et),
+                                        self.at(id),
+                                    )
+                                    .with_label("an `if` is worth one type"),
+                                );
+                                self.types.error()
+                            }
+                        }
+                    }
+                    // "A block with no trailing expression is `null`", and an
+                    // `if` with no `else` is the same answer.
+                    None => self.types.null(),
+                };
+                self.make(TTIRExprKind::If { cond: c, then: t, els: e }, ty, id)
+            }
+
+            TIRExprKind::While { cond, body } => {
+                let c = self.expr(cond);
+                let b = self.expr(body);
+                let ty = self.types.null();
+                self.make(TTIRExprKind::While { cond: c, body: b }, ty, id)
+            }
+
+            TIRExprKind::Cast { value, ty } => {
+                let v = self.expr(value);
+                let to = self.ty(ty);
+                self.make(TTIRExprKind::Cast(v), to, id)
+            }
+
+            TIRExprKind::TupleLit(members) => {
+                let made: Vec<TTIRExprId> = members.iter().map(|&m| self.expr(m)).collect();
+                let tys: Vec<TyId> = made.iter().map(|&m| self.out.exprs[m].ty).collect();
+                let ty = self.types.intern(Ty::Tuple(tys));
+                self.make(TTIRExprKind::TupleLit(made), ty, id)
+            }
+
+            TIRExprKind::ArrayLit(elems) => {
+                let made: Vec<TTIRExprId> = elems.iter().map(|&e| self.expr(e)).collect();
+                let elem = match made.first() {
+                    Some(&first) => {
+                        let mut held = self.out.exprs[first].ty;
+                        for &other in &made[1..] {
+                            let ty = self.out.exprs[other].ty;
+                            match self.types.unify(held, ty) {
+                                Ok(one) => held = one,
+                                Err(_) => {
+                                    self.errors.push(
+                                        Diagnostic::error(
+                                            "an array holds one type".to_string(),
+                                            self.at(id),
+                                        )
+                                        .with_label("these are not all one"),
+                                    );
+                                    held = self.types.error();
+                                    break;
+                                }
+                            }
+                        }
+                        held
+                    }
+                    None => self.types.fresh(),
+                };
+                let ty = self.types.intern(Ty::Array { elem, len: made.len() as u64 });
+                self.make(TTIRExprKind::ArrayLit(made), ty, id)
+            }
+
+            TIRExprKind::TupleIndex { base, index } => {
+                let b = self.expr(base);
+                let bt = self.out.exprs[b].ty;
+                let ty = match self.types.get(bt).clone() {
+                    Ty::Tuple(members) => members.get(index as usize).copied().unwrap_or_else(|| {
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("this tuple has no `.{}`", index),
+                                self.at(id),
+                            )
+                            .with_label("it is not that long"),
+                        );
+                        self.types.error()
+                    }),
+                    _ => self.types.error(),
+                };
+                self.make(TTIRExprKind::TupleIndex { base: b, index }, ty, id)
+            }
+
+            TIRExprKind::Field { base, name } => {
+                let b = self.expr(base);
+                let bt = self.out.exprs[b].ty;
+                match self.field_of(bt, &name) {
+                    Some((index, ty)) => {
+                        self.make(TTIRExprKind::Field { base: b, index }, ty, id)
+                    }
+                    None => {
+                        let held = self.spell(bt);
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("`{}` has no field `{}`", held, name),
+                                self.at(id),
+                            )
+                            .with_label("no such field"),
+                        );
+                        let ty = self.types.error();
+                        self.make(TTIRExprKind::Field { base: b, index: 0 }, ty, id)
+                    }
+                }
+            }
+
+            TIRExprKind::Index { base, index } => {
+                let b = self.expr(base);
+                let i = self.expr(index);
+                let bt = self.out.exprs[b].ty;
+                let ty = match self.types.get(bt).clone() {
+                    Ty::Array { elem, .. } | Ty::Run(elem) => elem,
+                    Ty::Ref { inner, .. } => match self.types.get(inner).clone() {
+                        Ty::Array { elem, .. } | Ty::Run(elem) => elem,
+                        _ => self.types.error(),
+                    },
+                    _ => self.types.error(),
+                };
+                self.make(TTIRExprKind::Index { base: b, index: i }, ty, id)
+            }
+
+            // The three that do not come back: "expressions of type `never`,
+            // the empty type" (§5).
+            TIRExprKind::Return(value) => {
+                let v = value.map(|v| self.expr(v));
+                if let Some(v) = v {
+                    let (found, ret) = (self.out.exprs[v].ty, self.ret);
+                    if self.types.unify(found, ret).is_err() {
+                        let (found, ret) = (self.spell(found), self.spell(ret));
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("this returns `{}` and the signature says `{}`", found, ret),
+                                self.at(id),
+                            )
+                            .with_label("this is what goes back"),
+                        );
+                    }
+                }
+                let ty = self.types.never();
+                self.make(TTIRExprKind::Return(v), ty, id)
+            }
+            TIRExprKind::Break(value) => {
+                let v = value.map(|v| self.expr(v));
+                let ty = self.types.never();
+                self.make(TTIRExprKind::Break(v), ty, id)
+            }
+            TIRExprKind::Continue => {
+                let ty = self.types.never();
+                self.make(TTIRExprKind::Continue, ty, id)
+            }
+
+            // Everything still to come. Each is one message and an `Error`.
+            TIRExprKind::Match { .. } => self.not_yet("a `match`", id),
+            TIRExprKind::For { .. } => self.not_yet("a `for`", id),
+            TIRExprKind::Closure { .. } => self.not_yet("a closure", id),
+            TIRExprKind::StructLit { .. } => self.not_yet("a struct literal", id),
+            TIRExprKind::Map { .. } => self.not_yet("a map", id),
+            TIRExprKind::Set { .. } => self.not_yet("a set", id),
+            TIRExprKind::Range { .. } => self.not_yet("a range", id),
+            TIRExprKind::Path { .. } => self.not_yet("a `::` path into a value", id),
+            TIRExprKind::TypeArgs { .. } => self.not_yet("type arguments at a call", id),
+            TIRExprKind::SelfExpr => self.not_yet("`self`", id),
+        }
+    }
+
+    // A block, and the scope its statements stand in.
+    fn block(
+        &mut self,
+        stmts: &[TIRStmt],
+        tail: Option<TIRExprId>,
+        at: TIRExprId,
+    ) -> TTIRExprId {
+        self.scopes.push(HashMap::new());
+        let mut made = Vec::new();
+        for stmt in stmts {
+            match stmt {
+                TIRStmt::Let { is_unsafe, intro, name, ty, init, .. } => {
+                    let init = init.map(|i| self.expr(i));
+                    let written = ty.map(|t| self.ty(t));
+                    let ty = match (written, init) {
+                        (Some(want), Some(got)) => {
+                            let found = self.out.exprs[got].ty;
+                            if self.types.unify(found, want).is_err() {
+                                let (found, want) = (self.spell(found), self.spell(want));
+                                self.errors.push(
+                                    Diagnostic::error(
+                                        format!("this is `{}` and the name says `{}`", found, want),
+                                        self.at(at),
+                                    )
+                                    .with_label("the two disagree"),
+                                );
+                            }
+                            want
+                        }
+                        (Some(want), None) => want,
+                        (None, Some(got)) => self.out.exprs[got].ty,
+                        // Neither written: "a `<var_decl>` with neither is a
+                        // shape the grammar admits and the checker has to
+                        // answer for" -- a hole, until something fills it.
+                        (None, None) => self.types.fresh(),
+                    };
+                    let local = self.bind(name.clone(), ty, *intro);
+                    made.push(TTIRStmt::Let { is_unsafe: *is_unsafe, local, init });
+                }
+                TIRStmt::Expr { is_unsafe, expr } => {
+                    let expr = self.expr(*expr);
+                    made.push(TTIRStmt::Expr { is_unsafe: *is_unsafe, expr });
+                }
+                TIRStmt::Item(item) => {
+                    if let Some(made_item) = self.made[*item] {
+                        made.push(TTIRStmt::Item(made_item));
+                    }
+                }
+            }
+        }
+        let tail = tail.map(|t| self.expr(t));
+        self.scopes.pop();
+        // "A block is an expression, and its value is the trailing expression
+        // -- the one left without a `;`. A block with no trailing expression is
+        // `null`."
+        let ty = match tail {
+            Some(t) => self.out.exprs[t].ty,
+            None => self.types.null(),
+        };
+        self.make(TTIRExprKind::Block { stmts: made, tail }, ty, at)
+    }
+
+    // What a call comes to: the callee has to be a fn, and what it takes has to
+    // agree with what it was handed.
+    fn calling(&mut self, callee: TTIRExprId, args: &[TTIRExprId], at: TIRExprId) -> TyId {
+        let ct = self.out.exprs[callee].ty;
+        let Ty::Fn { params, ret, .. } = self.types.get(ct).clone() else {
+            if !matches!(self.types.get(ct), Ty::Error) {
+                let ct = self.spell(ct);
+                self.errors.push(
+                    Diagnostic::error(format!("`{}` is not a fn", ct), self.at(at))
+                        .with_label("this is called"),
+                );
+            }
+            return self.types.error();
+        };
+        if params.len() != args.len() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("this takes {} and was handed {}", params.len(), args.len()),
+                    self.at(at),
+                )
+                .with_label("the wrong number of arguments"),
+            );
+            return ret;
+        }
+        for (i, (&want, &got)) in params.iter().zip(args.iter()).enumerate() {
+            let found = self.out.exprs[got].ty;
+            if self.types.unify(found, want).is_err() {
+                let (found, want) = (self.spell(found), self.spell(want));
+                self.errors.push(
+                    Diagnostic::error(
+                        format!("argument {} is `{}` and it takes `{}`", i + 1, found, want),
+                        self.at(at),
+                    )
+                    .with_label("this is what it was handed"),
+                );
+            }
+        }
+        ret
+    }
+
+    // The type a declaration stands for where its name is used as a value.
+    fn item_ty(&mut self, item: TTIRItemId) -> TyId {
+        match &self.out.items[item].kind {
+            TTIRItemKind::Fn(f) => f.ty,
+            TTIRItemKind::Const { ty, .. } | TTIRItemKind::Global { ty, .. } => *ty,
+            _ => self.types.error(),
+        }
+    }
+
+    // A field by the name it was written with, and the index it turned out to
+    // be: "Reached by index rather than by name: which field `x` is, is
+    // settled."
+    fn field_of(&mut self, ty: TyId, name: &str) -> Option<(usize, TyId)> {
+        // A reference stands for the place it refers to, so reaching into one
+        // reaches into what it refers to (§3).
+        let held = match self.types.get(ty).clone() {
+            Ty::Ref { inner, .. } => inner,
+            _ => ty,
+        };
+        let Ty::Named { item, .. } = self.types.get(held).clone() else { return None };
+        let TTIRItemKind::Struct { fields, .. } = &self.out.items[item].kind else {
+            return None;
+        };
+        fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == name)
+            .map(|(i, f)| (i, f.ty))
+    }
+}
+
+// Whether an operator gives back a `bool` whatever it was handed.
+fn answers_bool(op: TIRBinOp) -> bool {
+    matches!(
+        op,
+        TIRBinOp::Eq | TIRBinOp::Ne | TIRBinOp::Lt | TIRBinOp::Gt | TIRBinOp::Le
+            | TIRBinOp::Ge | TIRBinOp::And | TIRBinOp::Or | TIRBinOp::Xor
+    )
+}
+
+#[cfg(test)]
+mod tests;
