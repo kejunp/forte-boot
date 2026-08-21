@@ -330,3 +330,17 @@ fn each_leaf_of_a_group_is_reported_where_it_stands() {
     assert_eq!(out.matches("error:").count(), 1, "{}", out);
 }
 
+
+// The module path a file is reached by, which is what stands in front of
+// everything it declares -- in a path a reader writes and in a symbol both.
+#[test]
+fn a_file_knows_the_module_it_is() {
+    let (r, root) = resolved(&[
+        ("main.fc", "import a::b::deep;\n"),
+        ("a/b/deep.fc", "pub fn go(): i32 { 1 }\n"),
+    ]);
+    assert_eq!(r.render(), "");
+    let dir = root.parent().expect("a parent");
+    assert_eq!(r.module_of(&root), vec!["main"]);
+    assert_eq!(r.module_of(&dir.join("a/b/deep.fc")), vec!["a", "b", "deep"]);
+}

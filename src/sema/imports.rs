@@ -194,6 +194,29 @@ impl ImportResolver {
         }
     }
 
+    // The module path a file is reached by, from the suite root: `a/b/deep.fc`
+    // is `a::b::deep`. A file is a module (section 1), so this is what stands
+    // in front of everything the file declares -- in a path a reader writes,
+    // and in the symbol a fn is compiled to (`sema::names::Mangler`).
+    //
+    // The stem and not the file name: `.fc` is how the file is stored and no
+    // part of what the module is called, which is the same answer `find_module`
+    // gives when it goes the other way.
+    pub fn module_of(&self, file: &Path) -> Vec<String> {
+        let file = normalise(file);
+        let rest = file.strip_prefix(&self.root).unwrap_or(&file);
+        let mut out: Vec<String> = rest
+            .parent()
+            .map(|dirs| {
+                dirs.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(stem(&file));
+        out
+    }
+
     pub fn suite(&self, file: &Path) -> Option<&ParsedSuite> {
         self.parsed.get(&normalise(file))
     }

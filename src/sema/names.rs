@@ -22,8 +22,12 @@
 // one in `tir_nodes` comes off with the pass that reads the TIR.
 #![allow(dead_code)]
 
-use crate::tir::tir_nodes::{TIRPrim, TIRRefOp, TIRVis};
-use crate::tir::ttir_nodes::{TTIRFn, TTIRItemId, TTIRItemKind, TTIRProgram, Ty, TyId};
+use std::collections::HashMap;
+
+use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
+use crate::tir::ttir_nodes::{
+    TTIRFn, TTIRItemId, TTIRItemKind, TTIRPayload, TTIRProgram, Ty, TyId,
+};
 
 pub type Name = String;
 
@@ -145,12 +149,13 @@ pub struct Field {
 pub struct EnumVariant {
     pub name:    Name,
     pub payload: Payload,
+    // What it is worth. Every variant has one whether it was written or not --
+    // `D = 4` says so and `A` is counted -- so it stands beside the payload
+    // rather than being a fourth kind of one, as `TTIRVariant` has it.
+    pub value:   i64,
 }
 
-// What a variant carries. Four and not three: `D = 4` carries no fields and is
-// still not `None`, the number being the variant's own. One enum here says what
-// the grammar spells as a payload hanging off an option, and leaves no fifth
-// state for anything below to handle.
+// What a variant carries.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Payload {
     // `A`
@@ -159,22 +164,21 @@ pub enum Payload {
     Tuple(Vec<TyId>),
     // `C { x: i32 }`, reached by name.
     Named(Vec<Field>),
-    // `D = 4`. The value is worked out at compile time, and there is nothing
-    // here to hold one with yet -- see the note at the foot of this file.
-    Discriminant,
 }
 // ---- What is still open ---------------------------------------------------
-// Two things.
+// Two things, and both are the TTIR and this table disagreeing about what a
+// declaration is.
 //
-//   - A discriminant has nowhere to keep its value. `D = 4` is a <const_expr>
-//     and evaluating one is the checker's, so `Payload::Discriminant` carries
-//     nothing until there is something to carry -- a const value, which no pass
-//     here produces yet.
-//   - A `TyId` is a handle and nothing here owns the arena it points into. The
-//     pass that fills these in owns it, and what it is filling is the `types`
-//     of a `TTIRProgram`: one arena for the suite and not one per file, since
-//     `Ty::Named` names an item of that same program and two files sharing a
-//     type have to share the handle for it.
+//   - The TTIR keeps no generic list. `Ty::Param` carries a parameter's name
+//     and its place, so a signature that uses one can be written down, but the
+//     `<T: Ord>` it was declared with is gone -- so `generics` is built empty
+//     out of a TTIR and the bounds are lost. Either the TTIR grows the list or
+//     `Info` gives it up; nothing can fill it as things stand.
+//   - Four of the variants never reach a `SymbolTable`. The TTIR has no
+//     `TypeAlias` item, an alias being a name for a type and not a type; and a
+//     `Variant`, a `TypeParam` and a `Lifetime` are none of them things the
+//     linker names. All four are what a *scope* holds, and a scope is keyed by
+//     the name the source wrote rather than by a symbol.
 
 // ---- Mangling -------------------------------------------------------------
 //
@@ -198,7 +202,9 @@ pub enum Payload {
 // The parts, in order:
 //
 //   - where it is declared, one part per segment. A file is a module and a
-//     namespace nests another inside it (section 1), and a method's segments
+//     namespace nests another inside it (section 1), so both are segments and
+//     the file's come first: `area` at the top of `shapes.fc` is `6shapes4area`
+//     and not `4area`, or two files could not each hold one. A method's segments
 //     are the impl it is written in -- the type it is for, and the trait where
 //     there is one, since `impl Buf` and `impl Show for Buf` may both hold a
 //     `len` and only the trait tells the two apart.
@@ -214,9 +220,31 @@ pub enum Payload {
 // Built once for a program: where an item is declared is a fact about the
 // program and not about the fn being named, and working it out per fn would be
 // walking the whole tree for each of them.
-// What every mangled name opens with: `__` because nothing written in the
-// language may begin with it, and `F` because this one is a function.
-const FN_PREFIX: &str = "__F";
+// What a mangled name opens with: `__` because nothing written in the language
+// may begin with it, so a mangled name collides with nothing a `%symbol` gave
+// and with nothing on the other side of a foreign declaration -- and then a
+// letter for the kind of thing being named, so a struct and a fn of one name in
+// one module are two symbols.
+//
+// `None` for the two with no name of their own: an `impl` is reached through
+// the type it is written for, and a global bound to `_` was deliberately not
+// named. There is no letter for a type alias -- the TTIR has no such item,
+// an alias being a name for a type and not a type.
+fn prefix_of(kind: &TTIRItemKind) -> Option<&'static str> {
+    Some(match kind {
+        TTIRItemKind::Fn(_) => "__F",
+        TTIRItemKind::Struct { .. } => "__S",
+        TTIRItemKind::Enum { .. } => "__E",
+        TTIRItemKind::Trait { .. } => "__T",
+        TTIRItemKind::Namespace { .. } => "__N",
+        TTIRItemKind::Const { .. } => "__C",
+        TTIRItemKind::Global { name, .. } => match name {
+            TIRBinding::Name(_) => "__G",
+            _ => return None,
+        },
+        TTIRItemKind::Impl { .. } => return None,
+    })
+}
 
 pub struct Mangler {
     // The segments each item is declared under, by item. Empty for an item at
@@ -225,9 +253,13 @@ pub struct Mangler {
 }
 
 impl Mangler {
-    pub fn new(p: &TTIRProgram) -> Mangler {
+    // `at` is the module the program was read at -- the file's own path from
+    // the suite root, `a/b/deep.fc` being `["a", "b", "deep"]`. It is the
+    // caller's because nothing in a `TTIRProgram` says which file it came from,
+    // and `sema::imports` is what knows: see `ImportResolver::module_of`.
+    pub fn new(p: &TTIRProgram, at: &[Name]) -> Mangler {
         let mut m = Mangler { paths: vec![Vec::new(); p.items.len()] };
-        m.nest(&p.roots, &[], p);
+        m.nest(&p.roots, at, p);
         m.members(p);
         m
     }
@@ -241,7 +273,7 @@ impl Mangler {
             return given.clone();
         }
 
-        let mut out = String::from(FN_PREFIX);
+        let mut out = String::from("__F");
         for segment in &self.paths[at] {
             part(segment, &mut out);
         }
@@ -255,6 +287,25 @@ impl Mangler {
             part(&self.spell(ty, p), &mut out);
         }
         out
+    }
+
+    // The symbol of any declaration, not just a fn. Everything but a fn is its
+    // prefix, where it is declared, and its name: only a fn has parameters to
+    // be told apart by, and only a fn may be given a name with `%symbol`.
+    //
+    // `None` where there is nothing to name -- an `impl`, or a global bound to
+    // `_`. Neither is a thing the linker ever sees.
+    pub fn symbol_of(&self, at: TTIRItemId, p: &TTIRProgram) -> Option<String> {
+        let kind = &p.items[at].kind;
+        if let TTIRItemKind::Fn(f) = kind {
+            return Some(self.symbol(f, at, p));
+        }
+        let mut out = String::from(prefix_of(kind)?);
+        for segment in &self.paths[at] {
+            part(segment, &mut out);
+        }
+        part(&name_of(at, p), &mut out);
+        Some(out)
     }
 
     // A type as one part of a symbol writes it. The language's own spelling,
@@ -334,7 +385,17 @@ impl Mangler {
             let mut at = self.paths[id].clone();
             let members = match &p.items[id].kind {
                 TTIRItemKind::Impl { ty, of, members, .. } => {
-                    at.push(self.spell(*ty, p));
+                    // The type's spelling, minus whatever of it the segments
+                    // in front already say: an `impl Point` inside `shapes` is
+                    // `6shapes5Point` and not `6shapes13shapes::Point`. A type
+                    // from somewhere else keeps its path, which is what tells
+                    // an `impl other::Buf` from an `impl Buf`.
+                    let spelled = self.spell(*ty, p);
+                    let here = at.iter().map(|s| format!("{}::", s)).collect::<String>();
+                    at.push(match spelled.strip_prefix(&here) {
+                        Some(rest) => rest.to_string(),
+                        None => spelled,
+                    });
                     if let Some(of) = of {
                         at.push(name_of(*of, p));
                     }
@@ -408,3 +469,171 @@ fn ref_op(op: TIRRefOp) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+// ---- The symbol table -----------------------------------------------------
+//
+// What a program declares, by the name the linker sees: `symbol: Info`. One
+// flat table and not a tree, because a symbol already carries where the thing
+// was declared -- that is what the segments in front of it are for -- so
+// nothing has to be walked into to find an entry.
+//
+// Keyed by the symbol and not by the name for the reason mangling exists at
+// all: two fns may share a name and be told apart by what they take, so a table
+// keyed by `add` could hold only one of them. `__F6shapes3add3i323i32` and
+// `__F6shapes3add3f643f64` are two entries and one word in the source.
+//
+// What is *not* here is everything the linker never names: a local, a
+// parameter, a generic parameter, a lifetime, an enum's variants. Those are
+// what a scope holds, keyed by the name that was written, and a scope is the
+// next thing to build.
+
+pub struct SymbolTable {
+    entries: HashMap<String, Info>,
+    // Two declarations that mangled the same. It cannot happen from a program
+    // the checker took -- two fns of one name and one parameter list is an
+    // error where the second is written -- so anything in here is either that
+    // error let through or the mangler having come apart, and the caller is
+    // the one placed to say which.
+    clashes: Vec<String>,
+}
+
+impl SymbolTable {
+    // Every declaration in `p`, which was read at module `at`.
+    pub fn of(p: &TTIRProgram, at: &[Name]) -> SymbolTable {
+        let m = Mangler::new(p, at);
+        let mut table = SymbolTable { entries: HashMap::new(), clashes: Vec::new() };
+        for id in 0..p.items.len() {
+            let Some(symbol) = m.symbol_of(id, p) else { continue };
+            let Some(info) = info_of(id, p) else { continue };
+            if table.entries.insert(symbol.clone(), info).is_some() {
+                table.clashes.push(symbol);
+            }
+        }
+        table
+    }
+
+    pub fn get(&self, symbol: &str) -> Option<&Info> {
+        self.entries.get(symbol)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Info)> {
+        self.entries.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clashes(&self) -> &[String] {
+        &self.clashes
+    }
+
+    // The entries in symbol order, which is what a report or a test wants: a
+    // `HashMap` has an order and it is not one anybody chose.
+    pub fn sorted(&self) -> Vec<(&String, &Info)> {
+        let mut out: Vec<(&String, &Info)> = self.entries.iter().collect();
+        out.sort_by(|a, b| a.0.cmp(b.0));
+        out
+    }
+}
+
+// What one declaration is. `None` for an `impl`, which declares no name of its
+// own, and for a global bound to `_`.
+fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
+    Some(match &p.items[at].kind {
+        TTIRItemKind::Fn(f) => Info::Function {
+            // Empty out of a TTIR: see the note above.
+            generics:  Vec::new(),
+            params:    params_of(f, p),
+            ret:       Some(f.ret),
+            is_const:  f.is_const,
+            is_unsafe: f.is_unsafe,
+        },
+        TTIRItemKind::Struct { fields, .. } => Info::Struct {
+            generics: Vec::new(),
+            fields:   fields.iter().map(field_of).collect(),
+        },
+        TTIRItemKind::Enum { variants, .. } => Info::Enum {
+            generics: Vec::new(),
+            variants: variants
+                .iter()
+                .map(|v| EnumVariant {
+                    name:    v.name.clone(),
+                    payload: match &v.payload {
+                        TTIRPayload::None => Payload::None,
+                        TTIRPayload::Tuple(tys) => Payload::Tuple(tys.clone()),
+                        TTIRPayload::Named(fields) => {
+                            Payload::Named(fields.iter().map(field_of).collect())
+                        }
+                    },
+                    value:   v.value,
+                })
+                .collect(),
+        },
+        TTIRItemKind::Trait { members, .. } => Info::Trait {
+            generics: Vec::new(),
+            members:  members.iter().map(|&m| name_of(m, p)).collect(),
+        },
+        TTIRItemKind::Namespace { items, .. } => {
+            // The names it declares. What each one is, its own entry says --
+            // holding them twice is what would let the two come apart.
+            Info::Namespace(
+                items
+                    .iter()
+                    .filter(|&&i| !matches!(p.items[i].kind, TTIRItemKind::Impl { .. }))
+                    .map(|&i| name_of(i, p))
+                    .collect(),
+            )
+        }
+        // A constant is a name for a value worked out at compile time, which is
+        // a `Variable` that says so rather than a kind of its own.
+        TTIRItemKind::Const { ty, .. } => Info::Variable {
+            ty:       Some(*ty),
+            is_mut:   false,
+            is_const: true,
+        },
+        TTIRItemKind::Global { intro, name, ty, .. } => {
+            let TIRBinding::Name(_) = name else { return None };
+            Info::Variable {
+                ty:       Some(*ty),
+                is_mut:   matches!(intro, TIRIntro::Var),
+                is_const: false,
+            }
+        }
+        TTIRItemKind::Impl { .. } => return None,
+    })
+}
+
+// A fn's parameters, named where there is a body to name them from. A signature
+// has none -- its `params` index a body it has not got -- so what is left is
+// the types, which the fn's own type carries whether it was written out or not.
+fn params_of(f: &TTIRFn, p: &TTIRProgram) -> Vec<(Name, Option<TyId>)> {
+    let Ty::Fn { params, .. } = &p.types[f.ty] else {
+        panic!("`{}` has a type that is not a fn type", f.name)
+    };
+    let locals = f.body.map(|b| &p.bodies[b].locals);
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, &ty)| {
+            let name = locals
+                .and_then(|locals| f.params.get(i).map(|&slot| &locals[slot].name))
+                .map(|bound| match bound {
+                    TIRBinding::Name(name) => name.clone(),
+                    // `_` and a receiver are both bound and neither is a name a
+                    // caller may use, so neither has one here.
+                    _ => "_".to_string(),
+                })
+                .unwrap_or_else(|| "_".to_string());
+            (name, Some(ty))
+        })
+        .collect()
+}
+
+fn field_of(f: &crate::tir::ttir_nodes::TTIRFieldDecl) -> Field {
+    Field { name: f.name.clone(), ty: f.ty, vis: f.vis }
+}

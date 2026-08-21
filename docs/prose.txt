@@ -1684,7 +1684,10 @@ answer is not obvious from the rules alone.
     then its characters, and "%symbol" gives the exact name instead
     (section 1). Settled, and the parts are these: where the fn is declared,
     one part per segment; its own name; and one part for each parameter's
-    type. The two underscores are what nothing written in the language may
+    type. A file is a module and a namespace nests another inside it
+    (section 1), so both are segments and the file's come first — "area" at
+    the top of "shapes.fc" is "__F6shapes4area", or two files could not each
+    hold one. The two underscores are what nothing written in the language may
     begin with, so a mangled name collides with nothing a "%symbol" gave and
     with nothing on the other side of a foreign declaration; the "F" says a
     function, and leaves a letter free for whatever else has to be named.

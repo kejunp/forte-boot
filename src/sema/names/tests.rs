@@ -65,14 +65,14 @@ impl Suite {
     // The symbol of the fn at `id`, with the program's roots as given.
     fn symbol_of(&mut self, id: TTIRItemId, roots: Vec<TTIRItemId>) -> String {
         self.p.roots = roots;
-        let m = Mangler::new(&self.p);
+        let m = Mangler::new(&self.p, &[]);
         let TTIRItemKind::Fn(f) = &self.p.items[id].kind else { panic!("not a fn") };
         m.symbol(f, id, &self.p)
     }
 
     fn spell_of(&mut self, ty: TyId, roots: Vec<TTIRItemId>) -> String {
         self.p.roots = roots;
-        Mangler::new(&self.p).spell(ty, &self.p)
+        Mangler::new(&self.p, &[]).spell(ty, &self.p)
     }
 }
 
@@ -306,4 +306,174 @@ fn a_mangled_name_and_a_given_one_do_not_collide() {
     let mangled = s.symbol_of(f, vec![f]);
     assert_eq!(mangled, "__F6malloc");
     assert_ne!(mangled, "malloc");
+}
+
+// A file is a module, so it is a segment like a namespace. Two files each
+// holding an `area` are two symbols, which is what the segment is for.
+#[test]
+fn a_file_is_a_segment_like_a_namespace() {
+    let mut s = Suite::new();
+    let i32 = s.prim(TIRPrim::I32);
+    let area = s.func("area", vec![i32]);
+    s.p.roots = vec![area];
+
+    let TTIRItemKind::Fn(f) = &s.p.items[area].kind else { panic!() };
+    let shapes = Mangler::new(&s.p, &["shapes".to_string()]);
+    let boxes = Mangler::new(&s.p, &["boxes".to_string()]);
+    assert_eq!(shapes.symbol(f, area, &s.p), "__F6shapes4area3i32");
+    assert_eq!(boxes.symbol(f, area, &s.p), "__F5boxes4area3i32");
+    assert_ne!(shapes.symbol(f, area, &s.p), boxes.symbol(f, area, &s.p));
+}
+
+// A file in a directory is a module inside a module, so its segments nest the
+// way a namespace's do -- and a namespace inside it goes on the end.
+#[test]
+fn a_nested_file_and_a_namespace_are_one_run_of_segments() {
+    let mut s = Suite::new();
+    let clamp = s.func("clamp", Vec::new());
+    let ns = s.item(TTIRItemKind::Namespace {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "limits".to_string(), items: vec![clamp],
+    });
+    s.p.roots = vec![ns];
+    let at = ["a".to_string(), "b".to_string(), "deep".to_string()];
+    let m = Mangler::new(&s.p, &at);
+    let TTIRItemKind::Fn(f) = &s.p.items[clamp].kind else { panic!() };
+    assert_eq!(m.symbol(f, clamp, &s.p), "__F1a1b4deep6limits5clamp");
+}
+
+// ---- The symbol table -----------------------------------------------------
+
+// Everything a program declares, by the name the linker sees. Keyed by the
+// symbol and not by the name for the reason mangling exists: two `add`s are
+// two entries and one word in the source.
+#[test]
+fn the_table_is_keyed_by_symbol() {
+    let mut s = Suite::new();
+    let i32 = s.prim(TIRPrim::I32);
+    let f64 = s.prim(TIRPrim::F64);
+    let addi = s.func("add", vec![i32, i32]);
+    let addf = s.func("add", vec![f64, f64]);
+    let point = s.strukt("Point");
+    s.p.roots = vec![addi, addf, point];
+
+    let table = SymbolTable::of(&s.p, &["shapes".to_string()]);
+    let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "__F6shapes3add3f643f64",
+            "__F6shapes3add3i323i32",
+            "__S6shapes5Point",
+        ]
+    );
+    assert!(table.clashes().is_empty());
+
+    // The entry is what the name turned out to be.
+    let Some(Info::Function { params, is_unsafe, .. }) =
+        table.get("__F6shapes3add3i323i32")
+    else {
+        panic!("{:?}", table.get("__F6shapes3add3i323i32"))
+    };
+    assert_eq!(params.len(), 2);
+    assert!(!is_unsafe);
+    assert!(matches!(table.get("__S6shapes5Point"), Some(Info::Struct { .. })));
+}
+
+// A letter per kind, so a struct and a fn of one name in one module are two
+// symbols rather than one entry overwriting the other.
+#[test]
+fn each_kind_of_declaration_gets_its_own_letter() {
+    let mut s = Suite::new();
+    let i32 = s.prim(TIRPrim::I32);
+
+    let f = s.func("thing", Vec::new());
+    let st = s.strukt("thing");
+    let en = s.item(TTIRItemKind::Enum {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "thing".to_string(), variants: Vec::new(),
+    });
+    let tr = s.item(TTIRItemKind::Trait {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "thing".to_string(), members: Vec::new(),
+    });
+    let co = s.item(TTIRItemKind::Const {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "thing".to_string(), ty: i32, value: 0,
+    });
+    let gl = s.item(TTIRItemKind::Global {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), intro: TIRIntro::Var,
+        name: TIRBinding::Name("thing".to_string()), ty: i32, init: None,
+    });
+    let ns = s.item(TTIRItemKind::Namespace {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "thing".to_string(), items: Vec::new(),
+    });
+    s.p.roots = vec![f, st, en, tr, co, gl, ns];
+
+    let table = SymbolTable::of(&s.p, &[]);
+    let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(
+        keys,
+        vec!["__C5thing", "__E5thing", "__F5thing", "__G5thing",
+             "__N5thing", "__S5thing", "__T5thing"]
+    );
+    // A `var` is the mutable half of the pair, and a `const` says so instead.
+    assert!(matches!(table.get("__G5thing"), Some(Info::Variable { is_mut: true, .. })));
+    assert!(matches!(table.get("__C5thing"), Some(Info::Variable { is_const: true, .. })));
+}
+
+// An impl declares no name of its own -- it is reached through the type it is
+// written for -- so nothing in the table stands for one. Its members do.
+#[test]
+fn an_impl_is_not_in_the_table_but_its_methods_are() {
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let len = s.func("len", Vec::new());
+    let imp = s.item(TTIRItemKind::Impl {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        ty: buf_ty, of: None, members: vec![len],
+    });
+    s.p.roots = vec![buf, imp];
+
+    let table = SymbolTable::of(&s.p, &[]);
+    let keys: Vec<&String> = table.sorted().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, vec!["__F3Buf3len", "__S3Buf"]);
+}
+
+// The impl's segment says the type, and the segments in front already say the
+// module: `impl Point` inside `shapes` is `6shapes5Point` and not
+// `6shapes13shapes::Point`. A type from elsewhere keeps its path, which is what
+// tells an `impl other::Buf` from an `impl Buf`.
+#[test]
+fn an_impl_does_not_repeat_the_module_it_is_in() {
+    let mut s = Suite::new();
+    let here = s.strukt("Point");
+    let here_ty = s.ty(Ty::Named { item: here, args: Vec::new() });
+    let mine = s.func("norm", Vec::new());
+    let imp = s.item(TTIRItemKind::Impl {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        ty: here_ty, of: None, members: vec![mine],
+    });
+
+    let away = s.strukt("Buf");
+    let away_ty = s.ty(Ty::Named { item: away, args: Vec::new() });
+    let theirs = s.func("len", Vec::new());
+    let imp2 = s.item(TTIRItemKind::Impl {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        ty: away_ty, of: None, members: vec![theirs],
+    });
+    let other = s.item(TTIRItemKind::Namespace {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "other".to_string(), items: vec![away],
+    });
+    s.p.roots = vec![here, imp, other, imp2];
+
+    let m = Mangler::new(&s.p, &["shapes".to_string()]);
+    assert_eq!(m.symbol_of(mine, &s.p).as_deref(), Some("__F6shapes5Point4norm"));
+    assert_eq!(
+        m.symbol_of(theirs, &s.p).as_deref(),
+        Some("__F6shapes10other::Buf3len")
+    );
 }
