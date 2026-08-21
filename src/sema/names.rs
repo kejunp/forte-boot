@@ -26,7 +26,8 @@ use std::collections::HashMap;
 
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::{
-    TTIRFn, TTIRItemId, TTIRItemKind, TTIRPayload, TTIRProgram, Ty, TyId,
+    TTIRExprId, TTIRExprKind, TTIRFn, TTIRItemId, TTIRItemKind, TTIRPayload, TTIRProgram,
+    TTIRStmt, Ty, TyId,
 };
 
 pub type Name = String;
@@ -174,11 +175,13 @@ pub enum Payload {
 //     `<T: Ord>` it was declared with is gone -- so `generics` is built empty
 //     out of a TTIR and the bounds are lost. Either the TTIR grows the list or
 //     `Info` gives it up; nothing can fill it as things stand.
-//   - Four of the variants never reach a `SymbolTable`. The TTIR has no
-//     `TypeAlias` item, an alias being a name for a type and not a type; and a
-//     `Variant`, a `TypeParam` and a `Lifetime` are none of them things the
-//     linker names. All four are what a *scope* holds, and a scope is keyed by
-//     the name the source wrote rather than by a symbol.
+//   - Four of the variants are built by nothing yet. The TTIR has no
+//     `TypeAlias` item, an alias being a name for a type and not a type; a
+//     `Variant` is reached through its enum; and a `TypeParam` and a `Lifetime`
+//     want the generic list the TTIR does not keep. None of the four is a thing
+//     the linker names, so none belongs in a `SymbolTable`; they belong in a
+//     scope (`sema::scopes`), which is keyed by the name the source wrote --
+//     and the three that are not the alias wait on the same missing list.
 
 // ---- Mangling -------------------------------------------------------------
 //
@@ -365,14 +368,29 @@ impl Mangler {
 
     // ---- Where an item is declared ---------------------------------------
 
-    // Down through the namespaces, which is where a declaration can stand.
+    // Down through the namespaces, and down through a fn's body besides: a
+    // declaration may stand in a block (section 2), and one that does is a
+    // declaration like any other -- so it is named after the fn it is written
+    // in, the way a method is named after its impl.
     fn nest(&mut self, items: &[TTIRItemId], at: &[Name], p: &TTIRProgram) {
         for &id in items {
             self.paths[id] = at.to_vec();
-            if let TTIRItemKind::Namespace { name, items, .. } = &p.items[id].kind {
-                let mut inner = at.to_vec();
-                inner.push(name.clone());
-                self.nest(items, &inner, p);
+            match &p.items[id].kind {
+                TTIRItemKind::Namespace { name, items, .. } => {
+                    let mut inner = at.to_vec();
+                    inner.push(name.clone());
+                    self.nest(items, &inner, p);
+                }
+                TTIRItemKind::Fn(f) => {
+                    let nested = nested_items(f, p);
+                    if nested.is_empty() {
+                        continue;
+                    }
+                    let mut inner = at.to_vec();
+                    inner.push(f.name.clone());
+                    self.nest(&nested, &inner, p);
+                }
+                _ => {}
             }
         }
     }
@@ -543,7 +561,7 @@ impl SymbolTable {
 
 // What one declaration is. `None` for an `impl`, which declares no name of its
 // own, and for a global bound to `_`.
-fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
+pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
     Some(match &p.items[at].kind {
         TTIRItemKind::Fn(f) => Info::Function {
             // Empty out of a TTIR: see the note above.
@@ -636,4 +654,126 @@ fn params_of(f: &TTIRFn, p: &TTIRProgram) -> Vec<(Name, Option<TyId>)> {
 
 fn field_of(f: &crate::tir::ttir_nodes::TTIRFieldDecl) -> Field {
     Field { name: f.name.clone(), ty: f.ty, vis: f.vis }
+}
+
+// ---- Declarations written inside a body -----------------------------------
+
+// The items declared in `f`'s body, in the order they were written. A block
+// holds statements and one of them may be a declaration, so a fn, a struct or a
+// namespace can stand inside another fn -- and every pass that walks the items
+// of a program has to reach those too, or they are named by nothing and stand
+// in no scope.
+//
+// One level: what is nested inside *those* is reached by asking them in turn,
+// which is what `Mangler::nest` and `Scopes` both do.
+pub fn nested_items(f: &TTIRFn, p: &TTIRProgram) -> Vec<TTIRItemId> {
+    let Some(body) = f.body else { return Vec::new() };
+    let mut out = Vec::new();
+    walk_expr(p.bodies[body].value, p, &mut out);
+    out
+}
+
+// Every `TTIRStmt::Item` under one expression. A block is an expression and
+// expressions nest, so a declaration inside the `else` of an `if` inside a
+// `while` is as reachable as one at the top of the body.
+fn walk_expr(id: TTIRExprId, p: &TTIRProgram, out: &mut Vec<TTIRItemId>) {
+    use TTIRExprKind::*;
+    match &p.exprs[id].kind {
+        Block { stmts, tail } => {
+            for stmt in stmts {
+                match stmt {
+                    TTIRStmt::Item(item) => out.push(*item),
+                    TTIRStmt::Let { init, .. } => {
+                        for &e in init.iter() {
+                            walk_expr(e, p, out);
+                        }
+                    }
+                    TTIRStmt::Expr { expr, .. } => walk_expr(*expr, p, out),
+                }
+            }
+            for &e in tail.iter() {
+                walk_expr(e, p, out);
+            }
+        }
+
+        If { cond, then, els } => {
+            walk_expr(*cond, p, out);
+            walk_expr(*then, p, out);
+            for &e in els.iter() {
+                walk_expr(e, p, out);
+            }
+        }
+        While { cond, body } => {
+            walk_expr(*cond, p, out);
+            walk_expr(*body, p, out);
+        }
+        For { iter, body, .. } => {
+            walk_expr(*iter, p, out);
+            walk_expr(*body, p, out);
+        }
+        Match { scrutinee, arms } => {
+            walk_expr(*scrutinee, p, out);
+            for arm in arms {
+                walk_expr(arm.body, p, out);
+            }
+        }
+        // A closure's body is an expression like any other, and a declaration
+        // may stand in it.
+        Closure { body, .. } => walk_expr(*body, p, out),
+
+        Field { base, .. } | TupleIndex { base, .. } | Cast(base) => walk_expr(*base, p, out),
+        Unary { operand, .. } => walk_expr(*operand, p, out),
+        Binary { lhs, rhs, .. } => {
+            walk_expr(*lhs, p, out);
+            walk_expr(*rhs, p, out);
+        }
+        Assign { place, value, .. } => {
+            walk_expr(*place, p, out);
+            walk_expr(*value, p, out);
+        }
+        Index { base, index } => {
+            walk_expr(*base, p, out);
+            walk_expr(*index, p, out);
+        }
+        Range { start, end, .. } => {
+            for &e in start.iter().chain(end.iter()) {
+                walk_expr(e, p, out);
+            }
+        }
+        Call { callee, args } => {
+            walk_expr(*callee, p, out);
+            for &a in args {
+                walk_expr(a, p, out);
+            }
+        }
+        Method { recv, args, .. } => {
+            walk_expr(*recv, p, out);
+            for &a in args {
+                walk_expr(a, p, out);
+            }
+        }
+        ArrayLit(es)
+        | TupleLit(es)
+        | Set { elems: es, .. }
+        | StructLit { fields: es, .. }
+        | VariantLit { fields: es, .. } => {
+            for &e in es {
+                walk_expr(e, p, out);
+            }
+        }
+        Map { entries, .. } => {
+            for &(key, value) in entries {
+                walk_expr(key, p, out);
+                walk_expr(value, p, out);
+            }
+        }
+        Return(e) | Break(e) => {
+            for &e in e.iter() {
+                walk_expr(e, p, out);
+            }
+        }
+
+        // The leaves, and the one that already is an item.
+        Literal(_) | Local(_) | Item(_) | SelfExpr | Continue => {}
+    }
 }
