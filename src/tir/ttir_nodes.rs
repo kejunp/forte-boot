@@ -276,9 +276,23 @@ pub struct TTIRFn {
     pub generics:  Vec<TTIRGeneric>,
     pub wheres:    Vec<TTIRWherePred>,
     pub ty:        TyId,
-    pub params:    Vec<TTIRLocalId>,
+    pub params:    Vec<TTIRParam>,
     pub ret:       TyId,
     pub body:      Option<TTIRBodyId>,
+}
+
+// One parameter as declared. The *type* is not here: it is in the fn's own
+// `Ty::Fn`, and a second spelling of it would only be a second thing to keep
+// in step. What is here is what that cannot say -- the name it was given, and
+// which slot of the body it fills.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TTIRParam {
+    // `_` and a receiver are both bindings and neither is a name a caller may
+    // use, which is why this is a `TIRBinding` and not a `String`.
+    pub name: TIRBinding,
+    // `None` in a signature, which has no body to fill: its parameters are
+    // named and typed and there is nothing to put them in.
+    pub slot: Option<TTIRLocalId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

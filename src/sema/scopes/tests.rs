@@ -2,6 +2,7 @@
 // pass that would build one from source and not written.
 
 use super::*;
+use crate::sema::names::Payload;
 use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRPrim, TIRVis};
 use crate::tir::ttir_nodes::*;
 
@@ -59,7 +60,18 @@ impl Suite {
 
     fn func(&mut self, name: &str, params: Vec<TyId>, body: Option<TTIRBodyId>) -> TTIRItemId {
         let ty = self.ty(Ty::Fn { params, ret: Self::NULL, is_unsafe: false });
-        let slots = body.map(|b| (0..self.p.bodies[b].locals.len()).collect()).unwrap_or_default();
+        // Every slot of the body stands for a parameter here, which is enough
+        // for what these tests ask; a real fn names its own.
+        let slots: Vec<TTIRParam> = body
+            .map(|b| {
+                self.p.bodies[b]
+                    .locals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, local)| TTIRParam { name: local.name.clone(), slot: Some(i) })
+                    .collect()
+            })
+            .unwrap_or_default();
         self.item(TTIRItemKind::Fn(TTIRFn {
             vis:       TIRVis::Pub,
             attrs:     TIRFnAttrs {
@@ -539,4 +551,162 @@ fn a_type_alias_is_a_name_for_the_type_it_follows() {
     assert_eq!(scopes.kind(inner), ScopeKind::TypeAlias);
     assert_eq!(names(&scopes, inner), vec!["T"]);
     assert!(scopes.look_up(root, "T").is_empty());
+}
+
+// A variant is reached through its enum -- `Color::Red` walks into the enum's
+// scope exactly as `limits::MAX` walks into a namespace's. So the variants are
+// the enum's own names, and `Red` on its own is not in the module around it.
+#[test]
+fn an_enum_holds_its_variants() {
+    let mut s = Suite::new();
+    let en = s.item(TTIRItemKind::Enum {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        generics: Vec::new(), wheres: Vec::new(),
+        name: "Color".to_string(),
+        variants: vec![
+            TTIRVariant {
+                attrs: TIRAttrs::default(), name: "Red".to_string(),
+                payload: TTIRPayload::None, value: 0,
+            },
+            TTIRVariant {
+                attrs: TIRAttrs::default(), name: "Shade".to_string(),
+                payload: TTIRPayload::Tuple(vec![Suite::I32]), value: 1,
+            },
+            TTIRVariant {
+                attrs: TIRAttrs::default(), name: "Blue".to_string(),
+                payload: TTIRPayload::None, value: 4,
+            },
+        ],
+    });
+    s.p.roots = vec![en];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let root = scopes.root();
+    let inner = scopes.opened_by(en).expect("an enum opens a scope");
+    assert_eq!(names(&scopes, root), vec!["Color"]);
+    assert_eq!(names(&scopes, inner), vec!["Blue", "Red", "Shade"]);
+    // `Red` on its own is not in the module: an import is what brings one in.
+    assert!(scopes.look_up(root, "Red").is_empty());
+
+    // Each knows the enum it belongs to, what it carries, and what it is worth.
+    let Info::Variant { of, payload, value } = &scopes.look_up(inner, "Shade")[0].info else {
+        panic!()
+    };
+    assert_eq!(of, "Color");
+    assert_eq!(payload, &Payload::Tuple(vec![Suite::I32]));
+    assert_eq!(*value, 1);
+    // Written or counted, every variant has a value.
+    let Info::Variant { value, .. } = &scopes.look_up(inner, "Blue")[0].info else { panic!() };
+    assert_eq!(*value, 4);
+    // And a variant is reached through its enum, which is what the linker names.
+    assert!(scopes.look_up(inner, "Red")[0].symbol.is_none());
+}
+
+// A signature is declared as fully as a body is, so its parameters keep the
+// names they were written with: `params` are the fn's own, not a body's slots.
+#[test]
+fn a_signature_keeps_its_parameter_names() {
+    let mut s = Suite::new();
+    let sig = s.func("show", vec![Suite::I32, Suite::F64], None);
+    let TTIRItemKind::Fn(held) = &mut s.p.items[sig].kind else { panic!() };
+    held.params = vec![
+        TTIRParam { name: TIRBinding::Name("width".to_string()), slot: None },
+        TTIRParam { name: TIRBinding::Discard, slot: None },
+    ];
+    assert!(held.body.is_none());
+    s.p.roots = vec![sig];
+
+    let scopes = Scopes::of(&s.p, &[]);
+    let Info::Function { params, .. } = &scopes.look_up(scopes.root(), "show")[0].info else {
+        panic!()
+    };
+    assert_eq!(params[0].0, "width");
+    // `_` binds nothing on purpose, and is no name a caller may write.
+    assert_eq!(params[1].0, "_");
+    assert_eq!(params[0].1, Some(Suite::I32));
+    assert_eq!(params[1].1, Some(Suite::F64));
+}
+
+// Every kind of thing an `Info` can be, produced by one program. The point is
+// not the program: it is that no variant is left that nothing builds, which is
+// what a table with an unreachable case in it always turns out to be hiding.
+#[test]
+fn every_kind_of_info_is_built_by_something() {
+    let mut s = Suite::new();
+
+    // A type alias, with a parameter of its own.
+    let t = s.ty(Ty::Param { name: "T".to_string(), index: 0 });
+    let pair = s.ty(Ty::Tuple(vec![t, t]));
+    let alias = s.item(TTIRItemKind::TypeAlias {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: "Pair".to_string(),
+        generics: vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }],
+        wheres: Vec::new(), ty: pair,
+    });
+
+    // A struct, an enum with a variant, and a trait.
+    let point = s.strukt("Point");
+    let color = s.item(TTIRItemKind::Enum {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: "Color".to_string(),
+        generics: Vec::new(), wheres: Vec::new(),
+        variants: vec![TTIRVariant {
+            attrs: TIRAttrs::default(), name: "Red".to_string(),
+            payload: TTIRPayload::None, value: 0,
+        }],
+    });
+    let shown = s.func("show", Vec::new(), None);
+    let show = s.item(TTIRItemKind::Trait {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: "Show".to_string(),
+        generics: Vec::new(), wheres: Vec::new(), members: vec![shown],
+    });
+
+    // A fn with a lifetime parameter, a body, and a local in it.
+    let body = s.body(vec![("n", Suite::I32, TIRIntro::Let)], Vec::new());
+    let go = s.func("go", Vec::new(), Some(body));
+    let TTIRItemKind::Fn(held) = &mut s.p.items[go].kind else { panic!() };
+    held.generics = vec![TTIRGeneric::Life {
+        name: "a".to_string(), region: 0, bounds: Vec::new(),
+    }];
+
+    // A const and a global, and a namespace holding the const.
+    let max = s.item(TTIRItemKind::Const {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "MAX".to_string(), ty: Suite::I32, value: 0,
+    });
+    let limits = s.item(TTIRItemKind::Namespace {
+        vis: TIRVis::Pub, attrs: TIRAttrs::default(),
+        name: "limits".to_string(), items: vec![max],
+    });
+    let count = s.global("count", TIRIntro::Var);
+    s.p.roots = vec![alias, point, color, show, go, limits, count];
+
+    // Which variants turned up, anywhere in the tree.
+    let scopes = Scopes::of(&s.p, &["shapes".to_string()]);
+    let mut seen: Vec<&str> = Vec::new();
+    for at in 0..scopes.len() {
+        for (_, entries) in scopes.sorted(at) {
+            for entry in entries {
+                let what = match &entry.info {
+                    Info::Variable { .. } => "Variable",
+                    Info::Function { .. } => "Function",
+                    Info::Struct { .. } => "Struct",
+                    Info::Enum { .. } => "Enum",
+                    Info::Variant { .. } => "Variant",
+                    Info::Trait { .. } => "Trait",
+                    Info::TypeAlias { .. } => "TypeAlias",
+                    Info::Namespace(_) => "Namespace",
+                    Info::TypeParam { .. } => "TypeParam",
+                    Info::Lifetime { .. } => "Lifetime",
+                };
+                if !seen.contains(&what) {
+                    seen.push(what);
+                }
+            }
+        }
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec!["Enum", "Function", "Lifetime", "Namespace", "Struct", "Trait",
+             "TypeAlias", "TypeParam", "Variable", "Variant"]
+    );
 }

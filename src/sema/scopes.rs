@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::sema::names::{info_of, nested_items, Info, Mangler, Name};
+use crate::sema::names::{info_of, nested_items, payload_of, Info, Mangler, Name};
 use crate::tir::tir_nodes::TIRBinding;
 use crate::tir::ttir_nodes::{TTIRGeneric, TTIRItemId, TTIRItemKind, TTIRProgram};
 
@@ -198,10 +198,32 @@ impl Scopes {
                 self.opened[id] = Some(inner);
                 self.generics(generics, inner);
             }
-            TTIRItemKind::Enum { generics, .. } => {
+            TTIRItemKind::Enum { name, generics, variants, .. } => {
                 let inner = self.open(at, ScopeKind::Enum);
                 self.opened[id] = Some(inner);
                 self.generics(generics, inner);
+                // Its variants, which is how `Color::Red` is reached: a path
+                // walks into the enum's scope exactly as `limits::MAX` walks
+                // into a namespace's. They are not in the module around it --
+                // `Red` on its own is a name an import has to bring in.
+                for variant in variants {
+                    self.bind(
+                        inner,
+                        variant.name.clone(),
+                        Entry {
+                            info:   Info::Variant {
+                                of:      name.clone(),
+                                payload: payload_of(&variant.payload),
+                                value:   variant.value,
+                            },
+                            // A variant is reached through its enum, and it is
+                            // the enum that the linker names.
+                            symbol: None,
+                            line:   p.items[id].line,
+                            col:    p.items[id].col,
+                        },
+                    );
+                }
             }
             TTIRItemKind::TypeAlias { generics, .. } => {
                 let inner = self.open(at, ScopeKind::TypeAlias);

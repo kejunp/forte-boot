@@ -89,6 +89,9 @@ pub enum Info {
     Variant {
         of:      Name,
         payload: Payload,
+        // As on an `EnumVariant`: every variant has one whether it was written
+        // or not.
+        value:   i64,
     },
 
     // A trait, and the names it demands. The members are fns and nothing else,
@@ -171,20 +174,12 @@ pub enum Payload {
     Named(Vec<Field>),
 }
 // ---- What is still open ---------------------------------------------------
-// Two things, and both are the TTIR and this table disagreeing about what a
-// declaration is.
-//
-//   - `Info::Variant` is built by nothing. A variant is reached through its
-//     enum -- `Color::Red` -- and this is a table of what a program *declares*,
-//     so nothing here walks into one. It is for the scope an import puts a
-//     variant's name in when one is brought in on its own.
-//   - Four of the variants are built by nothing yet. The TTIR has no
-//     `TypeAlias` item, an alias being a name for a type and not a type; a
-//     `Variant` is reached through its enum; and a `TypeParam` and a `Lifetime`
-//     want the generic list the TTIR does not keep. None of the four is a thing
-//     the linker names, so none belongs in a `SymbolTable`; they belong in a
-//     scope (`sema::scopes`), which is keyed by the name the source wrote --
-//     and the three that are not the alias wait on the same missing list.
+// One thing. Nothing here owns the `Ty` arena a `TyId` points into: the pass
+// that fills these in owns it, and what it is filling is the `types` of a
+// `TTIRProgram`. That has to be one arena for the suite and not one per file,
+// since `Ty::Named` names an item of that same program and two files sharing a
+// type have to share the handle for it -- which is the per-file-or-per-suite
+// question `tir::ttir_nodes` leaves open, arriving here.
 
 // ---- Mangling -------------------------------------------------------------
 //
@@ -587,13 +582,7 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
                 .iter()
                 .map(|v| EnumVariant {
                     name:    v.name.clone(),
-                    payload: match &v.payload {
-                        TTIRPayload::None => Payload::None,
-                        TTIRPayload::Tuple(tys) => Payload::Tuple(tys.clone()),
-                        TTIRPayload::Named(fields) => {
-                            Payload::Named(fields.iter().map(field_of).collect())
-                        }
-                    },
+                    payload: payload_of(&v.payload),
                     value:   v.value,
                 })
                 .collect(),
@@ -640,30 +629,37 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
     })
 }
 
-// A fn's parameters, named where there is a body to name them from. A signature
-// has none -- its `params` index a body it has not got -- so what is left is
-// the types, which the fn's own type carries whether it was written out or not.
+// A fn's parameters: the name each was declared with, and its type. The names
+// are the fn's own and the types its `Ty::Fn`'s, each written down in one place
+// only -- so a signature answers this as fully as a body does, having been
+// declared just as fully.
 fn params_of(f: &TTIRFn, p: &TTIRProgram) -> Vec<(Name, Option<TyId>)> {
     let Ty::Fn { params, .. } = &p.types[f.ty] else {
         panic!("`{}` has a type that is not a fn type", f.name)
     };
-    let locals = f.body.map(|b| &p.bodies[b].locals);
     params
         .iter()
         .enumerate()
         .map(|(i, &ty)| {
-            let name = locals
-                .and_then(|locals| f.params.get(i).map(|&slot| &locals[slot].name))
-                .map(|bound| match bound {
-                    TIRBinding::Name(name) => name.clone(),
-                    // `_` and a receiver are both bound and neither is a name a
-                    // caller may use, so neither has one here.
-                    _ => "_".to_string(),
-                })
-                .unwrap_or_else(|| "_".to_string());
+            let name = match f.params.get(i).map(|param| &param.name) {
+                Some(TIRBinding::Name(name)) => name.clone(),
+                // `_` binds nothing on purpose and a receiver is `self`, and
+                // neither is a name a caller may write.
+                _ => "_".to_string(),
+            };
             (name, Some(ty))
         })
         .collect()
+}
+
+// What a variant carries, as this table spells it. Wanted in two places: an
+// enum's own entry holds every variant, and a scope holds each on its own.
+pub fn payload_of(payload: &TTIRPayload) -> Payload {
+    match payload {
+        TTIRPayload::None => Payload::None,
+        TTIRPayload::Tuple(tys) => Payload::Tuple(tys.clone()),
+        TTIRPayload::Named(fields) => Payload::Named(fields.iter().map(field_of).collect()),
+    }
 }
 
 fn field_of(f: &crate::tir::ttir_nodes::TTIRFieldDecl) -> Field {
