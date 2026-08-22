@@ -16,17 +16,22 @@ fn placed(f: Fixture) -> CFGBody {
     cfg.bodies[0].clone()
 }
 
-// Every release the body holds, as `(local, guarded)`, in the order the blocks
-// were built -- which is the order they were written.
-fn releases(body: &CFGBody) -> Vec<(CFGLocalId, bool)> {
+// Every release the body holds, in the order the blocks were built -- which is
+// the order they were written.
+fn releases(body: &CFGBody) -> Vec<CFGLocalId> {
     body.blocks
         .iter()
         .flat_map(|b| &b.stmts)
         .filter_map(|s| match s.kind {
-            CFGStmtKind::Drop { local, guarded } => Some((local, guarded)),
+            CFGStmtKind::Drop { local } => Some(local),
             _ => None,
         })
         .collect()
+}
+
+// Every branch the body ends a block on, which is how a flag shows.
+fn branches(body: &CFGBody) -> usize {
+    body.blocks.iter().filter(|b| matches!(b.term, CFGTerm::Branch { .. })).count()
 }
 
 // "a local at the end of its block" -- and only a local whose type has
@@ -45,7 +50,7 @@ fn a_local_is_released_at_the_end_of_its_block() {
     f.owns(body, Vec::new());
 
     let body = placed(f);
-    assert_eq!(releases(&body), vec![(held, false)]);
+    assert_eq!(releases(&body), vec![held]);
 }
 
 // "locals in the reverse of it, which is the order that lets a later one still
@@ -64,7 +69,7 @@ fn locals_are_released_in_the_reverse_of_the_order_they_were_bound() {
     f.owns(body, Vec::new());
 
     let body = placed(f);
-    assert_eq!(releases(&body), vec![(second, false), (first, false)]);
+    assert_eq!(releases(&body), vec![second, first]);
 }
 
 // "nothing at all where the value was moved away first".
@@ -85,10 +90,11 @@ fn a_local_that_was_moved_away_is_not_released() {
     assert!(releases(&body).is_empty(), "{:?}", releases(&body));
 }
 
-// Moved on one path and not the other is neither, and what stands is a release
-// with a flag beside it.
+// Moved on one path and not the other is neither "release it" nor "leave it",
+// and there is no third answer at compile time -- so the program carries one: a
+// flag beside the slot, and the release behind a branch on it.
 #[test]
-fn a_local_moved_on_one_path_is_released_with_a_flag() {
+fn a_local_moved_on_one_path_is_released_behind_a_flag() {
     let mut f = Fixture::new();
     let buf = f.dropper("Buf");
     let held = f.slot("held", buf);
@@ -104,7 +110,16 @@ fn a_local_moved_on_one_path_is_released_with_a_flag() {
     f.owns(body, Vec::new());
 
     let body = placed(f);
-    assert_eq!(releases(&body), vec![(held, true)]);
+    // One release, and one branch more than the `if` itself put there.
+    assert_eq!(releases(&body), vec![held]);
+    assert_eq!(branches(&body), 2);
+    // A flag of its own, which is a `bool` nobody wrote.
+    assert!(
+        body.locals.iter().any(|l| l.synthetic
+            && matches!(&l.name, TIRBinding::Name(name) if name.ends_with("$held"))),
+        "{:?}",
+        body.locals
+    );
 }
 
 // A slot nothing filled holds nothing, so there is nothing to release: a `let`
@@ -135,7 +150,7 @@ fn a_parameter_is_released_like_any_other_slot() {
 
     let body = placed(f);
     assert_eq!(body.params, vec![p]);
-    assert_eq!(releases(&body), vec![(p, false)]);
+    assert_eq!(releases(&body), vec![p]);
 }
 
 // And a parameter handed on is a parameter moved away, so it is not released

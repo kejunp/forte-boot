@@ -527,7 +527,7 @@ impl<'a> Lowerer<'a> {
             if !self.b().locals[local].drops {
                 continue;
             }
-            self.emit(CFGStmtKind::Drop { local, guarded: false }, false, at);
+            self.emit(CFGStmtKind::Drop { local }, false, at);
         }
     }
 

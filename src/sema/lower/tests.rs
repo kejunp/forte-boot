@@ -2026,3 +2026,32 @@ fn a_declared_fn_reads_what_it_captured_because_it_captured_nothing() {
         Ty::Fn { uses: crate::tir::tir_nodes::TIRFnUses::Reads, .. }
     ));
 }
+
+// ---- What an impl answers ---------------------------------------------------
+
+// An `impl ... for` names a trait, and a name that is not one is refused. It
+// matters most for the two the compiler knows by name: an `impl Drop for Buf`
+// with no `trait Drop` in scope would otherwise look like a type with a
+// destructor and be one without.
+#[test]
+fn an_impl_answers_a_trait_and_not_a_name() {
+    let out = refused("struct Buf {\n    pub n: i32,\n}\nimpl Nope for Buf {\n}\n");
+    assert!(out.contains("no trait is called `Nope`"), "{}", out);
+
+    let out = refused(
+        "struct Buf {\n    pub n: i32,\n}\nstruct Other {\n    pub n: i32,\n}\n\
+         impl Other for Buf {\n}\n",
+    );
+    assert!(out.contains("`Other` is not a trait"), "{}", out);
+
+    // And the help says the thing worth saying for the two by name.
+    let out = refused("struct Buf {\n    pub n: i32,\n}\nimpl Drop for Buf {\n}\n");
+    assert!(out.contains("`Copy` and `Drop` are traits like any other"), "{}", out);
+
+    // Declared, and it stands.
+    clean(
+        "trait Drop {\n    fn drop(*self);\n}\n\
+         struct Buf {\n    pub n: i32,\n}\n\
+         impl Drop for Buf {\n    pub fn drop(*self) {\n    }\n}\n",
+    );
+}

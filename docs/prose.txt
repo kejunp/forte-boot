@@ -1917,11 +1917,16 @@ answer is not obvious from the rules alone.
     settled and placed: a local at the end of its block, a parameter at the
     end of the body, in the reverse of the order they were bound, and none
     at all for a slot the source moved away from. A slot moved away on one
-    path and not another is the one shape left over — neither releasing it
-    nor leaving it is right, and a flag beside the slot is what a backend
-    puts there. What is left is whether "drop" may be called by hand, what a
-    "Drop" means for a "const fn", and how much of a value survives a "drop"
-    that does not finish.
+    path and not another carries the answer instead of settling it — a
+    "bool" beside the slot, false where nothing is in it and true where
+    something is, with the release behind a branch on it — since which path
+    ran is not known until it has run. What is left is whether "drop" may be
+    called by hand, what a "Drop" means for a "const fn", and how much of a
+    value survives a "drop" that does not finish.
+  - "Copy" and "Drop" are traits like any other and are declared like any
+    other: what the compiler knows is the two names, not the two
+    declarations. An "impl Drop for Buf" with no "trait Drop" in scope is
+    refused, so a type cannot look as if it has a release and have none.
   - "unsafe" is a modifier on a <fn_decl> and a prefix on a <statement>, and
     those are its only two places (sections 2 and 4). Settled — the statement
     form is one rule because a block is already a statement, so the braces

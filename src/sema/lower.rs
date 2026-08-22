@@ -180,6 +180,10 @@ impl<'a> Lowerer<'a> {
     // is an expression whose type was never worked out -- reported here,
     // because this is what has the spans.
     pub fn lower(mut self, at: Vec<String>) -> (TTIRProgram, Diagnostics) {
+        // `bool` whether the program mentions one or not: `cfg::drops` types a
+        // release's flag with it, and a flag stands for a slot and not for
+        // anything anybody wrote.
+        self.types.prim(TIRPrim::Bool);
         let roots: Vec<TIRItemId> = self.tir.roots.clone();
         self.declare(&roots, &[]);
         self.count_regions();
@@ -949,8 +953,40 @@ impl<'a> Lowerer<'a> {
 
     // The declaration a type names, where it names one.
     fn item_of(&mut self, ty: TIRTypeId) -> Option<TTIRItemId> {
-        let TIRTypeKind::Named { path, .. } = &self.tir.types[ty].kind else { return None };
-        self.names.get(&path.join("::")).copied()
+        let at = Span::at(self.tir.types[ty].line, self.tir.types[ty].col);
+        let TIRTypeKind::Named { path, .. } = &self.tir.types[ty].kind else {
+            self.errors.push(
+                Diagnostic::error("a trait is what an `impl ... for` names".to_string(), at)
+                    .with_label("this is a type and not a trait")
+                    .with_help("`impl T { }` writes an impl of a type's own"),
+            );
+            return None;
+        };
+        let name = path.join("::");
+        let Some(item) = self.names.get(&name).copied() else {
+            self.errors.push(
+                Diagnostic::error(format!("no trait is called `{}`", name), at)
+                    .with_label("nothing declares it")
+                    // The two the compiler knows by name are the two most
+                    // likely to be written without being declared.
+                    .with_help(match name.as_str() {
+                        "Copy" | "Drop" => {
+                            "`Copy` and `Drop` are traits like any other and have to be declared"
+                        }
+                        _ => "a trait is declared with `trait`",
+                    }),
+            );
+            return None;
+        };
+        if !matches!(self.out.items[item].kind, TTIRItemKind::Trait { .. }) {
+            self.errors.push(
+                Diagnostic::error(format!("`{}` is not a trait", name), at)
+                    .with_label("this is what an impl answers")
+                    .with_help("`impl T { }` writes an impl of a type's own"),
+            );
+            return None;
+        }
+        Some(item)
     }
 
     // ---- Types -----------------------------------------------------------

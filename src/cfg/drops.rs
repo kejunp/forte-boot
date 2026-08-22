@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 
 use crate::sema::borrows::Copies;
-use crate::tir::tir_nodes::TIRUnaryOp;
-use crate::tir::ttir_nodes::{TTIRGeneric, TTIRProgram};
+use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRLit, TIRPrim, TIRUnaryOp};
+use crate::tir::ttir_nodes::{TTIRGeneric, TTIRProgram, Ty, TyId};
 
 use super::cfg_nodes::*;
 
@@ -54,11 +54,19 @@ pub struct Drops<'a> {
     p:       &'a TTIRProgram,
     copies:  &'a Copies,
     generic: Vec<TTIRGeneric>,
+    // What a flag is typed. `sema` interns it whether a program mentions one or
+    // not, so that this pass always has one to hand.
+    bool:    TyId,
 }
 
 impl<'a> Drops<'a> {
     pub fn new(p: &'a TTIRProgram, copies: &'a Copies) -> Drops<'a> {
-        Drops { p, copies, generic: Vec::new() }
+        let bool = p
+            .types
+            .iter()
+            .position(|ty| *ty == Ty::Prim(TIRPrim::Bool))
+            .unwrap_or(0);
+        Drops { p, copies, generic: Vec::new(), bool }
     }
 
     // Every body of the graph, each with the generics of the declaration it
@@ -116,10 +124,212 @@ impl<'a> Drops<'a> {
         // And once more with the answers, to say what each release comes to. A
         // block nothing reaches is left alone: `opt` is what deletes those, and
         // deleting them here would be a second pass's job done in the wrong one.
+        let mut asks: Vec<(CFGBlockId, usize)> = Vec::new();
         for block in 0..cfg.bodies[id].blocks.len() {
             let Some(before) = at.get(&block).cloned() else { continue };
-            self.settle(cfg, id, block, before);
+            for held in self.settle(cfg, id, block, before) {
+                asks.push((block, held));
+            }
         }
+
+        // And the ones that could not be settled get a flag and a branch.
+        self.elaborate(cfg, id, asks);
+    }
+
+    // ---- Flags -----------------------------------------------------------
+    //
+    // A slot filled on one path and moved away on another is neither "release
+    // it" nor "leave it", and there is no third answer to be had at compile
+    // time -- which of the two paths ran is not known until it has run. So the
+    // program carries the answer: a `bool` beside the slot, false where nothing
+    // is in it and true where something is, and the release stands behind a
+    // branch on it.
+    //
+    // This is why `Drop` is unconditional. A statement meaning "release this
+    // if" would be the question left in the tree, and the tree is what this
+    // whole pass is here to get past.
+    fn elaborate(&mut self, cfg: &mut CFGProgram, id: CFGBodyId, asks: Vec<(CFGBlockId, usize)>) {
+        if asks.is_empty() {
+            return;
+        }
+        // One flag per slot, however many releases of it want one.
+        let mut flags: HashMap<CFGLocalId, CFGLocalId> = HashMap::new();
+        for &(block, at) in &asks {
+            let CFGStmtKind::Drop { local } = cfg.bodies[id].blocks[block].stmts[at].kind else {
+                continue;
+            };
+            if flags.contains_key(&local) {
+                continue;
+            }
+            let name = self.name_of(cfg, id, local);
+            cfg.bodies[id].locals.push(CFGLocal {
+                name:      TIRBinding::Name(name),
+                ty:        self.bool,
+                intro:     TIRIntro::Var,
+                synthetic: true,
+                // A flag is a `bool`, and a `bool` has nothing to release.
+                drops:     false,
+            });
+            flags.insert(local, cfg.bodies[id].locals.len() - 1);
+        }
+
+        // Every flag starts false and is written wherever what it stands for
+        // is filled or emptied. Walked over the statements as they are, before
+        // any block is split, so that no position moves under the walk.
+        for block in 0..cfg.bodies[id].blocks.len() {
+            let mut out: Vec<CFGStmt> = Vec::new();
+            for stmt in cfg.bodies[id].blocks[block].stmts.clone() {
+                let (line, col) = (stmt.line, stmt.col);
+                let mut before: Vec<CFGStmt> = Vec::new();
+                let mut after: Vec<CFGStmt> = Vec::new();
+                match &stmt.kind {
+                    // Filled: whatever it held before, it holds this now.
+                    CFGStmtKind::Set { local, .. } => {
+                        if let Some(&flag) = flags.get(local) {
+                            after.push(self.write(cfg, flag, true, line, col));
+                        }
+                    }
+                    // Released: emptied, and the branch below reads the flag
+                    // before this runs.
+                    CFGStmtKind::Drop { local } => {
+                        if let Some(&flag) = flags.get(local) {
+                            after.push(self.write(cfg, flag, false, line, col));
+                        }
+                    }
+                    _ => {}
+                }
+                // And emptied wherever the source handed the value away.
+                let mut state = vec![Held::Value; cfg.bodies[id].locals.len()];
+                self.step(cfg, id, &stmt.kind, &mut state);
+                for (&local, &flag) in &flags {
+                    if state[local] == Held::Nothing
+                        && !matches!(stmt.kind, CFGStmtKind::Drop { .. })
+                    {
+                        after.push(self.write(cfg, flag, false, line, col));
+                    }
+                }
+                out.append(&mut before);
+                out.push(stmt);
+                out.append(&mut after);
+            }
+            cfg.bodies[id].blocks[block].stmts = out;
+        }
+
+        // The entry starts them all false: a slot nobody filled holds nothing.
+        let entry = cfg.bodies[id].entry;
+        let (line, col) = (cfg.bodies[id].blocks[entry].line, cfg.bodies[id].blocks[entry].col);
+        let mut opening: Vec<CFGStmt> = flags
+            .values()
+            .map(|&flag| self.write(cfg, flag, false, line, col))
+            .collect();
+        opening.append(&mut cfg.bodies[id].blocks[entry].stmts);
+        cfg.bodies[id].blocks[entry].stmts = opening;
+
+        // And then the branches. Every block is walked again, since the flag
+        // writes moved every position; a split makes two new blocks and the
+        // walk reaches them, which is how several in one block are all drawn.
+        //
+        // `drawn` is the blocks a split made to hold a release, so that the
+        // one release in each is not found again and drawn a second time.
+        let mut drawn: Vec<CFGBlockId> = Vec::new();
+        let mut block = 0;
+        while block < cfg.bodies[id].blocks.len() {
+            if drawn.contains(&block) {
+                block += 1;
+                continue;
+            }
+            let found = cfg.bodies[id].blocks[block].stmts.iter().position(|s| {
+                matches!(&s.kind, CFGStmtKind::Drop { local } if flags.contains_key(local))
+            });
+            let Some(at) = found else {
+                block += 1;
+                continue;
+            };
+            let CFGStmtKind::Drop { local } = cfg.bodies[id].blocks[block].stmts[at].kind else {
+                block += 1;
+                continue;
+            };
+            let flag = flags[&local];
+            drawn.push(self.split(cfg, id, block, at, flag));
+            block += 1;
+        }
+    }
+
+    // One release behind a branch on its flag. The statements after it become a
+    // block of their own -- the join -- and the release becomes a block on the
+    // way to it, reached only where the flag says there is something to
+    // release.
+    fn split(
+        &mut self,
+        cfg: &mut CFGProgram,
+        id: CFGBodyId,
+        block: CFGBlockId,
+        at: usize,
+        flag: CFGLocalId,
+    ) -> CFGBlockId {
+        let (line, col) = (
+            cfg.bodies[id].blocks[block].stmts[at].line,
+            cfg.bodies[id].blocks[block].stmts[at].col,
+        );
+        let mut rest = cfg.bodies[id].blocks[block].stmts.split_off(at);
+        // The release itself, and the flag write that followed it.
+        let mut run: Vec<CFGStmt> = vec![rest.remove(0)];
+        if matches!(rest.first().map(|s| &s.kind), Some(CFGStmtKind::Set { local, .. }) if *local == flag)
+        {
+            run.push(rest.remove(0));
+        }
+        let term = std::mem::replace(&mut cfg.bodies[id].blocks[block].term, CFGTerm::Unreachable);
+
+        cfg.bodies[id].blocks.push(CFGBlock { stmts: rest, term, line, col });
+        let join = cfg.bodies[id].blocks.len() - 1;
+        cfg.bodies[id].blocks.push(CFGBlock {
+            stmts: run,
+            term: CFGTerm::Goto(join),
+            line,
+            col,
+        });
+        let held = cfg.bodies[id].blocks.len() - 1;
+
+        let ty = cfg.bodies[id].locals[flag].ty;
+        cfg.exprs.push(CFGExpr { kind: CFGExprKind::Local(flag), ty, line, col });
+        let cond = cfg.exprs.len() - 1;
+        cfg.bodies[id].blocks[block].term =
+            CFGTerm::Branch { cond, then: held, els: join };
+        held
+    }
+
+    fn write(
+        &self,
+        cfg: &mut CFGProgram,
+        flag: CFGLocalId,
+        held: bool,
+        line: usize,
+        col: usize,
+    ) -> CFGStmt {
+        cfg.exprs.push(CFGExpr {
+            kind: CFGExprKind::Literal(TIRLit::Bool(held)),
+            ty: self.bool,
+            line,
+            col,
+        });
+        let value = cfg.exprs.len() - 1;
+        CFGStmt {
+            kind: CFGStmtKind::Set { local: flag, value },
+            is_unsafe: false,
+            line,
+            col,
+        }
+    }
+
+    // What to call a flag: the slot it stands for, with the `$` that says no
+    // source wrote it.
+    fn name_of(&self, cfg: &CFGProgram, id: CFGBodyId, local: CFGLocalId) -> String {
+        let held = match &cfg.bodies[id].locals[local].name {
+            TIRBinding::Name(name) => name.clone(),
+            TIRBinding::Discard => "_".to_string(),
+            TIRBinding::SelfRecv(..) => "self".to_string(),
+        };
+        format!("${}$held", held)
     }
 
     fn leaves(&self, term: &CFGTerm) -> Vec<CFGBlockId> {
@@ -237,45 +447,41 @@ impl<'a> Drops<'a> {
         }
     }
 
-    // The same walk again, writing the answer onto each release: one over a
-    // slot holding nothing goes, one over a slot that may hold something keeps
-    // a flag, and one over a slot that certainly does runs as it stands.
+    // The same walk again, saying what each release comes to: one over a slot
+    // holding nothing goes, one over a slot that certainly holds something runs
+    // as it stands, and one over a slot that may is handed back for a flag.
+    //
+    // The positions are into the statements this leaves behind, so that what
+    // comes next can find them.
     fn settle(
         &self,
         cfg: &mut CFGProgram,
         id: CFGBodyId,
         block: CFGBlockId,
         mut state: Vec<Held>,
-    ) {
-        let mut keep = Vec::new();
+    ) -> Vec<usize> {
+        let mut kept: Vec<CFGStmt> = Vec::new();
+        let mut asks = Vec::new();
         for i in 0..cfg.bodies[id].blocks[block].stmts.len() {
-            let kind = cfg.bodies[id].blocks[block].stmts[i].kind.clone();
-            if let CFGStmtKind::Drop { local, .. } = kind {
-                match state[local] {
-                    Held::Nothing => {
-                        state[local] = Held::Nothing;
-                        continue;
-                    }
-                    held => {
-                        cfg.bodies[id].blocks[block].stmts[i].kind = CFGStmtKind::Drop {
-                            local,
-                            guarded: held == Held::Maybe,
-                        };
-                        state[local] = Held::Nothing;
-                        keep.push(i);
-                        continue;
-                    }
+            let stmt = cfg.bodies[id].blocks[block].stmts[i].clone();
+            if let CFGStmtKind::Drop { local } = stmt.kind {
+                let held = state[local];
+                // Released or not, the slot holds nothing after this line.
+                state[local] = Held::Nothing;
+                if held == Held::Nothing {
+                    continue;
                 }
+                if held == Held::Maybe {
+                    asks.push(kept.len());
+                }
+                kept.push(stmt);
+                continue;
             }
-            self.step(cfg, id, &kind, &mut state);
-            keep.push(i);
+            self.step(cfg, id, &stmt.kind, &mut state);
+            kept.push(stmt);
         }
-        let mut at = 0;
-        cfg.bodies[id].blocks[block].stmts.retain(|_| {
-            let held = keep.contains(&at);
-            at += 1;
-            held
-        });
+        cfg.bodies[id].blocks[block].stmts = kept;
+        asks
     }
 }
 

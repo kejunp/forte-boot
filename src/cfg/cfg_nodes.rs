@@ -106,13 +106,13 @@ pub enum CFGStmtKind {
     // the order its fields go in is a fact about the type and not about this
     // line. What is here is the other three -- where a local's release stands,
     // where a temporary's does, and which of them the source moved away.
+    // Unconditional: it runs where it stands. A slot the source moved away
+    // from on one path and not another does not get a conditional release --
+    // it gets a flag beside it and a branch, drawn by `cfg::drops`, because a
+    // graph is where a question about a path is answered and a statement that
+    // means "release this if" is that question left in the tree.
     Drop {
         local: CFGLocalId,
-        // Whether the value may already have gone. Certain on one path and not
-        // another is neither "release it" nor "leave it", and the prose does
-        // not settle which -- a flag beside the slot, set where it is filled
-        // and cleared where it is moved, is what a backend puts here.
-        guarded: bool,
     },
 }
 
