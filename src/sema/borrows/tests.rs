@@ -4,6 +4,7 @@
 use super::*;
 use crate::error::Source;
 use crate::tir::tir_nodes::{
+    TIRFnUses,
     TIRAssignOp, TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRLit, TIRPrim, TIRVis,
 };
 use crate::tir::ttir_nodes::*;
@@ -70,7 +71,7 @@ impl Suite {
 
     // A method taking its receiver the way the word says.
     fn method(&mut self, name: &str, mode: TIRSelf) -> TTIRItemId {
-        let ty = self.ty(Ty::Fn { params: Vec::new(), ret: Self::NULL, is_unsafe: false });
+        let ty = self.ty(Ty::Fn { uses: TIRFnUses::Reads, params: Vec::new(), ret: Self::NULL, is_unsafe: false });
         self.item(TTIRItemKind::Fn(TTIRFn {
             vis: TIRVis::Pub,
             attrs: TIRFnAttrs {
@@ -172,7 +173,7 @@ impl Suite {
         let locals = std::mem::take(&mut self.locals);
         self.p.bodies.push(TTIRBody { locals, value });
         let body = self.p.bodies.len() - 1;
-        let ty = self.ty(Ty::Fn { params: Vec::new(), ret: Self::NULL, is_unsafe: false });
+        let ty = self.ty(Ty::Fn { uses: TIRFnUses::Reads, params: Vec::new(), ret: Self::NULL, is_unsafe: false });
         let id = self.item(TTIRItemKind::Fn(TTIRFn {
             vis: TIRVis::Pub,
             attrs: TIRFnAttrs {

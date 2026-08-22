@@ -1863,7 +1863,7 @@ fn a_fn_type_stands_where_a_type_does() {
         TTIRItemKind::Fn(f) if f.name == "gives" => Some(f),
         _ => None,
     }).expect("gives");
-    let Ty::Fn { params, ret, is_unsafe } = &ttir.types[f.ret] else { panic!("a fn type") };
+    let Ty::Fn { params, ret, is_unsafe, .. } = &ttir.types[f.ret] else { panic!("a fn type") };
     assert_eq!(params.len(), 2);
     assert_eq!(ttir.types[params[0]], Ty::Prim(TIRPrim::I32));
     assert_eq!(ttir.types[params[1]], Ty::Prim(TIRPrim::Str));
@@ -1942,4 +1942,87 @@ fn a_closure_may_not_give_back_a_reference_to_its_own_body() {
     // A capture is the other way: it came from outside and goes on living
     // there, so giving it back is what a closure is for.
     clean("fn f(p: &i32): fn(): &i32 {\n    move || p\n}\n");
+}
+
+// ---- What calling a closure does to what it captured ------------------------
+
+// The three fn types, worked out from what each capture asks. "worked out per
+// name, each taking the least the body asks of it" (§5), and the closure is the
+// most of those.
+#[test]
+fn a_closure_is_whichever_of_the_three_its_captures_make_it() {
+    let with = "struct Buf {\n    pub n: i32,\n}\nfn eat(b: Buf): i32 {\n    1\n}\n";
+    // Reads: nothing captured, or captured and only read.
+    clean(&format!("{}fn f(): fn(): i32 {{\n    || 1\n}}\n", with));
+    clean(&format!(
+        "{}fn f(): fn(): i32 {{\n    let b = Buf {{ n: 1 }};\n    move || b.n\n}}\n",
+        with
+    ));
+    // Writes: a capture the body assigns to. `move`, because a closure that
+    // captured by reference cannot outlive what it captured (§8) and this one
+    // is being handed back out of the block that declared `n`.
+    clean(&format!(
+        "{}fn f(): var fn(): null {{\n    var n = 1;\n    move || n = n + 1\n}}\n",
+        with
+    ));
+    // Takes: a capture the body hands away.
+    clean(&format!(
+        "{}fn f(): once fn(): i32 {{\n    let b = Buf {{ n: 1 }};\n    move || eat(b)\n}}\n",
+        with
+    ));
+}
+
+// "a closure stands where a weaker one is wanted, and not the other way."
+#[test]
+fn a_closure_stands_where_a_weaker_one_is_wanted() {
+    let with = "struct Buf {\n    pub n: i32,\n}\nfn eat(b: Buf): i32 {\n    1\n}\n";
+    // Reading is less than taking, so a plain closure fits a `once fn`.
+    clean(&format!("{}fn f(): once fn(): i32 {{\n    || 1\n}}\n", with));
+    // And not the other way.
+    let out = refused(&format!(
+        "{}fn f(): fn(): i32 {{\n    let b = Buf {{ n: 1 }};\n    move || eat(b)\n}}\n",
+        with
+    ));
+    assert!(out.contains("this is `once fn(): i32` and what wants it says `fn(): i32`"), "{}", out);
+    assert!(out.contains("it may be called fewer times than that"), "{}", out);
+    // Writing is less than taking and more than reading.
+    let out = refused(&format!(
+        "{}fn f(): fn(): null {{\n    var n = 1;\n    move || n = n + 1\n}}\n",
+        with
+    ));
+    assert!(out.contains("`var fn(): null`"), "{}", out);
+}
+
+// "one call and no more": calling a `once fn` hands away what it captured, so
+// the call takes the closure and a second one is a use of something that went.
+#[test]
+fn a_once_closure_may_be_called_once() {
+    let with = "struct Buf {\n    pub n: i32,\n}\nfn eat(b: Buf): i32 {\n    1\n}\n";
+    clean(&format!(
+        "{}fn f(): i32 {{\n    let b = Buf {{ n: 1 }};\n    let c = move || eat(b);\n    c()\n}}\n",
+        with
+    ));
+    let out = refused(&format!(
+        "{}fn f(): i32 {{\n    let b = Buf {{ n: 1 }};\n    let c = move || eat(b);\n\
+         \x20   let one = c();\n    let two = c();\n    one + two\n}}\n",
+        with
+    ));
+    assert!(out.contains("`c` has been moved"), "{}", out);
+    // And one that only reads may be called as often as anybody likes.
+    clean("fn f(): i32 {\n    let n = 1;\n    let c = || n;\n    c() + c() + c()\n}\n");
+}
+
+// A fn declared with a name captures nothing, so calling it does nothing to
+// what it captured however many times.
+#[test]
+fn a_declared_fn_reads_what_it_captured_because_it_captured_nothing() {
+    let ttir = clean("fn g(): i32 {\n    1\n}\nfn f(): fn(): i32 {\n    g\n}\n");
+    let f = ttir.items.iter().find_map(|i| match &i.kind {
+        TTIRItemKind::Fn(f) if f.name == "g" => Some(f),
+        _ => None,
+    }).expect("g");
+    assert!(matches!(
+        &ttir.types[f.ty],
+        Ty::Fn { uses: crate::tir::tir_nodes::TIRFnUses::Reads, .. }
+    ));
 }

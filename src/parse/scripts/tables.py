@@ -45,6 +45,7 @@ TOKENS = {
     '_': 'Underscore',
 
     'as': 'As', 'where': 'Where', 'move': 'Move', 'addr': 'Addr',
+    'once': 'Once',
 
     '+': 'Plus', '-': 'Minus', '*': 'Star', '/': 'Slash', '%': 'Percent',
     '<<': 'LShift', '>>': 'RShift',

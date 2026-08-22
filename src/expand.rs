@@ -73,7 +73,7 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         | ASTNodeKind::TuplePat(ids)
         | ASTNodeKind::TuplePayload(ids)
         | ASTNodeKind::NamedPayload(ids) => out.extend(ids.iter_mut()),
-        ASTNodeKind::FnType { params, ret } => {
+        ASTNodeKind::FnType { params, ret, .. } => {
             out.extend(params.iter_mut());
             out.extend(ret.iter_mut());
         }

@@ -14,7 +14,8 @@
 
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::parse::ast_nodes::{
-    ASTAssignOp, ASTBinOp, ASTBinding, ASTImportLeaf, ASTLit, ASTNode, ASTNodeId, ASTNodeKind,
+    ASTAssignOp, ASTBinOp, ASTBinding, ASTFnUses, ASTImportLeaf, ASTLit, ASTNode, ASTNodeId,
+    ASTNodeKind,
     ASTPrimType, ASTRangeOp, ASTRefOp, ASTSelf, ASTUnaryOp, ASTVariableIntro, ASTVisibility,
 };
 use crate::parse::parser::Parser;
@@ -493,7 +494,12 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::TupleType(members) => {
                 TIRTypeKind::Tuple(members.iter().map(|&m| self.ty(m)).collect())
             }
-            ASTNodeKind::FnType { params, ret } => TIRTypeKind::Fn {
+            ASTNodeKind::FnType { uses, params, ret } => TIRTypeKind::Fn {
+                uses:   match uses {
+                    ASTFnUses::Reads => TIRFnUses::Reads,
+                    ASTFnUses::Writes => TIRFnUses::Writes,
+                    ASTFnUses::Takes => TIRFnUses::Takes,
+                },
                 params: params.iter().map(|&p| self.ty(p)).collect(),
                 ret:    ret.map(|r| self.ty(r)),
             },

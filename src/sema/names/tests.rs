@@ -3,7 +3,8 @@
 // source, which these do not go through.
 
 use super::*;
-use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline};
+use crate::tir::tir_nodes::{
+    TIRFnUses,TIRAttrs, TIRFnAttrs, TIRInline};
 use crate::tir::ttir_nodes::{TTIRItem, TTIRModule, TTIRProgram};
 
 // A program under construction, with the handful of types a symbol names.
@@ -40,7 +41,7 @@ impl Suite {
     // A fn of `params`, returning `null`, named `name`.
     fn func(&mut self, name: &str, params: Vec<TyId>) -> TTIRItemId {
         let ret = self.prim(TIRPrim::Null);
-        let ty = self.ty(Ty::Fn { params, ret, is_unsafe: false });
+        let ty = self.ty(Ty::Fn { uses: TIRFnUses::Reads, params, ret, is_unsafe: false });
         self.item(TTIRItemKind::Fn(TTIRFn {
             vis:       TIRVis::Pub,
             attrs:     attrs(None),
@@ -258,8 +259,8 @@ fn every_type_has_a_spelling() {
         (Ty::Array { elem: i32, len: 8 }, "i32[8]"),
         (Ty::Run(i32), "i32[]"),
         (Ty::Tuple(vec![i32, str]), "(i32,str)"),
-        (Ty::Fn { params: vec![i32], ret: null, is_unsafe: false }, "fn(i32):null"),
-        (Ty::Fn { params: vec![i32], ret: null, is_unsafe: true }, "unsafe fn(i32):null"),
+        (Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: false }, "fn(i32):null"),
+        (Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: true }, "unsafe fn(i32):null"),
         // By its place and not its name: `f<T>` and `f<U>` are one function
         // written twice, and a caller cannot tell them apart either.
         (Ty::Param { name: "T".to_string(), index: 0 }, "$0"),

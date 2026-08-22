@@ -20,6 +20,11 @@
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
+// A closure that hands away what it captured is a `once fn`, and calling one
+// takes it: `is_copy` says a `once fn` moves, so the second call is a use of
+// something that has gone and needs no rule here of its own. What tells the
+// three fn types apart is `sema::lower`, from what each capture asks.
+//
 // A closure's body is walked like any other, with two things said about the
 // names it did not declare: one captured by reference is somebody else's and
 // may not be handed away from inside, and what the body gives back may point at
@@ -61,10 +66,6 @@
 //     given. `holds_ref` still sees the reference, so what comes of one is
 //     held to every parameter -- the elision rule's own answer, and never
 //     wrong.
-//   - Tell one call of a closure from the next. A body is walked once, so a
-//     `move` closure that hands away what it captured is one move here and
-//     would be one per call at run time. Saying so wants the `FnOnce` and
-//     `FnMut` a fn type does not draw, and drawing it is a language change.
 //   - Where a `Drop` runs. Settled in §2 and placed by `cfg::drops`, which is
 //     where the graph is: "nothing at all where the value was moved away
 //     first" is a question about a program point, and a graph is what answers
@@ -76,7 +77,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Diagnostic, Diagnostics, Span};
-use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
+use crate::tir::tir_nodes::{TIRBinding, TIRFnUses, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
     RegionId, TTIRBound, TTIRCapture, TTIRSubject, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
     TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, Ty,
@@ -195,7 +196,12 @@ impl Copies {
         match &p.types[ty] {
             // Nothing a primitive holds is anybody's to release, and what a
             // reference or a pointer refers to is owned somewhere else.
-            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Fn { .. } | Ty::Run(_) => false,
+            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Run(_) => false,
+            // A closure that took what it captured is holding it, and what it
+            // holds goes when the closure does. Which types those were is not
+            // in the fn type, so this is the blunt answer: a `once fn` has
+            // something to release and the other two have not.
+            Ty::Fn { uses, .. } => *uses == TIRFnUses::Takes,
             Ty::Named { item, args, .. } => {
                 if self.drop[*item] {
                     return true;
@@ -252,7 +258,13 @@ impl Copies {
             // `null` is among the primitives, and is in the list by name too.
             Ty::Prim(_) => true,
             // A reference copies; what it refers to is owned somewhere else.
-            Ty::Ref { .. } | Ty::Ptr(_) | Ty::Fn { .. } => true,
+            Ty::Ref { .. } | Ty::Ptr(_) => true,
+            // A closure copies where calling it does nothing to what it
+            // captured. A `once fn` gives away what it holds when it is
+            // called, so it has one owner and one call like any other value
+            // that moves -- which is what makes the second call a use of
+            // something that has gone, and needs no rule of its own.
+            Ty::Fn { uses, .. } => *uses != TIRFnUses::Takes,
 
             Ty::Named { item, .. } => self.copy[*item],
 
@@ -1691,6 +1703,11 @@ impl<'a> Checker<'a> {
                 if self.expr(callee, Use::Read).left() {
                     return Flow::Left;
                 }
+                // "one call and no more": calling a `once fn` hands away what
+                // it captured, so the call takes the closure. A second one is
+                // then a use of something that has gone, and the message for
+                // that is the one every other move already has.
+                self.moving(callee);
                 let flow = self.handing(&args);
                 // After the arguments, so that what each was handed is known.
                 if let Some(item) = self.callee(callee) {

@@ -237,6 +237,17 @@ pub enum TIRPayload {
 // One list holds both kinds, as the grammar's does. Whether they may be
 // interleaved is the checker's rule, so the order they were written in is kept.
 
+// What calling a closure does to what it captured: `fn` reads it, `var fn`
+// writes to it and `once fn` takes it. Ordered, so a closure stands where a
+// weaker one is wanted -- reading is less than writing and writing is less
+// than taking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TIRFnUses {
+    Reads,
+    Writes,
+    Takes,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TIRGeneric {
     Type {
@@ -298,8 +309,10 @@ pub enum TIRTypeKind {
     Run(TIRTypeId),
     Tuple(Vec<TIRTypeId>),
     // `fn(i32, str): bool`. No names and no `is_unsafe`: what a caller hands
-    // over is types, and there is no spelling for an unsafe fn type.
+    // over is types, and there is no spelling for an unsafe fn type. `uses` is
+    // what calling it does to what the closure captured.
     Fn {
+        uses:   TIRFnUses,
         params: Vec<TIRTypeId>,
         ret:    Option<TIRTypeId>,
     },

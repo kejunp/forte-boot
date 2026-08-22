@@ -294,6 +294,7 @@ pub enum ASTNodeKind {
     // parameter names: a caller hands over types, and what they were called
     // where the closure was written is the closure's own business.
     FnType {
+        uses:   ASTFnUses,
         params: Vec<ASTNodeId>,
         ret:    Option<ASTNodeId>,
     },
@@ -487,6 +488,9 @@ pub enum ASTMark {
     Ref(ASTRefOp),
     Vis(ASTVisibility),
     Intro(ASTVariableIntro),
+    // What calling a closure does to what it captured: the word in front of a
+    // `<fn_type>`, where one was written.
+    Uses(ASTFnUses),
     // `move`, which is a closure's and has nothing under it.
     Move,
     // `gc`, which is a binding's and has nothing under it either.
@@ -560,6 +564,20 @@ pub enum ASTBinding {
     Discard,
     // How it was taken, and the region it named where it named one.
     SelfRecv(ASTSelf, Option<String>),
+}
+
+// What calling a closure does to what it captured, which is the same
+// distinction a binding draws with `let` and `var` plus a third for the one
+// that takes. Ordered: reading is less than writing and writing is less than
+// taking, so a closure stands where a weaker one is wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ASTFnUses {
+    // `fn(..)`: reads what it captured.
+    Reads,
+    // `var fn(..)`: writes to what it captured, so one holder at a time.
+    Writes,
+    // `once fn(..)`: takes what it captured, so one call and no more.
+    Takes,
 }
 
 // `&` and `*`, which decide only whether writing through is allowed.

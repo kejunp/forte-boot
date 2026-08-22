@@ -293,7 +293,27 @@
 # the <type> inside the return, and "(fn(): i32)[8]" is the other reading —
 # which is what <grouped_type> is for, a grouped type being a <base_type> and
 # taking suffixes like one.
-<fn_type>               ::= "fn" "(" <type_list_opt> ")" <return_type_opt>
+#
+# What stands in front says what calling it does to what the closure captured.
+# It is the same distinction a binding draws with "let" and "var" — reading and
+# writing — with a third for the one that takes:
+#
+#   "fn(): i32"        reads what it captured, and may be called any number
+#                      of times by any number of holders at once
+#   "var fn(): i32"    writes to what it captured, so one holder at a time
+#   "once fn(): i32"   takes what it captured, so one call and no more
+#
+# The words and not a sigil: "*fn(): i32" would be a "*" reference to a fn type
+# as readily as a fn type marked with a "*", and no lookahead tells them apart.
+#
+# A closure is whichever of the three its captures and its body make it, and it
+# stands where a weaker one is wanted: reading is less than writing and writing
+# is less than taking.
+<fn_type>               ::= <fn_uses> "fn" "(" <type_list_opt> ")" <return_type_opt>
+
+<fn_uses>               ::= <empty>
+                          | "var"
+                          | "once"
 
 
 # A reference may name how long it is good for. Left out, the checker works it

@@ -18,7 +18,8 @@
 
 use super::*;
 use ast_nodes::{
-    ASTAssignOp, ASTBinOp, ASTBinding, ASTImportLeaf, ASTLit, ASTMark, ASTNode, ASTNodeKind,
+    ASTAssignOp, ASTBinOp, ASTBinding, ASTFnUses, ASTImportLeaf, ASTLit, ASTMark, ASTNode,
+    ASTNodeKind,
     ASTPrimType, ASTRangeOp, ASTRefOp, ASTSelf, ASTUnaryOp, ASTVariableIntro, ASTVisibility,
 };
 

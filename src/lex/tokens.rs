@@ -165,6 +165,9 @@ pub enum TokType {
 
     // Forces a closure to capture by value. See `closure_expr` in the grammar.
     Move,
+    // `once fn(..)`: a fn type that may be called once, because calling it
+    // takes what the closure captured.
+    Once,
 
     // Range operators
     DotDot,

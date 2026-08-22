@@ -1889,10 +1889,11 @@ answer is not obvious from the rules alone.
     and "move" is the only thing that lets one be returned. A name captured
     by reference may not be handed away from inside the closure either — the
     value is still the enclosing frame's, and there is no capture mode short
-    of "move" that takes it. What is not settled is telling one call of a
-    closure from the next: a "move" closure that gives away what it captured
-    does it once per call, and saying so wants the two fn types Rust spells
-    "FnOnce" and "FnMut", which this has no way to draw. The keyword
+    of "move" that takes it. One call is told from the next by what the fn
+    type says: a "move" closure that gives away what it captured is a "once
+    fn", and calling one takes it, so a second call is a use of something
+    that has gone. That is the work Rust's "FnOnce" and "FnMut" do, written
+    as a word in front of a type rather than as a trait. The keyword
     predates values that move and keeps its meaning beside them: it says how
     a name is captured, where a move says what happens to the value once it
     is. A closure's type is written "fn(i32, str): bool" — the shape a

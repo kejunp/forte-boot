@@ -40,28 +40,28 @@ impl Parser {
 
             // ---- Maps ----------------------------------------------------
             // <map_entry> -> <expression> : <expression>
-            231 => self.at(ASTNodeKind::MapEntry { key: c[0], value: c[2] }, c[0]),
+            234 => self.at(ASTNodeKind::MapEntry { key: c[0], value: c[2] }, c[0]),
             // <map_entry_list> -> <map_entry>
-            232 => self.one(c[0]),
+            235 => self.one(c[0]),
             // <map_entry_list> -> <map_entry_list> , <map_entry>
-            233 => self.grew(c[0], c[2]),
+            236 => self.grew(c[0], c[2]),
             // <map_entry_list_opt> -> ε
             // `{}` is the empty map, and so is `{:}` below: the one spelling
             // that has to be written out is the empty *set*.
-            234 => self.here(ASTNodeKind::List(Vec::new())),
+            237 => self.here(ASTNodeKind::List(Vec::new())),
             // <map_entry_list_opt> -> :
-            235 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
+            238 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
             // <map_entry_list_opt> -> <map_entry_list>
-            236 => self.pass(c[0]),
+            239 => self.pass(c[0]),
             // <map_entry_list_opt> -> <map_entry_list> ,
-            237 => self.pass(c[0]),
+            240 => self.pass(c[0]),
             // <map_literal> -> VALUE_LCURLY <map_entry_list_opt> }
-            238 => self.at(
+            241 => self.at(
                 ASTNodeKind::Map { hashed: false, entries: self.list(c[1]) },
                 c[0],
             ),
             // <map_literal> -> # VALUE_LCURLY <map_entry_list_opt> }
-            239 => self.at(
+            242 => self.at(
                 ASTNodeKind::Map { hashed: true, entries: self.list(c[2]) },
                 c[0],
             ),
@@ -69,18 +69,18 @@ impl Parser {
             // ---- Sets ----------------------------------------------------
             // <set_element_list> -> ,
             // `{,}` is the empty set, written out because `{}` is the empty map.
-            341 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
+            344 => self.at(ASTNodeKind::List(Vec::new()), c[0]),
             // <set_element_list> -> <expression_seq>
-            342 => self.pass(c[0]),
+            345 => self.pass(c[0]),
             // <set_element_list> -> <expression_seq> ,
-            343 => self.pass(c[0]),
+            346 => self.pass(c[0]),
             // <set_literal> -> VALUE_LCURLY <set_element_list> }
-            344 => self.at(
+            347 => self.at(
                 ASTNodeKind::Set { hashed: false, elems: self.list(c[1]) },
                 c[0],
             ),
             // <set_literal> -> # VALUE_LCURLY <set_element_list> }
-            345 => self.at(
+            348 => self.at(
                 ASTNodeKind::Set { hashed: true, elems: self.list(c[2]) },
                 c[0],
             ),

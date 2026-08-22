@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::tir::tir_nodes::TIRFnUses;
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::{
     RegionId, TTIRBound, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
@@ -404,8 +405,13 @@ impl Mangler {
             Ty::Run(elem) => format!("{}[]", self.spell(*elem, p)),
             Ty::Tuple(members) => format!("({})", self.spell_all(members, p)),
 
-            Ty::Fn { params, ret, is_unsafe } => format!(
-                "{}fn({}):{}",
+            Ty::Fn { uses, params, ret, is_unsafe } => format!(
+                "{}{}fn({}):{}",
+                match uses {
+                    TIRFnUses::Reads => "",
+                    TIRFnUses::Writes => "var ",
+                    TIRFnUses::Takes => "once ",
+                },
                 if *is_unsafe { "unsafe " } else { "" },
                 self.spell_all(params, p),
                 self.spell(*ret, p)

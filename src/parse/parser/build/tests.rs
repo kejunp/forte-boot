@@ -636,7 +636,7 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::TuplePat(ids)
         | ASTNodeKind::TuplePayload(ids)
         | ASTNodeKind::NamedPayload(ids) => out.extend_from_slice(ids),
-        ASTNodeKind::FnType { params, ret } => {
+        ASTNodeKind::FnType { params, ret, .. } => {
             out.extend_from_slice(params);
             out.extend(ret.iter());
         }

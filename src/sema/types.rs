@@ -34,6 +34,7 @@
 
 use std::collections::HashMap;
 
+use crate::tir::tir_nodes::TIRFnUses;
 use crate::tir::tir_nodes::TIRPrim;
 use crate::tir::ttir_nodes::{TTIRItemId, Ty, TyId, VarId};
 
@@ -179,7 +180,8 @@ impl Types {
             Ty::Tuple(members) => {
                 Ty::Tuple(members.iter().map(|&m| self.deep(m)).collect())
             }
-            Ty::Fn { params, ret, is_unsafe } => Ty::Fn {
+            Ty::Fn { uses, params, ret, is_unsafe } => Ty::Fn {
+                uses,
                 params: params.iter().map(|&p| self.deep(p)).collect(),
                 ret: self.deep(ret),
                 is_unsafe,
@@ -313,13 +315,19 @@ impl Types {
                 Ok(self.intern(Ty::Tuple(members)))
             }
 
+            // "reading is less than writing and writing is less than taking",
+            // so a closure stands where a weaker one is wanted and the greater
+            // of the two is what the pair comes to. That is the one place this
+            // arena is not simply equality: a `fn()` handed to something that
+            // wanted a `once fn()` is a `fn()` still, and calling it once is
+            // all the caller promised to do.
             (
-                Ty::Fn { params: xs, ret: xr, is_unsafe: xu },
-                Ty::Fn { params: ys, ret: yr, is_unsafe: yu },
+                Ty::Fn { uses: xk, params: xs, ret: xr, is_unsafe: xu },
+                Ty::Fn { uses: yk, params: ys, ret: yr, is_unsafe: yu },
             ) if xs.len() == ys.len() && xu == yu => {
                 let params = self.unify_all(&xs, &ys)?;
                 let ret = self.unify(xr, yr)?;
-                Ok(self.intern(Ty::Fn { params, ret, is_unsafe: xu }))
+                Ok(self.intern(Ty::Fn { uses: xk.max(yk), params, ret, is_unsafe: xu }))
             }
 
             // Two parameters agree where they are the same one. Which two are
@@ -423,7 +431,8 @@ impl Types {
             Ty::Tuple(members) => {
                 Ty::Tuple(members.iter().map(|&m| self.substitute(m, args)).collect())
             }
-            Ty::Fn { params, ret, is_unsafe } => Ty::Fn {
+            Ty::Fn { uses, params, ret, is_unsafe } => Ty::Fn {
+                uses,
                 params: params.iter().map(|&p| self.substitute(p, args)).collect(),
                 ret: self.substitute(ret, args),
                 is_unsafe,
@@ -536,8 +545,13 @@ impl Types {
             Ty::Array { elem, len } => format!("{}[{}]", self.spell(*elem, name), len),
             Ty::Run(elem) => format!("{}[]", self.spell(*elem, name)),
             Ty::Tuple(members) => format!("({})", self.spell_all(members, name)),
-            Ty::Fn { params, ret, is_unsafe } => format!(
-                "{}fn({}): {}",
+            Ty::Fn { uses, params, ret, is_unsafe } => format!(
+                "{}{}fn({}): {}",
+                match uses {
+                    TIRFnUses::Reads => "",
+                    TIRFnUses::Writes => "var ",
+                    TIRFnUses::Takes => "once ",
+                },
                 if *is_unsafe { "unsafe " } else { "" },
                 self.spell_all(params, name),
                 self.spell(*ret, name)

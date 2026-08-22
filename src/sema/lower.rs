@@ -46,9 +46,10 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::sema::types::Types;
 use crate::tir::tir_nodes::{
+    TIRFnUses,
     TIRAttrs, TIRBinOp, TIRBinding, TIRExprId, TIRExprKind, TIRFn, TIRGeneric, TIRItemId,
     TIRBound, TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRRefOp,
-    TIRGenericArg, TIRPayload, TIRStmt, TIRTypeId, TIRTypeKind, TIRVis, TIRWherePred,
+    TIRGenericArg, TIRPayload, TIRStmt, TIRTypeId, TIRTypeKind, TIRUnaryOp, TIRVis, TIRWherePred,
 };
 use crate::tir::ttir_nodes::{
     TTIRBody, TTIRBodyId, TTIRCapture, TTIRCaptureMode, TTIRExpr, TTIRExprId, TTIRExprKind,
@@ -391,6 +392,9 @@ impl<'a> Lowerer<'a> {
                         None => self.types.null(),
                     };
                     let ty = self.types.intern(Ty::Fn {
+                        // A declared fn captures nothing, so calling it does
+                        // nothing to what it captured, however many times.
+                        uses: TIRFnUses::Reads,
                         params: arg_tys.clone(),
                         ret,
                         is_unsafe: f.is_unsafe,
@@ -815,7 +819,7 @@ impl<'a> Lowerer<'a> {
             TIRTypeKind::Tuple(members) => {
                 members.iter().map(|&m| self.elided_in(m, seen)).sum()
             }
-            TIRTypeKind::Fn { params, ret } => {
+            TIRTypeKind::Fn { params, ret, .. } => {
                 params.iter().map(|&p| self.elided_in(p, seen)).sum::<usize>()
                     + ret.map(|r| self.elided_in(r, seen)).unwrap_or(0)
             }
@@ -1031,13 +1035,13 @@ impl<'a> Lowerer<'a> {
             // `fn(i32, str): bool`. Never unsafe: there is no spelling for one,
             // and "a `<return_type_opt>` left out is `null`" (§2) reaches a
             // written fn type as much as a written fn.
-            TIRTypeKind::Fn { params, ret } => {
+            TIRTypeKind::Fn { uses, params, ret } => {
                 let params: Vec<TyId> = params.iter().map(|&p| self.ty(p)).collect();
                 let ret = match ret {
                     Some(ret) => self.ty(ret),
                     None => self.types.null(),
                 };
-                self.types.intern(Ty::Fn { params, ret, is_unsafe: false })
+                self.types.intern(Ty::Fn { uses, params, ret, is_unsafe: false })
             }
 
             // "An `<array_suffix>` takes a `<const_expr>`, and evaluating one
@@ -1185,6 +1189,8 @@ impl<'a> Lowerer<'a> {
                 .with_label("this is what it comes to"),
             );
         }
+        let at = self.at(value);
+        self.stands_as(found, ret, at);
         // Now that every hole in this body is as filled as it is going to
         // get, the parameters are held to what they were declared with.
         let held = std::mem::take(&mut self.pending);
@@ -1740,6 +1746,8 @@ impl<'a> Lowerer<'a> {
                                     .with_label("the two disagree"),
                                 );
                             }
+                            let at = self.at(at);
+                            self.stands_as(found, want, at);
                             want
                         }
                         (Some(want), None) => want,
@@ -1821,6 +1829,8 @@ impl<'a> Lowerer<'a> {
                     .with_label("this is what it was handed"),
                 );
             }
+            let at = self.at(at);
+            self.stands_as(found, want, at);
         }
         ret
     }
@@ -2298,6 +2308,236 @@ impl<'a> Lowerer<'a> {
     }
 
     // A pattern's own type held against what it is tested on.
+    // Whether a body hands a slot's value over rather than reading through it.
+    // The four places §2 names -- an argument, a return, the right of an
+    // assignment, a field of a literal being built -- come to one thing here: a
+    // name standing for its value and not for a place reached into.
+    //
+    // Walked from the body's own value and not over the arena: "a
+    // `TTIRLocalId` is a slot of the body that holds it, not of the program",
+    // so the same number in two bodies is two different slots.
+    fn hands_away(&self, body: TTIRBodyId, slot: TTIRLocalId) -> bool {
+        self.given_away(self.out.bodies[body].value, slot)
+    }
+
+    // Whether a body writes to a slot, however it reaches it: a `var n = ..`
+    // captured by value and assigned to is a closure with state of its own.
+    fn writes_to(&self, body: TTIRBodyId, slot: TTIRLocalId) -> bool {
+        self.out.exprs.iter().enumerate().any(|(id, e)| {
+            matches!(&e.kind, TTIRExprKind::Assign { place, .. } if self.roots_at(*place, slot))
+                && self.within(self.out.bodies[body].value, id)
+        })
+    }
+
+    // Whether a place is reached from a slot: the name at the bottom of it.
+    fn roots_at(&self, id: TTIRExprId, slot: TTIRLocalId) -> bool {
+        match &self.out.exprs[id].kind {
+            TTIRExprKind::Local(held) => *held == slot,
+            TTIRExprKind::Field { base, .. }
+            | TTIRExprKind::TupleIndex { base, .. }
+            | TTIRExprKind::Index { base, .. } => self.roots_at(*base, slot),
+            _ => false,
+        }
+    }
+
+    // Whether one expression stands inside another, which is how a body says
+    // which expressions are its own -- the arena holds every body's at once.
+    fn within(&self, outer: TTIRExprId, id: TTIRExprId) -> bool {
+        if outer == id {
+            return true;
+        }
+        self.kids_of(outer).into_iter().any(|kid| self.within(kid, id))
+    }
+
+    // Everything one expression holds, whatever it is. A closure's body is not
+    // among them: it is a body of its own and its slots are its own.
+    fn kids_of(&self, id: TTIRExprId) -> Vec<TTIRExprId> {
+        match &self.out.exprs[id].kind {
+            TTIRExprKind::Field { base, .. } | TTIRExprKind::TupleIndex { base, .. } => {
+                vec![*base]
+            }
+            TTIRExprKind::Index { base, index } => vec![*base, *index],
+            TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => vec![*operand],
+            TTIRExprKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+            TTIRExprKind::Assign { place, value, .. } => vec![*place, *value],
+            TTIRExprKind::Call { callee, args } => {
+                std::iter::once(*callee).chain(args.iter().copied()).collect()
+            }
+            TTIRExprKind::Method { recv, args, .. } => {
+                std::iter::once(*recv).chain(args.iter().copied()).collect()
+            }
+            TTIRExprKind::StructLit { fields, .. }
+            | TTIRExprKind::VariantLit { fields, .. }
+            | TTIRExprKind::ArrayLit(fields)
+            | TTIRExprKind::TupleLit(fields)
+            | TTIRExprKind::Set { elems: fields, .. } => fields.clone(),
+            TTIRExprKind::Map { entries, .. } => {
+                entries.iter().flat_map(|&(k, v)| [k, v]).collect()
+            }
+            TTIRExprKind::Range { start, end, .. } => {
+                [start, end].into_iter().flatten().copied().collect()
+            }
+            TTIRExprKind::Block { stmts, tail } => {
+                let mut held: Vec<TTIRExprId> = Vec::new();
+                for stmt in stmts {
+                    match stmt {
+                        TTIRStmt::Let { init, .. } => held.extend(init.iter()),
+                        TTIRStmt::Expr { expr, .. } => held.push(*expr),
+                        TTIRStmt::Item(_) => {}
+                    }
+                }
+                held.extend(tail.iter());
+                held
+            }
+            TTIRExprKind::If { cond, then, els } => {
+                [Some(cond), Some(then), els.as_ref()].into_iter().flatten().copied().collect()
+            }
+            TTIRExprKind::While { cond, body } => vec![*cond, *body],
+            TTIRExprKind::For { iter, body, .. } => vec![*iter, *body],
+            TTIRExprKind::Match { scrutinee, arms } => std::iter::once(*scrutinee)
+                .chain(arms.iter().map(|a| a.body))
+                .collect(),
+            TTIRExprKind::Return(value) | TTIRExprKind::Break(value) => {
+                value.iter().copied().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn given_away(&self, id: TTIRExprId, slot: TTIRLocalId) -> bool {
+        let kids: Vec<TTIRExprId> = match &self.out.exprs[id].kind {
+            // Here it is, standing for its value: this is the handing over.
+            TTIRExprKind::Local(held) => return *held == slot,
+            // Reached into or borrowed, either of which leaves it where it is.
+            TTIRExprKind::Field { base, .. }
+            | TTIRExprKind::TupleIndex { base, .. } => {
+                return self.reaches_past(*base, slot)
+            }
+            TTIRExprKind::Index { base, index } => {
+                return self.reaches_past(*base, slot) || self.given_away(*index, slot)
+            }
+            TTIRExprKind::Unary { op: TIRUnaryOp::Ref(_), operand }
+            | TTIRExprKind::Unary { op: TIRUnaryOp::Addr, operand } => {
+                return self.reaches_past(*operand, slot)
+            }
+            TTIRExprKind::Assign { place, value, .. } => {
+                return self.reaches_past(*place, slot) || self.given_away(*value, slot)
+            }
+            TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => vec![*operand],
+            TTIRExprKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+            TTIRExprKind::Call { callee, args } => {
+                std::iter::once(*callee).chain(args.iter().copied()).collect()
+            }
+            TTIRExprKind::Method { recv, args, .. } => {
+                std::iter::once(*recv).chain(args.iter().copied()).collect()
+            }
+            TTIRExprKind::StructLit { fields, .. }
+            | TTIRExprKind::VariantLit { fields, .. }
+            | TTIRExprKind::ArrayLit(fields)
+            | TTIRExprKind::TupleLit(fields)
+            | TTIRExprKind::Set { elems: fields, .. } => fields.clone(),
+            TTIRExprKind::Map { entries, .. } => {
+                entries.iter().flat_map(|&(k, v)| [k, v]).collect()
+            }
+            TTIRExprKind::Range { start, end, .. } => {
+                [start, end].into_iter().flatten().copied().collect()
+            }
+            TTIRExprKind::Block { stmts, tail } => {
+                let mut held: Vec<TTIRExprId> = Vec::new();
+                for stmt in stmts {
+                    match stmt {
+                        TTIRStmt::Let { init, .. } => held.extend(init.iter()),
+                        TTIRStmt::Expr { expr, .. } => held.push(*expr),
+                        TTIRStmt::Item(_) => {}
+                    }
+                }
+                held.extend(tail.iter());
+                held
+            }
+            TTIRExprKind::If { cond, then, els } => {
+                [Some(cond), Some(then), els.as_ref()].into_iter().flatten().copied().collect()
+            }
+            TTIRExprKind::While { cond, body } => vec![*cond, *body],
+            TTIRExprKind::For { iter, body, .. } => vec![*iter, *body],
+            TTIRExprKind::Match { scrutinee, arms } => std::iter::once(*scrutinee)
+                .chain(arms.iter().map(|a| a.body))
+                .collect(),
+            TTIRExprKind::Return(value) | TTIRExprKind::Break(value) => {
+                value.iter().copied().collect()
+            }
+            // A closure inside a closure names the outer frame's slots through
+            // its own captures, which the outer one already caught.
+            _ => Vec::new(),
+        };
+        kids.into_iter().any(|kid| self.given_away(kid, slot))
+    }
+
+    // The same walk, of something being reached into rather than handed over:
+    // the name at the bottom of it stays where it is, and anything else in it
+    // is handed over as it would be anywhere.
+    fn reaches_past(&self, id: TTIRExprId, slot: TTIRLocalId) -> bool {
+        match &self.out.exprs[id].kind {
+            TTIRExprKind::Local(_) => false,
+            TTIRExprKind::Field { base, .. } | TTIRExprKind::TupleIndex { base, .. } => {
+                self.reaches_past(*base, slot)
+            }
+            TTIRExprKind::Index { base, index } => {
+                self.reaches_past(*base, slot) || self.given_away(*index, slot)
+            }
+            _ => self.given_away(id, slot),
+        }
+    }
+
+    // Whether a type is copied where it is handed over. `Copy` is found by
+    // name, as §2 says the compiler knows it.
+    fn copies(&self, ty: TyId) -> bool {
+        // Through a filled hole: this runs while the body's types are still
+        // being worked out, and a number is a hole until something fixes it.
+        match self.types.get(self.types.shallow(ty)) {
+            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Fn { .. } | Ty::Run(_) => true,
+            // One nobody has worked out yet, and one that went wrong: both
+            // read as copying, which is the answer that adds no second message
+            // to a program that already has one.
+            Ty::Var(_) | Ty::Error => true,
+            Ty::Named { item, .. } => self.out.items.iter().any(|held| {
+                matches!(&held.kind, TTIRItemKind::Impl { ty, of: Some(of), .. }
+                    if matches!(self.types.get(*ty), Ty::Named { item: named, .. } if named == item)
+                        && matches!(&self.out.items[*of].kind,
+                            TTIRItemKind::Trait { name, .. } if name == "Copy"))
+            }),
+            _ => false,
+        }
+    }
+
+    // "a closure stands where a weaker one is wanted: reading is less than
+    // writing and writing is less than taking" -- and not the other way. This
+    // is the half `unify` cannot say: it takes the greater of the two, which is
+    // the right answer where a hole is being filled and the wrong one where a
+    // person wrote what they wanted. So wherever what was written is one side
+    // and what was found is the other, this is asked as well.
+    fn stands_as(&mut self, found: TyId, want: TyId, at: Span) {
+        let found = self.types.shallow(found);
+        let want = self.types.shallow(want);
+        let (Ty::Fn { uses: got, .. }, Ty::Fn { uses: asked, .. }) =
+            (self.types.get(found).clone(), self.types.get(want).clone())
+        else {
+            return;
+        };
+        if got <= asked {
+            return;
+        }
+        let (found, want) = (self.spell(found), self.spell(want));
+        self.errors.push(
+            Diagnostic::error(
+                format!("this is `{}` and what wants it says `{}`", found, want),
+                at,
+            )
+            .with_label("it may be called fewer times than that")
+            .with_note("`fn` reads what a closure captured, `var fn` writes to it and `once fn` takes it")
+            .with_help("a closure stands where a weaker one is wanted, and not the other way"),
+        );
+    }
+
     fn hold(&mut self, found: TyId, want: TyId, id: TIRPatId) {
         if self.types.unify(found, want).is_err() {
             let (found, want) = (self.spell(found), self.spell(want));
@@ -2396,8 +2636,41 @@ impl<'a> Lowerer<'a> {
 
         // The frame comes off, and what it caught comes with it.
         let captures = self.frames.last().expect("a frame").captures.clone();
+        // What calling it does to what it captured, which is the most any one
+        // capture asks: "worked out per name, each taking the least the body
+        // asks of it" (§5), and the closure is the most of those.
+        //
+        // A `move` capture is what takes: the closure owns the value, so a
+        // second call would hand away what the first already did. A capture
+        // the body assigns to is what writes. Everything else only reads, and
+        // a closure that captured nothing reads nothing.
         let made = self.finish_body(value);
-        let ty = self.types.intern(Ty::Fn { params: arg_tys, ret, is_unsafe: false });
+        let uses = captures
+            .iter()
+            .map(|c| match c.mode {
+                // "By value is a copy where the name's type copies and a move
+                // where it does not": a copy is the closure's own and calling
+                // it changes nothing, and one that moved is only given away
+                // where the body gives it away.
+                TTIRCaptureMode::Value => {
+                    let ty = self.out.bodies[made].locals[c.slot].ty;
+                    if !self.copies(ty) && self.hands_away(made, c.slot) {
+                        TIRFnUses::Takes
+                    } else if self.writes_to(made, c.slot) {
+                        // A `move` closure with a copy of its own that it
+                        // writes to has state, and state is what one holder at
+                        // a time is for.
+                        TIRFnUses::Writes
+                    } else {
+                        TIRFnUses::Reads
+                    }
+                }
+                TTIRCaptureMode::Ref(TIRRefOp::Mut) => TIRFnUses::Writes,
+                TTIRCaptureMode::Ref(TIRRefOp::Imm) => TIRFnUses::Reads,
+            })
+            .max()
+            .unwrap_or(TIRFnUses::Reads);
+        let ty = self.types.intern(Ty::Fn { uses, params: arg_tys, ret, is_unsafe: false });
         self.make(TTIRExprKind::Closure { captures, body: made }, ty, at)
     }
 
@@ -2452,6 +2725,8 @@ impl<'a> Lowerer<'a> {
                         .with_label("this is what it was handed"),
                     );
                 }
+                let at = self.at(at);
+                self.stands_as(found, want, at);
             }
         }
         Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))

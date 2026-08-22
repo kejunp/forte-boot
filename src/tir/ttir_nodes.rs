@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 use super::tir_nodes::{
+    TIRFnUses,
     TIRAssignOp, TIRAttrs, TIRBinOp, TIRBinding, TIRFnAttrs, TIRIntro, TIRLit, TIRPrim,
     TIRRangeOp, TIRRefOp, TIRUnaryOp, TIRVis,
 };
@@ -181,6 +182,10 @@ pub enum Ty {
     // being a fact about whether the declaration folds rather than about the
     // value.
     Fn {
+        // What calling it does to what the closure captured: `fn` reads it,
+        // `var fn` writes to it, `once fn` takes it. A declared fn captures
+        // nothing and is always the first.
+        uses:      TIRFnUses,
         params:    Vec<TyId>,
         ret:       TyId,
         is_unsafe: bool,

@@ -398,6 +398,7 @@ fn keyword_of(word: &str) -> Option<TokType> {
         "as" => TokType::As,
         "where" => TokType::Where,
         "move" => TokType::Move,
+        "once" => TokType::Once,
         "addr" => TokType::Addr,
 
         // Literals

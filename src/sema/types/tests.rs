@@ -1,6 +1,7 @@
 // What agrees with what.
 
 use super::*;
+use crate::tir::tir_nodes::TIRFnUses;
 use crate::tir::tir_nodes::TIRRefOp;
 
 fn spell(t: &Types, id: TyId) -> String {
@@ -148,10 +149,10 @@ fn a_fn_type_agrees_by_all_three() {
     let mut t = Types::new();
     let i32 = t.prim(TIRPrim::I32);
     let null = t.null();
-    let safe = t.intern(Ty::Fn { params: vec![i32], ret: null, is_unsafe: false });
-    let same = t.intern(Ty::Fn { params: vec![i32], ret: null, is_unsafe: false });
-    let guarded = t.intern(Ty::Fn { params: vec![i32], ret: null, is_unsafe: true });
-    let longer = t.intern(Ty::Fn { params: vec![i32, i32], ret: null, is_unsafe: false });
+    let safe = t.intern(Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: false });
+    let same = t.intern(Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: false });
+    let guarded = t.intern(Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: true });
+    let longer = t.intern(Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32, i32], ret: null, is_unsafe: false });
     assert!(t.unify(safe, same).is_ok());
     assert!(t.unify(safe, guarded).is_err());
     assert!(t.unify(safe, longer).is_err());
@@ -270,8 +271,8 @@ fn a_type_is_spelled_the_way_it_was_written() {
         (Ty::Array { elem: i32, len: 8 }, "i32[8]"),
         (Ty::Run(i32), "i32[]"),
         (Ty::Tuple(vec![i32, str]), "(i32, str)"),
-        (Ty::Fn { params: vec![i32], ret: null, is_unsafe: false }, "fn(i32): null"),
-        (Ty::Fn { params: vec![i32], ret: null, is_unsafe: true }, "unsafe fn(i32): null"),
+        (Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: false }, "fn(i32): null"),
+        (Ty::Fn { uses: TIRFnUses::Reads, params: vec![i32], ret: null, is_unsafe: true }, "unsafe fn(i32): null"),
         // By the name a reader wrote, not by its place: a message about `T`
         // should say `T`.
         (Ty::Param { name: "T".to_string(), index: 3 }, "T"),

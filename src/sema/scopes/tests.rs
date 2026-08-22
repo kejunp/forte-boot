@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::sema::names::{Access, Payload};
-use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
+use crate::tir::tir_nodes::{
+    TIRFnUses,TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRPrim, TIRRefOp, TIRVis};
 use crate::tir::ttir_nodes::*;
 
 struct Suite {
@@ -63,7 +64,7 @@ impl Suite {
     }
 
     fn func(&mut self, name: &str, params: Vec<TyId>, body: Option<TTIRBodyId>) -> TTIRItemId {
-        let ty = self.ty(Ty::Fn { params, ret: Self::NULL, is_unsafe: false });
+        let ty = self.ty(Ty::Fn { uses: TIRFnUses::Reads, params, ret: Self::NULL, is_unsafe: false });
         // Every slot of the body stands for a parameter here, which is enough
         // for what these tests ask; a real fn names its own.
         let slots: Vec<TTIRParam> = body
