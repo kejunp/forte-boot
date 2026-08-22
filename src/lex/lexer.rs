@@ -743,7 +743,17 @@ impl Lexer {
                 // one may prefix any statement instead, and then the next brace
                 // belongs to that statement — the literal in `unsafe p = P {
                 // x: 1 }` — and a waiting header would swallow it.
-                if *t != TokType::Unsafe || self.brace_follows() {
+                //
+                // `fn` heads one only where a name follows. A declaration is
+                // `fn` and a name; a fn *type* is `fn` and a `(`, and it has no
+                // body at all — a waiting header set inside a parameter list
+                // would outlive the list and claim the declaration's own brace.
+                let heads = match t {
+                    TokType::Unsafe => self.brace_follows(),
+                    TokType::Fn => self.name_follows(),
+                    _ => true,
+                };
+                if heads {
                     self.pending_header = true;
                     self.header_depth = self.bracket_depth;
                     self.header_brace_depth = self.brace_depth;
@@ -927,6 +937,10 @@ impl Lexer {
         // inside a `(` must not be taken for one: `{ f(a > b, c) }` has its
         // comma inside the call and is no collection.
         let mut angles = 0usize;
+        // Whether a closure's parameter list is open. Its commas separate its
+        // own parameters and not the brace's entries: `{ |x, s| true }` is a
+        // block whose value is a closure, not a set of two things.
+        let mut pipes = false;
         let mut prev_can_end = false;
         let verdict = loop {
             // `scan_token` reads from where it stands; only `next_token` skips
@@ -940,6 +954,10 @@ impl Lexer {
             // a `<` a type argument list rather than a comparison. Read before
             // the flags below move on to this token.
             let after_name = self.last_was_name && !self.last_was_decl_name;
+            // Whether the token before this one could have ended an operand,
+            // which is what tells a closure's opening `|` from a bitwise one.
+            // Read before the flags below move on to this token.
+            let after_operand = self.last_ends_operand;
             prev_can_end = can_end_statement(&tok.toktype);
             // Kept up to date through the look so a `&&` inside the body reads
             // the same here as it will when the body is really scanned, and a
@@ -981,7 +999,11 @@ impl Lexer {
                 TokType::GreaterThan if angles > 0 => angles -= 1,
                 // `Vec<Map<K, V>>` closes two at once.
                 TokType::RShift if angles > 0 => angles = angles.saturating_sub(2),
-                TokType::Comma | TokType::Colon if depth == 0 && angles == 0 => {
+                // A `|` where no operand stands in front opens a closure's
+                // parameter list, and the next one closes it.
+                TokType::Pipe if depth == 0 && pipes => pipes = false,
+                TokType::Pipe if depth == 0 && !after_operand => pipes = true,
+                TokType::Comma | TokType::Colon if depth == 0 && angles == 0 && !pipes => {
                     break BraceScan::Collection
                 }
                 TokType::Semicolon if depth == 0 => break BraceScan::Block,
@@ -1135,6 +1157,18 @@ impl Lexer {
         while let Some(&c) = self.input.get(i) {
             if !c.is_whitespace() {
                 return c == '{';
+            }
+            i += 1;
+        }
+        false
+    }
+
+    // Whether a name stands next, which is what tells `fn f(..)` from `fn(..)`.
+    fn name_follows(&self) -> bool {
+        let mut i = self.index;
+        while let Some(&c) = self.input.get(i) {
+            if !c.is_whitespace() {
+                return c.is_alphabetic() || c == '_';
             }
             i += 1;
         }

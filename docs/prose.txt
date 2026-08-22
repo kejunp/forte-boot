@@ -1889,10 +1889,13 @@ answer is not obvious from the rules alone.
     and "move" is the only thing that lets one be returned. The keyword
     predates values that move and keeps its meaning beside them: it says how
     a name is captured, where a move says what happens to the value once it
-    is. What is not settled is where a closure may be put. <base_type> has no
-    spelling for a fn type, so a closure is a thing a "let" may hold and
-    nothing else — not a return type, not a parameter, not a field — and the
-    half of the rule about returning one has nowhere yet to apply.
+    is. A closure's type is written "fn(i32, str): bool" — the shape a
+    <fn_decl> has with the names gone — so one may be a parameter, a return
+    type or a field, and both halves of the rule apply. It is a <type> and
+    not a <base_type>, so "fn(): i32[8]" gives back eight numbers and
+    "(fn(): i32)[8]" is eight closures. The one place it may not stand bare
+    is the subject of a "where": after "fn(...)" a ":" would be its return
+    type and the predicate's colon at once, and the parentheses say which.
   - A value moves unless its type says "impl Copy", and a type says what
     releasing it comes to with "impl Drop" (section 2). Settled. Neither
     needs a rule of its own -- an empty impl and a one-method impl are both

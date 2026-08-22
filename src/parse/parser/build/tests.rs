@@ -636,6 +636,10 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::TuplePat(ids)
         | ASTNodeKind::TuplePayload(ids)
         | ASTNodeKind::NamedPayload(ids) => out.extend_from_slice(ids),
+        ASTNodeKind::FnType { params, ret } => {
+            out.extend_from_slice(params);
+            out.extend(ret.iter());
+        }
         ASTNodeKind::Fn { attrs, generics, params, ret, wheres, body, .. } => {
             out.extend_from_slice(attrs);
             out.extend_from_slice(generics);
@@ -1189,5 +1193,20 @@ fn gc_is_reserved_as_a_whole_word_only() {
     assert_eq!(
         names,
         vec![ASTBinding::Name("gcx".to_string()), ASTBinding::Name("gc_root".to_string())]
+    );
+}
+
+// A closure's parameter list holds commas of its own, and they separate its
+// parameters and not the entries of the brace it stands in: `{ |x, s| true }`
+// is a block whose value is a closure and not a set of two things.
+#[test]
+fn a_closures_parameters_are_not_a_braces_entries() {
+    let (p, item) = only_item("fn g(): bool {\n    |x, s| true\n}\n");
+    let ASTNodeKind::Fn { body, .. } = &item.kind else { panic!("{:?}", item.kind) };
+    let body = body.expect("a body");
+    assert!(
+        matches!(p.get_node(body).kind, ASTNodeKind::Block { .. }),
+        "{:?}",
+        p.get_node(body).kind
     );
 }

@@ -13,24 +13,24 @@ impl Parser {
         Some(match rule_id {
             // ---- Patterns ------------------------------------------------
             // <pattern> -> MACRO_PARAM
-            269 => self.pass(c[0]),
+            270 => self.pass(c[0]),
             // <pattern> -> _ | <literal_pattern> | <range_pattern>
             //           |  <variant_pattern> | <tuple_pattern> | <const_pattern>
-            268 | 270 | 271 | 272 | 273 | 274 => self.pass(c[0]),
+            269 | 271 | 272 | 273 | 274 | 275 => self.pass(c[0]),
             // <pattern_alternatives> -> <pattern>
-            275 => self.one(c[0]),
+            276 => self.one(c[0]),
             // <pattern_alternatives> -> <pattern_alternatives> | <pattern>
-            276 => self.grew(c[0], c[2]),
+            277 => self.grew(c[0], c[2]),
             // <pattern_list> -> <pattern>
-            277 => self.one(c[0]),
+            278 => self.one(c[0]),
             // <pattern_list> -> <pattern_list> , <pattern>
-            278 => self.grew(c[0], c[2]),
+            279 => self.grew(c[0], c[2]),
             // <pattern_list_opt> -> ε
-            279 => self.here(ASTNodeKind::List(Vec::new())),
+            280 => self.here(ASTNodeKind::List(Vec::new())),
             // <pattern_list_opt> -> <pattern_list>
-            280 => self.pass(c[0]),
+            281 => self.pass(c[0]),
             // <payload> -> ( <type_list> )
-            281 => self.at(ASTNodeKind::TuplePayload(self.list(c[1])), c[0]),
+            282 => self.at(ASTNodeKind::TuplePayload(self.list(c[1])), c[0]),
 
             // ---- Struct patterns -----------------------------------------
             // <field_pattern> -> IDENTIFIER
@@ -57,35 +57,35 @@ impl Parser {
 
             // ---- Variant patterns and payloads ---------------------------
             // <variant_pattern> -> <qualified_name> ( <pattern_list_opt> )
-            405 => self.at(
+            409 => self.at(
                 ASTNodeKind::VariantPat { path: self.path(c[0]), elems: self.list(c[2]) },
                 c[0],
             ),
             // <variant_pattern> -> <qualified_name> VALUE_LCURLY <field_pattern_list_opt> }
-            406 => self.at(
+            410 => self.at(
                 ASTNodeKind::StructPat { path: self.path(c[0]), fields: self.list(c[2]) },
                 c[0],
             ),
             // <variant_tail_opt> -> ε
-            407 => self.here(ASTNodeKind::Empty),
+            411 => self.here(ASTNodeKind::Empty),
             // <variant_tail_opt> -> <payload> | <named_payload> | <discriminant>
-            408 | 409 | 410 => self.pass(c[0]),
+            412 | 413 | 414 => self.pass(c[0]),
 
             // ---- Match ---------------------------------------------------
             // <match_arm> -> <pattern_alternatives> => <expression>
-            239 => self.at(ASTNodeKind::MatchArm { pats: self.list(c[0]), body: c[2] }, c[0]),
+            240 => self.at(ASTNodeKind::MatchArm { pats: self.list(c[0]), body: c[2] }, c[0]),
             // <match_arm_list> -> <match_arm>
-            240 => self.one(c[0]),
+            241 => self.one(c[0]),
             // <match_arm_list> -> <match_arm_list> , <match_arm>
-            241 => self.grew(c[0], c[2]),
+            242 => self.grew(c[0], c[2]),
             // <match_arm_list_opt> -> ε
-            242 => self.here(ASTNodeKind::List(Vec::new())),
+            243 => self.here(ASTNodeKind::List(Vec::new())),
             // <match_arm_list_opt> -> <match_arm_list>
-            243 => self.pass(c[0]),
-            // <match_arm_list_opt> -> <match_arm_list> ,
             244 => self.pass(c[0]),
+            // <match_arm_list_opt> -> <match_arm_list> ,
+            245 => self.pass(c[0]),
             // <match_expr> -> match <header_expr> { <match_arm_list_opt> }
-            245 => self.at(
+            246 => self.at(
                 ASTNodeKind::Match { scrutinee: c[1], arms: self.list(c[3]) },
                 c[0],
             ),

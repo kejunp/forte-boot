@@ -493,6 +493,10 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::TupleType(members) => {
                 TIRTypeKind::Tuple(members.iter().map(|&m| self.ty(m)).collect())
             }
+            ASTNodeKind::FnType { params, ret } => TIRTypeKind::Fn {
+                params: params.iter().map(|&p| self.ty(p)).collect(),
+                ret:    ret.map(|r| self.ty(r)),
+            },
             ASTNodeKind::Infer => TIRTypeKind::Infer,
 
             // A name substituted into a type position by a macro arrives shaped
@@ -598,6 +602,7 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::Array { .. } => Holds::Not("an array, which is owned where it stands"),
             ASTNodeKind::Run(_) => Holds::Not("a run, which only a reference holds"),
             ASTNodeKind::TupleType(_) => Holds::Not("a tuple"),
+            ASTNodeKind::FnType { .. } => Holds::Not("a closure"),
             _ => Holds::Unknown,
         }
     }

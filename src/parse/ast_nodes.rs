@@ -290,6 +290,14 @@ pub enum ASTNodeKind {
     // `self`: the receiver where a value is wanted, and the module a path
     // starts in where a path is. Which one is the resolver's to say.
     SelfExpr,
+    // `fn(i32, str): bool`, which is what a closure's type is written as. No
+    // parameter names: a caller hands over types, and what they were called
+    // where the closure was written is the closure's own business.
+    FnType {
+        params: Vec<ASTNodeId>,
+        ret:    Option<ASTNodeId>,
+    },
+
     // A receiver, as a parameter list holds it: `self`, `&self`, `*self`, and
     // the same two with a lifetime in front -- `&'a self`.
     SelfRecv(ASTSelf, Option<String>),

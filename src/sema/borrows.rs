@@ -60,13 +60,6 @@
 //     without being written, and `TTIRCapture` is what says so -- but the
 //     borrow it takes lasts as long as the name the closure was bound to, and
 //     what the body does with its own slot for it is the body's own business.
-//   - Returning a closure, for want of anywhere to return it to. "A closure
-//     that captures by reference cannot outlive what it captured, and `move`
-//     is the only thing that lets one be returned" (§8) is checked, and what
-//     it is checked against is a slot that outlives it -- since `<base_type>`
-//     has no spelling for a fn type, a closure cannot be a return type, a
-//     parameter, or a field. The rule is here and the half of it the grammar
-//     admits is what runs.
 //   - Where a `Drop` runs. Settled in §2 and codegen's, not the checker's.
 
 #![allow(dead_code)]
@@ -749,11 +742,6 @@ impl<'a> Checker<'a> {
             // `roots` returns nothing for a `move` closure or a plain fn, and
             // what it returns for one that captured by reference is what this
             // would have wanted to know.
-            //
-            // Unreachable today -- `<base_type>` has no spelling for a fn type,
-            // so nothing can be written as a return type that gets here. It is
-            // the answer for when one is added, and it is here so that adding
-            // one does not quietly reopen the hole.
             Ty::Fn { .. } => true,
             Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref_past(m, seen)),
             Ty::Array { elem, .. } | Ty::Run(elem) => self.holds_ref_past(*elem, seen),

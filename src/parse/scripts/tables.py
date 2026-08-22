@@ -136,6 +136,10 @@ CLASSES = {
     '<primary>': 'an operand',
     '<pattern>': 'a pattern',
     '<type>': 'a type',
+    # A `where` clause's subject is every type but one ending in a bare fn
+    # type, which is a grammar's trouble with a colon and not a reader's: to
+    # anybody being told what was expected here, it is a type.
+    '<where_subject>': 'a type',
     '<block>': 'a block',
     '<literal>': 'a literal',
     '<attribute>': 'an attribute',
@@ -245,6 +249,11 @@ CONTEXTS = {
     '<ref_type>': 'a type',
     '<named_type>': 'a type',
     '<type>': 'a type',
+    # A `where` clause's subject is every type but one ending in a bare fn
+    # type, which is a grammar's trouble with a colon and not a reader's: to
+    # anybody being told what was expected here, it is a type.
+    '<where_subject>': 'a type',
+    '<fn_type>': 'a type',
 
     '<if_expr>': 'an `if`',
     '<elif_list>': 'an `elif`',

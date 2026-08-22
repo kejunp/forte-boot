@@ -297,6 +297,12 @@ pub enum TIRTypeKind {
     // `T[]`: a run of unknown length, which only a reference can hold.
     Run(TIRTypeId),
     Tuple(Vec<TIRTypeId>),
+    // `fn(i32, str): bool`. No names and no `is_unsafe`: what a caller hands
+    // over is types, and there is no spelling for an unsafe fn type.
+    Fn {
+        params: Vec<TIRTypeId>,
+        ret:    Option<TIRTypeId>,
+    },
     // `_`, a type argument left to be worked out.
     Infer,
 }

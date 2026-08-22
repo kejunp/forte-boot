@@ -281,7 +281,20 @@
 
 <type>                  ::= <ref_type>
                           | <ptr_type>
+                          | <fn_type>
                           | <base_type> <array_suffix_list>
+
+# What a closure is, written down. The word and the shape a <fn_decl> has, with
+# the name and the parameter names gone: what a caller hands over is types, and
+# what it gets back is a <return_type_opt> like any other.
+#
+# Here and not among the <base_type>s, so that it takes no array suffix of its
+# own: "fn(): i32[8]" is a fn giving back eight numbers, the suffix binding to
+# the <type> inside the return, and "(fn(): i32)[8]" is the other reading —
+# which is what <grouped_type> is for, a grouped type being a <base_type> and
+# taking suffixes like one.
+<fn_type>               ::= "fn" "(" <type_list_opt> ")" <return_type_opt>
+
 
 # A reference may name how long it is good for. Left out, the checker works it
 # out — which is what it did for every reference before there was a way to say.
@@ -311,6 +324,9 @@
                           | <tuple_type>
                           | MACRO_PARAM
                           | "_"
+
+<type_list_opt>         ::= <empty>
+                          | <type_list>
 
 <grouped_type>          ::= "(" <type> ")"
 
@@ -373,7 +389,17 @@
 <where_pred_list>       ::= <where_pred>
                           | <where_pred_list> "," <where_pred>
 
-<where_pred>            ::= <type> ":" <type_bounds>
+# The subject is every <type> but one that ends in a bare <fn_type>: after
+# "fn(...)" a ":" would be its return type and this predicate's colon at once,
+# and no lookahead tells them apart. So it repeats the shape of <type> without
+# that one branch, at every level — "&fn(): i32" has the same trouble "fn():
+# i32" does. "(fn(): i32): Show" is how one is written here, the parentheses
+# saying which colon is which.
+<where_subject>         ::= <ref_op> <lifetime_opt> <where_subject>
+                          | "ptr" <where_subject>
+                          | <base_type> <array_suffix_list>
+
+<where_pred>            ::= <where_subject> ":" <type_bounds>
                           | <lifetime> ":" <type_bounds>
 
 <block>                 ::= "{" <statement_list> <block_tail_opt> "}"

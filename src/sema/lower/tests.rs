@@ -1835,3 +1835,75 @@ fn a_declaration_reached_from_itself_is_counted_and_not_chased() {
          fn f(p: &i32): i32 {\n    1\n}\n",
     );
 }
+
+// ---- Fn types --------------------------------------------------------------
+
+// "a closure that captures by reference cannot outlive what it captured, and
+// `move` is the only thing that lets one be returned" (§8). The second half of
+// that, now that there is somewhere to return one to.
+#[test]
+fn a_closure_that_captured_by_reference_may_not_be_returned() {
+    let out = refused("fn f(): fn(): i32 {\n    let n = 2;\n    || n\n}\n");
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    // `move` takes the value, so there is nothing left behind to outlive.
+    clean("fn f(): fn(): i32 {\n    let n = 2;\n    move || n\n}\n");
+    // And one that captured nothing may go anywhere.
+    clean("fn f(): fn(): i32 {\n    || 1\n}\n");
+}
+
+// A fn type stands where any type does: a parameter, a return, a field.
+#[test]
+fn a_fn_type_stands_where_a_type_does() {
+    let ttir = clean(
+        "fn takes(f: fn(i32): i32): i32 {\n    1\n}\n\
+         struct Holds {\n    pub f: fn(): i32,\n}\n\
+         fn gives(): fn(i32, str): bool {\n    |x, s| true\n}\n",
+    );
+    let f = ttir.items.iter().find_map(|i| match &i.kind {
+        TTIRItemKind::Fn(f) if f.name == "gives" => Some(f),
+        _ => None,
+    }).expect("gives");
+    let Ty::Fn { params, ret, is_unsafe } = &ttir.types[f.ret] else { panic!("a fn type") };
+    assert_eq!(params.len(), 2);
+    assert_eq!(ttir.types[params[0]], Ty::Prim(TIRPrim::I32));
+    assert_eq!(ttir.types[params[1]], Ty::Prim(TIRPrim::Str));
+    assert_eq!(ttir.types[*ret], Ty::Prim(TIRPrim::Bool));
+    // "there is no spelling for an unsafe fn type."
+    assert!(!is_unsafe);
+}
+
+// "a `<return_type_opt>` left out is `null`" (§2) reaches a written fn type as
+// much as a written fn.
+#[test]
+fn a_fn_type_with_no_return_gives_back_null() {
+    let ttir = clean("fn takes(f: fn(i32)): i32 {\n    1\n}\n");
+    let f = ttir.items.iter().find_map(|i| match &i.kind {
+        TTIRItemKind::Fn(f) if f.name == "takes" => Some(f),
+        _ => None,
+    }).expect("takes");
+    let Ty::Fn { params, .. } = &ttir.types[f.ty] else { panic!("a fn type") };
+    let Ty::Fn { ret, .. } = &ttir.types[params[0]] else { panic!("a fn type") };
+    assert_eq!(ttir.types[*ret], Ty::Prim(TIRPrim::Null));
+}
+
+// The suffix binds to the type inside the return, so `fn(): i32[8]` gives back
+// eight numbers and `(fn(): i32)[8]` is eight closures.
+#[test]
+fn an_array_suffix_binds_inside_a_fn_types_return() {
+    let ttir = clean(
+        "fn a(f: fn(): i32[8]): i32 {\n    1\n}\n\
+         fn b(f: (fn(): i32)[8]): i32 {\n    1\n}\n",
+    );
+    let of = |name: &str| {
+        let f = ttir.items.iter().find_map(|i| match &i.kind {
+            TTIRItemKind::Fn(f) if f.name == name => Some(f),
+            _ => None,
+        }).expect("the fn");
+        let Ty::Fn { params, .. } = &ttir.types[f.ty] else { panic!("a fn type") };
+        params[0]
+    };
+    // `a` takes a fn giving back an array.
+    assert!(matches!(&ttir.types[of("a")], Ty::Fn { .. }));
+    // `b` takes an array of fns.
+    assert!(matches!(&ttir.types[of("b")], Ty::Array { .. }));
+}

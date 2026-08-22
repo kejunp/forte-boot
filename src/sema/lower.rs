@@ -818,6 +818,10 @@ impl<'a> Lowerer<'a> {
             TIRTypeKind::Tuple(members) => {
                 members.iter().map(|&m| self.elided_in(m, seen)).sum()
             }
+            TIRTypeKind::Fn { params, ret } => {
+                params.iter().map(|&p| self.elided_in(p, seen)).sum::<usize>()
+                    + ret.map(|r| self.elided_in(r, seen)).unwrap_or(0)
+            }
             TIRTypeKind::Named { path, args } => {
                 let written = args.iter().filter(|a| matches!(a, TIRGenericArg::Life(_))).count();
                 let inner: usize = args
@@ -1026,6 +1030,17 @@ impl<'a> Lowerer<'a> {
             TIRTypeKind::Tuple(members) => {
                 let members: Vec<TyId> = members.iter().map(|&m| self.ty(m)).collect();
                 self.types.intern(Ty::Tuple(members))
+            }
+            // `fn(i32, str): bool`. Never unsafe: there is no spelling for one,
+            // and "a `<return_type_opt>` left out is `null`" (§2) reaches a
+            // written fn type as much as a written fn.
+            TIRTypeKind::Fn { params, ret } => {
+                let params: Vec<TyId> = params.iter().map(|&p| self.ty(p)).collect();
+                let ret = match ret {
+                    Some(ret) => self.ty(ret),
+                    None => self.types.null(),
+                };
+                self.types.intern(Ty::Fn { params, ret, is_unsafe: false })
             }
 
             // "An `<array_suffix>` takes a `<const_expr>`, and evaluating one
