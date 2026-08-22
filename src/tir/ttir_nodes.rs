@@ -310,6 +310,17 @@ pub struct TTIRFn {
     pub symbol:    String,
     pub generics:  Vec<TTIRGeneric>,
     pub wheres:    Vec<TTIRWherePred>,
+    // Which of this signature's regions outlive which, as `(longer, shorter)`.
+    //
+    // "Every reference in a signature with no lifetime of its own gets one, and
+    // a reference in the return type gets the shortest-lived of the ones the
+    // parameters brought in" (§3) -- which is this: every parameter's region
+    // outlives the return's, and "the shortest of them outlives nothing the
+    // others do not" is why that answer is always sound.
+    //
+    // A written `'a` sharpens it by naming one region in two places instead,
+    // and then only what was written stands here.
+    pub outlives:  Vec<(RegionId, RegionId)>,
     pub ty:        TyId,
     pub params:    Vec<TTIRParam>,
     pub ret:       TyId,

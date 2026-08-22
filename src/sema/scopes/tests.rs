@@ -94,6 +94,7 @@ impl Suite {
             ty,
             params:    slots,
             ret:       Self::NULL,
+            outlives:  Vec::new(),
             body,
         }))
     }

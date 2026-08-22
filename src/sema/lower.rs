@@ -57,7 +57,7 @@ use crate::tir::ttir_nodes::{
     TTIRBody, TTIRBodyId, TTIRCapture, TTIRCaptureMode, TTIRExpr, TTIRExprId, TTIRExprKind,
     TTIRFieldDecl, TTIRFn,
     TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
-    TTIRBound, TTIRParam, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt,
+    RegionId, TTIRBound, TTIRParam, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt,
     TTIRSubject, TTIRVariant, TTIRWherePred, Ty, TyId,
 };
 
@@ -84,6 +84,19 @@ pub struct Lowerer<'a> {
     // the trait they answer. Built once, between resolving and the bodies --
     // every impl is in by then, and nothing before the bodies asks.
     answers: HashMap<TTIRItemId, Vec<TyId>>,
+    // The regions of the declaration being resolved. Numbered from 1: region 0
+    // is what a reference outside a signature gets, where how long it is good
+    // for is nobody's question yet.
+    regions: usize,
+    // Its named lifetimes, so a `'a` written twice is one region twice.
+    lifetimes: HashMap<String, RegionId>,
+    // Whether what is being resolved is a signature. Only a signature hands out
+    // regions: inside a body a reference gets region 0, since how long a
+    // reference held in a local is good for is not what a signature promises.
+    in_sig: bool,
+    // The declaration being resolved, for a refusal about something written in
+    // it that carries no position of its own -- a lifetime in a bound.
+    here: Span,
     // Bounds still to be asked. A parameter is a hole at the moment the call
     // is reached -- what fills it is what the call settles -- so asking there
     // asks nothing. They are put by until the body is walked and every hole is
@@ -141,6 +154,10 @@ impl<'a> Lowerer<'a> {
             frames: Vec::new(),
             params: Vec::new(),
             answers: HashMap::new(),
+            regions: 0,
+            lifetimes: HashMap::new(),
+            in_sig: false,
+            here: Span::at(1, 1),
             pending: Vec::new(),
             breaks: Vec::new(),
             subject: None,
@@ -179,6 +196,15 @@ impl<'a> Lowerer<'a> {
             );
         }
         self.out.types = arena;
+
+        // Moves and borrows, over the tree this just built. Only where nothing
+        // has been turned down yet: a tree with an `Ty::Error` in it has holes
+        // where the checker would look, and one mistake is meant to be one
+        // message rather than the head of a list.
+        if !self.errors.has_errors() {
+            let mut said = crate::sema::borrows::Checker::new(&self.out).check().clone();
+            self.errors.absorb(&mut said);
+        }
         (self.out, self.errors)
     }
 
@@ -313,6 +339,7 @@ impl<'a> Lowerer<'a> {
             ty: 0,
             params: Vec::new(),
             ret: 0,
+            outlives: Vec::new(),
             body: None,
         })
     }
@@ -324,9 +351,11 @@ impl<'a> Lowerer<'a> {
     fn resolve(&mut self, items: &[TIRItemId]) {
         for &id in items {
             let Some(made) = self.made[id] else { continue };
+            self.here = self.span(id);
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
                     self.params = names_of(&f.generics);
+                    self.open_regions(&f.generics);
                     let generics = self.generics(&f.generics, &f.wheres);
                     let made_wheres = self.wheres(&f.wheres, &f.generics);
                     let params: Vec<TTIRParam> = f
@@ -351,15 +380,36 @@ impl<'a> Lowerer<'a> {
                         None => self.types.null(),
                     };
                     let ty = self.types.intern(Ty::Fn {
-                        params: arg_tys,
+                        params: arg_tys.clone(),
                         ret,
                         is_unsafe: f.is_unsafe,
                     });
+                    // "a reference in the return type gets the shortest-lived
+                    // of the ones the parameters brought in" -- every region a
+                    // parameter brought outlives every region the return has
+                    // that nothing named. A region the writer named is left
+                    // alone: naming it is what sharpens the answer.
+                    let brought = self.regions_of(&arg_tys);
+                    let given = self.regions_of(&[ret]);
+                    let named: Vec<RegionId> = self.lifetimes.values().copied().collect();
+                    let mut outlives = Vec::new();
+                    for &shorter in &given {
+                        if named.contains(&shorter) {
+                            continue;
+                        }
+                        for &longer in &brought {
+                            if longer != shorter {
+                                outlives.push((longer, shorter));
+                            }
+                        }
+                    }
+
                     let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
                         continue;
                     };
                     held.generics = generics;
                     held.wheres = made_wheres;
+                    held.outlives = outlives;
                     held.params = params;
                     held.ret = ret;
                     held.ty = ty;
@@ -368,6 +418,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Struct { name: _, generics, fields, .. } => {
                     self.params = names_of(&generics);
+                    self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let made_fields: Vec<TTIRFieldDecl> = fields
                         .iter()
@@ -390,6 +441,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Enum { generics, variants, .. } => {
                     self.params = names_of(&generics);
+                    self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let made_variants: Vec<TTIRVariant> = variants
                         .iter()
@@ -429,6 +481,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::TypeAlias { generics, ty, .. } => {
                     self.params = names_of(&generics);
+                    self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let named = self.ty(ty);
                     let TTIRItemKind::TypeAlias { generics, ty, .. } =
@@ -484,6 +537,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Impl { generics, wheres, ty, for_ty, members, .. } => {
                     self.params = names_of(&generics);
+                    self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &wheres);
                     let made_wheres = self.wheres(&wheres, &generics);
                     // "`for_ty` is `Some` where a `for` was written, and then
@@ -512,6 +566,45 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Import { .. } => {}
             }
+        }
+    }
+
+    // Every region standing anywhere in these types.
+    fn regions_of(&self, tys: &[TyId]) -> Vec<RegionId> {
+        let mut out = Vec::new();
+        for &ty in tys {
+            self.walk_regions(ty, &mut out);
+        }
+        out
+    }
+
+    fn walk_regions(&self, ty: TyId, out: &mut Vec<RegionId>) {
+        match self.types.get(ty).clone() {
+            Ty::Ref { life, inner, .. } => {
+                if life != 0 && !out.contains(&life) {
+                    out.push(life);
+                }
+                self.walk_regions(inner, out);
+            }
+            Ty::Named { args, .. } => {
+                for a in args {
+                    self.walk_regions(a, out);
+                }
+            }
+            Ty::Ptr(inner) | Ty::GC(inner) => self.walk_regions(inner, out),
+            Ty::Array { elem, .. } | Ty::Run(elem) => self.walk_regions(elem, out),
+            Ty::Tuple(members) => {
+                for m in members {
+                    self.walk_regions(m, out);
+                }
+            }
+            Ty::Fn { params, ret, .. } => {
+                for p in params {
+                    self.walk_regions(p, out);
+                }
+                self.walk_regions(ret, out);
+            }
+            _ => {}
         }
     }
 
@@ -558,12 +651,26 @@ impl<'a> Lowerer<'a> {
                     name:   name.clone(),
                     bounds: self.bounds(bounds),
                 },
-                TIRGeneric::Life { name, .. } => TTIRGeneric::Life {
+                TIRGeneric::Life { name, bounds } => TTIRGeneric::Life {
                     name:   name.clone(),
-                    region: 0,
-                    // A lifetime outlives regions, and regions are another
-                    // pass's -- so there is nothing here to hold it to yet.
-                    bounds: Vec::new(),
+                    region: self.lifetimes.get(name).copied().unwrap_or(0),
+                    // "Regions only -- a lifetime implements nothing": a `'a: T`
+                    // is written the same way and is dropped here rather than
+                    // refused, the rule about it being section 3's and not this
+                    // list's shape.
+                    bounds: bounds
+                        .iter()
+                        .filter_map(|b| match b {
+                            TIRBound::Life(name) => Some(name.clone()),
+                            TIRBound::Trait(_) => None,
+                        })
+                        .collect::<Vec<String>>()
+                        .into_iter()
+                        .map(|name| {
+                            let at = self.here;
+                            self.life(&name, at)
+                        })
+                        .collect(),
                 },
             })
             .collect();
@@ -583,13 +690,67 @@ impl<'a> Lowerer<'a> {
         made
     }
 
+    // A region of its own. Numbered from 1: a reference outside a signature
+    // gets region 0, how long it is good for being nobody's question yet.
+    // The region a written `'a` names. There is no such thing as a lifetime
+    // that names no region: one nothing declares is refused where it stands,
+    // and a fresh region stands in its place so that one mistake is one message.
+    fn life(&mut self, name: &str, at: Span) -> RegionId {
+        if let Some(held) = self.lifetimes.get(name).copied() {
+            return held;
+        }
+        self.errors.push(
+            Diagnostic::error(format!("no lifetime is called `'{}`", name), at)
+                .with_label("nothing declares it")
+                .with_help("a lifetime is declared among the parameters, `<'a>`"),
+        );
+        // Fresh even outside a signature, where `region` hands out 0: two
+        // undeclared lifetimes are not thereby one.
+        self.regions += 1;
+        self.regions
+    }
+
+    fn region(&mut self) -> RegionId {
+        if !self.in_sig {
+            return 0;
+        }
+        self.regions += 1;
+        self.regions
+    }
+
+    // The regions a declaration begins with: one for each lifetime it declared,
+    // so a `'a` written in two places is one region twice.
+    fn open_regions(&mut self, generics: &[TIRGeneric]) {
+        self.regions = 0;
+        self.lifetimes.clear();
+        self.in_sig = true;
+        for g in generics {
+            if let TIRGeneric::Life { name, .. } = g {
+                let held = self.region();
+                self.lifetimes.insert(name.clone(), held);
+            }
+        }
+    }
+
+    // The signature is behind us. A `'a` written in the body still names the
+    // region the declaration declared -- the numbering `open_regions` hands out
+    // is by order of declaration, so it is the same region both times -- but a
+    // reference written with no lifetime of its own gets region 0 from here on.
+    fn close_regions(&mut self) {
+        self.in_sig = false;
+    }
+
     // What stands on the right of a bound's colon, resolved. A trait is the
     // type it names; a lifetime is a region, and regions are another pass's.
     fn bounds(&mut self, held: &[TIRBound]) -> Vec<TTIRBound> {
         held.iter()
             .map(|bound| match bound {
                 TIRBound::Trait(ty) => TTIRBound::Trait(self.ty(*ty)),
-                TIRBound::Life(_) => TTIRBound::Life(0),
+                TIRBound::Life(name) => {
+                    let name = name.clone();
+                    let at = self.here;
+                    TTIRBound::Life(self.life(&name, at))
+                }
             })
             .collect()
     }
@@ -609,7 +770,11 @@ impl<'a> Lowerer<'a> {
             .map(|pred| {
                 let subject = match &pred.subject {
                     TIRBound::Trait(ty) => TTIRSubject::Type(self.ty(*ty)),
-                    TIRBound::Life(_) => TTIRSubject::Region(0),
+                    TIRBound::Life(name) => {
+                        let name = name.clone();
+                        let at = self.here;
+                        TTIRSubject::Region(self.life(&name, at))
+                    }
                 };
                 TTIRWherePred { subject, bounds: self.bounds(&pred.bounds) }
             })
@@ -664,9 +829,16 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .filter_map(|a| match a {
                         crate::tir::tir_nodes::TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
-                        // A lifetime argument names a region, and regions are
-                        // another pass's.
-                        crate::tir::tir_nodes::TIRGenericArg::Life(_) => None,
+                        // A lifetime argument names a region, and `Ty::Named`
+                        // holds types. So it is checked and then dropped: an
+                        // undeclared one is still a mistake and still said
+                        // once, and what a `Foo<'a>` promises about its
+                        // insides is nothing this pass compares.
+                        crate::tir::tir_nodes::TIRGenericArg::Life(name) => {
+                            let name = name.clone();
+                            self.life(&name, at);
+                            None
+                        }
                     })
                     .collect();
                 match self.names.get(&path.join("::")).copied() {
@@ -688,11 +860,16 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Region 0 for every one: how long a reference is good for is a
-            // pass of its own, and `types::unify` leaves them alone.
-            TIRTypeKind::Ref { op, inner, .. } => {
+            // "Every reference in a signature with no lifetime of its own gets
+            // one" -- so one is made where none was written, and a written one
+            // names the region its declaration declared.
+            TIRTypeKind::Ref { op, life, inner } => {
+                let life = match life {
+                    Some(name) => self.life(&name, at),
+                    None => self.region(),
+                };
                 let inner = self.ty(inner);
-                self.types.intern(Ty::Ref { op, life: 0, inner })
+                self.types.intern(Ty::Ref { op, life, inner })
             }
             TIRTypeKind::Ptr(inner) => {
                 let inner = self.ty(inner);
@@ -758,7 +935,10 @@ impl<'a> Lowerer<'a> {
                 TIRItemKind::Fn(f) => {
                     let Some(made) = self.made[id] else { continue };
                     let Some(value) = f.body else { continue };
+                    self.here = self.span(id);
                     self.params = names_of(&f.generics);
+                    self.open_regions(&f.generics);
+                    self.close_regions();
                     let body = self.body(made, &f, value);
                     let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
                         continue;
@@ -766,7 +946,9 @@ impl<'a> Lowerer<'a> {
                     held.body = Some(body);
                     self.params.clear();
                 }
-                TIRItemKind::Impl { ty, for_ty, members, .. } => {
+                TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
+                    self.open_regions(&generics);
+                    self.close_regions();
                     let subject = match for_ty {
                         Some(for_ty) => self.ty(for_ty),
                         None => self.ty(ty),
@@ -808,7 +990,7 @@ impl<'a> Lowerer<'a> {
                 TIRBinding::SelfRecv(_) => TIRBinding::Name("self".to_string()),
                 _ => p.name.clone(),
             };
-            let slot = self.bind(held, ty, crate::tir::tir_nodes::TIRIntro::Let);
+            let slot = self.bind(held, ty, crate::tir::tir_nodes::TIRIntro::Let, self.here);
             params.push(TTIRParam { name: p.name.clone(), slot: Some(slot) });
         }
         let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
@@ -845,14 +1027,19 @@ impl<'a> Lowerer<'a> {
         self.out.bodies.len() - 1
     }
 
+    // `where` is where the name was bound. A slot is not an expression and had
+    // none until the checker wanted one: "the value was moved here, and it was
+    // bound there" is two places, and only one of them is a line anybody wrote
+    // an expression on.
     fn bind(
         &mut self,
         name: TIRBinding,
         ty: TyId,
         intro: crate::tir::tir_nodes::TIRIntro,
+        where_: Span,
     ) -> TTIRLocalId {
         let at = self.frames.len() - 1;
-        self.into_frame(at, name, ty, intro)
+        self.into_frame(at, name, ty, intro, where_)
     }
 
     fn into_frame(
@@ -861,9 +1048,16 @@ impl<'a> Lowerer<'a> {
         name: TIRBinding,
         ty: TyId,
         intro: crate::tir::tir_nodes::TIRIntro,
+        where_: Span,
     ) -> TTIRLocalId {
         let frame = &mut self.frames[at];
-        frame.locals.push(TTIRLocal { name: name.clone(), ty, intro, line: 1, col: 1 });
+        frame.locals.push(TTIRLocal {
+            name: name.clone(),
+            ty,
+            intro,
+            line: where_.line,
+            col: where_.col,
+        });
         let slot = frame.locals.len() - 1;
         if let TIRBinding::Name(name) = name {
             if let Some(scope) = frame.scopes.last_mut() {
@@ -876,7 +1070,7 @@ impl<'a> Lowerer<'a> {
     // The slot a name stands for, seen from the innermost body. A name of a
     // frame further out is captured on the way in -- once per frame it has to
     // cross, so a closure inside a closure takes it from the one that took it.
-    fn slot(&mut self, name: &str) -> Option<TTIRLocalId> {
+    fn slot(&mut self, name: &str, used: Span) -> Option<TTIRLocalId> {
         let depth = self.frames.len();
         for at in (0..depth).rev() {
             let found = self.frames[at]
@@ -886,7 +1080,7 @@ impl<'a> Lowerer<'a> {
                 .find_map(|scope| scope.get(name).copied());
             let Some(mut held) = found else { continue };
             for inner in at + 1..depth {
-                held = self.catch(inner, held, name);
+                held = self.catch(inner, held, name, used);
             }
             return Some(held);
         }
@@ -897,20 +1091,29 @@ impl<'a> Lowerer<'a> {
     // body uses but did not declare is captured, and how is worked out per
     // name, each taking the least the body asks of it" -- so it starts at a
     // `&` and is sharpened to a `*` where the body assigns to it.
-    fn catch(&mut self, at: usize, outer: TTIRLocalId, name: &str) -> TTIRLocalId {
+    fn catch(
+        &mut self,
+        at: usize,
+        outer: TTIRLocalId,
+        name: &str,
+        used: Span,
+    ) -> TTIRLocalId {
         if let Some(&held) = self.frames[at].caught.get(&outer) {
             return self.frames[at].captures[held].slot;
         }
         let held = &self.frames[at - 1].locals[outer];
         let (ty, intro) = (held.ty, held.intro);
-        let slot = self.into_frame(at, TIRBinding::Name(name.to_string()), ty, intro);
+        let where_ = Span::at(held.line, held.col);
+        let slot = self.into_frame(at, TIRBinding::Name(name.to_string()), ty, intro, where_);
         let mode = if self.frames[at].is_move {
             TTIRCaptureMode::Value
         } else {
             TTIRCaptureMode::Ref(TIRRefOp::Imm)
         };
         let frame = &mut self.frames[at];
-        frame.captures.push(TTIRCapture { outer, slot, mode, line: 1, col: 1 });
+        // Where the body first named it, which is the line a refusal about
+        // the borrow it takes has to point at.
+        frame.captures.push(TTIRCapture { outer, slot, mode, line: used.line, col: used.col });
         let held = frame.captures.len() - 1;
         frame.caught.insert(outer, held);
         slot
@@ -1320,7 +1523,7 @@ impl<'a> Lowerer<'a> {
             // `self` is the receiver's slot, and the receiver is a parameter
             // like any other -- "a receiver comes first and comes only in a
             // method" is the checker's, and this is where it is taken as read.
-            TIRExprKind::SelfExpr => match self.slot("self") {
+            TIRExprKind::SelfExpr => match self.slot("self", self.at(id)) {
                 Some(slot) => {
                     let ty = self.locals()[slot].ty;
                     self.make(TTIRExprKind::Local(slot), ty, id)
@@ -1373,7 +1576,14 @@ impl<'a> Lowerer<'a> {
                         // answer for" -- a hole, until something fills it.
                         (None, None) => self.types.fresh(),
                     };
-                    let local = self.bind(name.clone(), ty, *intro);
+                    let where_ = match init {
+                        Some(init) => Span::at(
+                            self.out.exprs[init].line,
+                            self.out.exprs[init].col,
+                        ),
+                        None => self.here,
+                    };
+                    let local = self.bind(name.clone(), ty, *intro, where_);
                     made.push(TTIRStmt::Let { is_unsafe: *is_unsafe, local, init });
                 }
                 TIRStmt::Expr { is_unsafe, expr } => {
@@ -1805,6 +2015,7 @@ impl<'a> Lowerer<'a> {
                                     TIRBinding::Name(field.name.clone()),
                                     want,
                                     crate::tir::tir_nodes::TIRIntro::Let,
+                                    self.pat_at(id),
                                 );
                                 self.make_pat(TTIRPatKind::Bind(slot), want, id)
                             }
@@ -1876,6 +2087,7 @@ impl<'a> Lowerer<'a> {
                                 TIRBinding::Name(field.name.clone()),
                                 want,
                                 crate::tir::tir_nodes::TIRIntro::Let,
+                                self.pat_at(id),
                             );
                             self.make_pat(TTIRPatKind::Bind(slot), want, id)
                         }
@@ -1901,6 +2113,7 @@ impl<'a> Lowerer<'a> {
             TIRBinding::Name(path[0].clone()),
             want,
             crate::tir::tir_nodes::TIRIntro::Let,
+            self.pat_at(id),
         );
         self.make_pat(TTIRPatKind::Bind(slot), want, id)
     }
@@ -1990,7 +2203,7 @@ impl<'a> Lowerer<'a> {
                 None => self.types.fresh(),
             };
             arg_tys.push(ty);
-            self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let);
+            self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let, self.at(at));
         }
 
         let value = self.expr(body);
@@ -2255,7 +2468,8 @@ impl<'a> Lowerer<'a> {
 
         // The loop variable stands in the body and nowhere else.
         self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
-        let local = self.bind(name.clone(), elem, crate::tir::tir_nodes::TIRIntro::Let);
+        let local =
+            self.bind(name.clone(), elem, crate::tir::tir_nodes::TIRIntro::Let, self.at(at));
         self.breaks.push(Vec::new());
         let b = self.expr(body);
         let ty = self.loop_value(at);
@@ -2346,7 +2560,7 @@ impl<'a> Lowerer<'a> {
     // enum, or a declaration.
     fn named(&mut self, path: &[String], id: TIRExprId) -> TTIRExprId {
         if path.len() == 1 {
-            if let Some(slot) = self.slot(&path[0]) {
+            if let Some(slot) = self.slot(&path[0], self.at(id)) {
                 let ty = self.locals()[slot].ty;
                 return self.make(TTIRExprKind::Local(slot), ty, id);
             }

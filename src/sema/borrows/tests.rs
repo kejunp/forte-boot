@@ -81,7 +81,7 @@ impl Suite {
             symbol: String::new(), generics: Vec::new(), wheres: Vec::new(),
             ty,
             params: vec![TTIRParam { name: TIRBinding::SelfRecv(mode), slot: None }],
-            ret: Self::NULL, body: None,
+            ret: Self::NULL, outlives: Vec::new(), body: None,
         }))
     }
 
@@ -181,7 +181,8 @@ impl Suite {
             },
             is_const: false, is_unsafe: false, name: "go".to_string(),
             symbol: String::new(), generics: Vec::new(), wheres: Vec::new(),
-            ty, params: Vec::new(), ret: Self::NULL, body: Some(body),
+            ty, params: Vec::new(), ret: Self::NULL, outlives: Vec::new(),
+            body: Some(body),
         }));
         self.p.modules = vec![TTIRModule { path: Vec::new(), roots: vec![id] }];
         id

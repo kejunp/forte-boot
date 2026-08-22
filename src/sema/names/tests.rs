@@ -53,6 +53,7 @@ impl Suite {
             ty,
             params:    Vec::new(),
             ret,
+            outlives:  Vec::new(),
             body:      None,
         }))
     }
