@@ -1619,3 +1619,99 @@ fn two_named_types_agree_whatever_regions_they_stand_in() {
          \x20   if c {\n        x\n    } else {\n        x\n    }\n}\n",
     );
 }
+
+// ---- Bounds on regions -----------------------------------------------------
+
+// `'a: 'b` says the first is good for at least as long as the second. It is
+// nothing a declaration can be refused for -- it is what a caller is held to --
+// so it is held to where §3 says every region refusal lands: at the call.
+#[test]
+fn a_lifetime_bound_is_held_to_at_the_call() {
+    let with = "fn holds<'a, 'b>(x: &'a i32, y: &'b i32): i32 where 'a: 'b {\n    1\n}\n";
+    // `x` came from outside and `y` from a local, so `'a` outlives `'b`.
+    clean(&format!("{}fn f(p: &i32) {{\n    let n = 1;\n    holds(p, &n);\n}}\n", with));
+    // The other way round, and it does not.
+    let out = refused(&format!(
+        "{}fn f(p: &i32) {{\n    let n = 1;\n    holds(&n, p);\n}}\n",
+        with
+    ));
+    assert!(out.contains("`'a` does not outlive `'b`"), "{}", out);
+    assert!(out.contains("this call is where it has to"), "{}", out);
+    assert!(out.contains("the signature says `'a` outlives `'b`"), "{}", out);
+}
+
+// Written among the parameters instead of in a `where`, which says the same
+// thing: "`fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing".
+#[test]
+fn a_bound_written_inline_says_what_a_where_says() {
+    let out = refused(
+        "fn holds<'a: 'b, 'b>(x: &'a i32, y: &'b i32): i32 {\n    1\n}\n\
+         fn f(p: &i32) {\n    let n = 1;\n    holds(&n, p);\n}\n",
+    );
+    assert!(out.contains("`'a` does not outlive `'b`"), "{}", out);
+}
+
+// `T: 'a` is the same promise about a type: what T was handed has to be good
+// for at least as long as what `'a` was.
+#[test]
+fn a_type_held_to_a_region_is_held_to_it_at_the_call() {
+    let with = "fn holds<'a, T: 'a>(x: &'a i32, t: T): i32 {\n    1\n}\n";
+    clean(&format!("{}fn f(p: &i32) {{\n    let n = 1;\n    holds(&n, p);\n}}\n", with));
+    let out = refused(&format!(
+        "{}fn f(p: &i32) {{\n    let n = 1;\n    holds(p, &n);\n}}\n",
+        with
+    ));
+    assert!(out.contains("`T` does not outlive `'a`"), "{}", out);
+}
+
+// A method's receiver stands where parameter 0 does, and `&'a self` is the one
+// borrow nobody writes -- so `'a` is how long the receiver itself is good for
+// and not what it points into.
+#[test]
+fn a_receivers_region_is_the_receivers_own_life() {
+    let with = "struct S {\n    pub x: i32,\n}\n\
+                impl S {\n    pub fn m<'a, 'b>(&'a self, y: &'b i32): i32 where 'a: 'b {\n\
+                \x20       1\n    }\n}\n";
+    // The receiver outlives the argument, which is what the bound asks.
+    clean(&format!(
+        "{}fn f(s: &S) {{\n    let n = 1;\n    s.m(&n);\n}}\n",
+        with
+    ));
+    // And here it does not: `s` is a block further in than `n` is.
+    let out = refused(&format!(
+        "{}fn f(): i32 {{\n    let n = 1;\n    {{\n        let s = S {{ x: 1 }};\n\
+         \x20       s.m(&n)\n    }}\n}}\n",
+        with
+    ));
+    assert!(out.contains("`'a` does not outlive `'b`"), "{}", out);
+    assert!(out.contains("`'a` was handed this"), "{}", out);
+    assert!(out.contains("`'b` was handed this, which lasts longer"), "{}", out);
+}
+
+// A lifetime takes no type argument at a call: what it stands for is a region,
+// and regions are not what unification works out. So `<'a, T>` wants one
+// argument and not two, and no hole is made that nothing could ever fill.
+#[test]
+fn a_lifetime_takes_no_type_argument() {
+    // Written, and one is the right number.
+    clean("fn holds<'a, T>(x: &'a i32, t: T): i32 {\n    1\n}\n\
+           fn f(p: &i32) {\n    holds<i32>(p, 1);\n}\n");
+    // And left out, which is where a hole for `'a` would have been left open.
+    clean("fn holds<'a, T>(x: &'a i32, t: T): i32 {\n    1\n}\n\
+           fn f(p: &i32) {\n    holds(p, 1);\n}\n");
+    // Two written where one is wanted is still the wrong number.
+    let out = refused("fn holds<'a, T>(x: &'a i32, t: T): i32 {\n    1\n}\n\
+                       fn f(p: &i32) {\n    holds<i32, i32>(p, 1);\n}\n");
+    assert!(out.contains("takes 1 type arguments and was given 2"), "{}", out);
+}
+
+// A `where` about a type that was built rather than declared: the subject is
+// whatever it holds, and what it holds is what has to last.
+#[test]
+fn a_where_about_a_built_type_is_held_to_as_well() {
+    clean(
+        "struct Box<T> {\n    pub it: T,\n}\n\
+         fn built<'a, T>(x: &'a i32, b: Box<T>): i32 where Box<T>: 'a {\n    1\n}\n\
+         fn f(p: &i32, b: Box<i32>) {\n    built(p, b);\n}\n",
+    );
+}

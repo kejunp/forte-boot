@@ -1825,11 +1825,14 @@ answer is not obvious from the rules alone.
     two.
   - A lifetime is written "'a", the elision rule never fails, and writing one
     "is only ever a sharpening" (section 3). Settled, and the checker holds a
-    caller to every parameter the callee's result is tied to. A receiver takes
-    one where any other reference does — <receiver> is "self" or a <ref_op>
-    and a <lifetime_opt> in front of the word — so "the method that wants it
-    says so" is a thing that can be said. What is left open is the other
-    direction: nothing says whether a lifetime declared among the type
+    caller to every parameter the callee's result is tied to, and to every
+    "'a: 'b" and "T: 'a" the signature was written with. A receiver takes one
+    where any other reference does — <receiver> is "self" or a <ref_op> and a
+    <lifetime_opt> in front of the word — so "the method that wants it says
+    so" is a thing that can be said. A lifetime takes no type argument at a
+    call: "<'a, T>" wants one and not two, a region being worked out by the
+    pass that compares regions and not by unification. What is left open is
+    the other direction: nothing says whether a lifetime declared among the type
     parameters but named nowhere in the signature should be warned about, the
     way an unused type parameter would be.
   - An array of references is "(&i32)[8]", a <grouped_type> being what says

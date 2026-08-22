@@ -20,7 +20,9 @@
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
-// Regions are checked too, and the shape they take here is worth saying:
+// Regions are checked too, and so are the bounds on them -- a `'a: 'b` and a
+// `T: 'a` are promises a *caller* keeps, so they are held to at the call. The
+// shape all of it takes here is worth saying:
 //
 //     What the rule costs is precision, and it spends it at the call rather
 //     than at the declaration ... the program that cannot be proved is turned
@@ -48,11 +50,11 @@
 //     one of its parameters instead, which is the elision rule's own answer
 //     and never wrong. A declaration that takes a lifetime does not go this
 //     way: `Held<'a>` carries its region and is compared like any other.
-//   - Hold anything to a `'a: 'b` or a `T: 'a`. Both are resolved to the
-//     regions they name and both are on the tree, and nothing reads them:
-//     what they constrain is the caller's regions against the callee's, and
-//     what `tied` does instead is the elision rule's answer for the whole
-//     signature at once.
+//   - Tell two regions of one parameter apart. What a callee's region stands
+//     for on this side is worked out per parameter, so a `(&'a i32, &'b i32)`
+//     handed in one argument gives `'a` and `'b` the same answer. Sound and
+//     blunt; sharpening it means walking the argument's type beside the
+//     parameter's rather than taking the argument whole.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
@@ -74,7 +76,7 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
-    RegionId, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
+    RegionId, TTIRBound, TTIRSubject, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
     TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, Ty,
     TyId,
 };
@@ -679,6 +681,238 @@ impl<'a> Checker<'a> {
         )
     }
 
+    // ---- Bounds at the call ----------------------------------------------
+    //
+    //     Too conservative a signature is turned down at the call and not at
+    //     the declaration.                                (docs/prose.txt, §3)
+    //
+    // A `'a: 'b` and a `T: 'a` say nothing a declaration can be refused for --
+    // they are what a *caller* is held to. So they are checked here, and what
+    // they are checked against is a region substitution: what each of the
+    // callee's regions stands for on this side, worked out from what was handed
+    // to the parameters it appears in.
+    //
+    // A caller-side lifetime is a depth, the same ordering everything else in
+    // this pass uses, and 0 means "came from outside and outlives the body".
+
+    // What one callee region or type parameter was handed: how long the value
+    // is good for, and the slot that made it so, for the message.
+    fn supplied(
+        &self,
+        declared: TyId,
+        held: (usize, Option<TTIRLocalId>),
+        regions: &mut HashMap<RegionId, (usize, Option<TTIRLocalId>)>,
+        params: &mut HashMap<usize, (usize, Option<TTIRLocalId>)>,
+    ) {
+        // The shortest life wins: a region standing in two places is good for
+        // no longer than the shorter of them.
+        let keep = |at: &mut HashMap<_, (usize, Option<TTIRLocalId>)>, key| {
+            let entry = at.entry(key).or_insert(held);
+            if held.0 > entry.0 {
+                *entry = held;
+            }
+        };
+        match &self.p.types[declared] {
+            Ty::Ref { life, inner, .. } => {
+                if *life != 0 {
+                    keep(regions, *life);
+                }
+                self.supplied(*inner, held, regions, params);
+            }
+            Ty::Named { args, regions: rs, .. } => {
+                for &r in rs {
+                    if r != 0 {
+                        keep(regions, r);
+                    }
+                }
+                for &a in args {
+                    self.supplied(a, held, regions, params);
+                }
+            }
+            Ty::Param { index, .. } => keep(params, *index),
+            Ty::Tuple(members) => {
+                for &m in members {
+                    self.supplied(m, held, regions, params);
+                }
+            }
+            Ty::Array { elem, .. } | Ty::Run(elem) => {
+                self.supplied(*elem, held, regions, params)
+            }
+            Ty::Ptr(inner) | Ty::GC(inner) => self.supplied(*inner, held, regions, params),
+            Ty::Fn { params: ps, ret, .. } => {
+                let (ps, ret) = (ps.clone(), *ret);
+                for p in ps {
+                    self.supplied(p, held, regions, params);
+                }
+                self.supplied(ret, held, regions, params);
+            }
+            _ => {}
+        }
+    }
+
+    // How long an argument's value is good for, and the slot that says so.
+    fn handed(&self, arg: TTIRExprId) -> (usize, Option<TTIRLocalId>) {
+        let mut worst = (0, None);
+        for (root, _) in self.roots(arg) {
+            let lives = self.lives(root);
+            if lives >= worst.0 {
+                worst = (lives, Some(root));
+            }
+        }
+        worst
+    }
+
+    // The same, for a receiver a method borrows rather than takes. `&'a self`
+    // is the one borrow nobody writes, so the region stands for how long the
+    // receiver itself is good for and not for what it points into.
+    fn handed_borrowed(&self, recv: TTIRExprId) -> (usize, Option<TTIRLocalId>) {
+        match self.place(recv) {
+            Some(place) => (self.lives(place.root), Some(place.root)),
+            // A receiver with no place of its own is a value the compiler gave
+            // one, and one it gave lasts as long as the call.
+            None => self.handed(recv),
+        }
+    }
+
+    // Every bound a signature was written with, held against what this call
+    // handed it. `given` is the arguments in declaration order, the receiver
+    // standing where parameter 0 does.
+    fn bounds_at_call(
+        &mut self,
+        item: TTIRItemId,
+        given: &[(usize, Option<TTIRLocalId>)],
+        at: Span,
+    ) {
+        let TTIRItemKind::Fn(f) = &self.p.items[item].kind else { return };
+        let (generics, wheres) = (f.generics.clone(), f.wheres.clone());
+        if generics.iter().all(|g| bounds_none(g)) && wheres.is_empty() {
+            return;
+        }
+        let Ty::Fn { params: declared, .. } = &self.p.types[f.ty] else { return };
+        let declared = declared.clone();
+
+        let mut regions = HashMap::new();
+        let mut params = HashMap::new();
+        for (i, &held) in given.iter().enumerate() {
+            let Some(&want) = declared.get(i) else { continue };
+            self.supplied(want, held, &mut regions, &mut params);
+        }
+
+        // A region nothing was handed is one the caller may pick freely, and
+        // the freest pick is the longest life. So: outlives everything.
+        let of_region = |r: RegionId| regions.get(&r).copied().unwrap_or((0, None));
+
+        let mut asked: Vec<(String, (usize, Option<TTIRLocalId>), RegionId)> = Vec::new();
+        // A `Ty::Param` counts in the type parameters alone, so the position
+        // among them is what a `T: 'a` is looked up by and not the position in
+        // the list as written.
+        let mut i = 0;
+        for g in generics.iter() {
+            match g {
+                // `'a: 'b`, written among the parameters.
+                TTIRGeneric::Life { name, region, bounds } => {
+                    for &shorter in bounds {
+                        asked.push((format!("`'{}`", name), of_region(*region), shorter));
+                    }
+                }
+                // `T: 'a`. What T was handed is what has to outlive the region.
+                TTIRGeneric::Type { name, bounds } => {
+                    for bound in bounds {
+                        if let TTIRBound::Life(shorter) = bound {
+                            let held = params.get(&i).copied().unwrap_or((0, None));
+                            asked.push((format!("`{}`", name), held, *shorter));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+        for pred in &wheres {
+            // A predicate about a parameter was folded into that parameter's
+            // bounds; what is left is a region or a type that was built.
+            let held = match &pred.subject {
+                TTIRSubject::Region(r) => {
+                    (format!("`'{}`", self.life_name(&generics, *r)), of_region(*r))
+                }
+                TTIRSubject::Type(ty) => {
+                    let mut regions_in = HashMap::new();
+                    let mut params_in = HashMap::new();
+                    self.supplied(*ty, (0, None), &mut regions_in, &mut params_in);
+                    let worst = regions_in
+                        .keys()
+                        .map(|r| of_region(*r))
+                        .chain(params_in.keys().map(|i| params.get(i).copied().unwrap_or((0, None))))
+                        .max_by_key(|(lives, _)| *lives)
+                        .unwrap_or((0, None));
+                    (self.spell_subject(*ty), worst)
+                }
+            };
+            for bound in &pred.bounds {
+                if let TTIRBound::Life(shorter) = bound {
+                    asked.push((held.0.clone(), held.1, *shorter));
+                }
+            }
+        }
+
+        for (what, (lives, blame), shorter) in asked {
+            let (wanted, against) = of_region(shorter);
+            // Longer-lived is a smaller depth. A bound that holds is one where
+            // what was handed to the left outlives what was handed to the right.
+            if lives <= wanted {
+                continue;
+            }
+            let named = format!("`'{}`", self.life_name(&generics, shorter));
+            let mut said = Diagnostic::error(
+                format!("{} does not outlive {}", what, named),
+                at,
+            )
+            .with_label("this call is where it has to");
+            if let Some(blame) = blame {
+                let local = &self.p.bodies[self.body].locals[blame];
+                said = said.with_secondary(
+                    Span::at(local.line, local.col),
+                    format!("{} was handed this", what),
+                );
+            }
+            if let Some(against) = against {
+                let local = &self.p.bodies[self.body].locals[against];
+                said = said.with_secondary(
+                    Span::at(local.line, local.col),
+                    format!("{} was handed this, which lasts longer", named),
+                );
+            }
+            self.say(
+                said.with_note(format!(
+                    "the signature says {} outlives {}",
+                    what, named
+                ))
+                .with_help("a bound is a promise the caller keeps, so what is handed in has to keep it"),
+            );
+        }
+    }
+
+    // What a region is called in the declaration that declared it.
+    fn life_name(&self, generics: &[TTIRGeneric], region: RegionId) -> String {
+        for g in generics {
+            if let TTIRGeneric::Life { name, region: held, .. } = g {
+                if *held == region {
+                    return name.clone();
+                }
+            }
+        }
+        // A region with no name is one the rule made, and the rule makes one
+        // per reference -- so this is a reference the reader did not name.
+        "_".to_string()
+    }
+
+    fn spell_subject(&self, ty: TyId) -> String {
+        match &self.p.types[ty] {
+            Ty::Named { item, .. } => format!("`{}`", name_of(*item, self.p)),
+            Ty::Param { name, .. } => format!("`{}`", name),
+            _ => "what this `where` is about".to_string(),
+        }
+    }
+
     // The item a callee expression names, where it names one. A call through a
     // closure or a fn held in a variable names none, and then nothing is known
     // about what its result is tied to.
@@ -1065,7 +1299,13 @@ impl<'a> Checker<'a> {
                 if self.expr(callee, Use::Read).left() {
                     return Flow::Left;
                 }
-                self.handing(&args)
+                let flow = self.handing(&args);
+                // After the arguments, so that what each was handed is known.
+                if let Some(item) = self.callee(callee) {
+                    let given: Vec<_> = args.iter().map(|&a| self.handed(a)).collect();
+                    self.bounds_at_call(item, &given, Span::at(line, col));
+                }
+                flow
             }
 
             // A method holds a borrow of its receiver for the length of the
@@ -1074,7 +1314,18 @@ impl<'a> Checker<'a> {
             // that value while the method runs" (§3).
             TTIRExprKind::Method { recv, item, args } => {
                 let mode = self.receiver(item);
-                match mode {
+                // The receiver stands where parameter 0 does, so the two go
+                // into one list before anything is asked of them -- and it is
+                // borrowed rather than handed over, which is a different
+                // question about how long it is good for.
+                let first = match mode {
+                    Some(TIRSelf::Ref) | Some(TIRSelf::Mut) => self.handed_borrowed(recv),
+                    _ => self.handed(recv),
+                };
+                let given: Vec<_> = std::iter::once(first)
+                    .chain(args.iter().map(|&a| self.handed(a)))
+                    .collect();
+                let flow = match mode {
                     Some(TIRSelf::Value) => {
                         if self.expr(recv, Use::Pass).left() {
                             return Flow::Left;
@@ -1103,7 +1354,9 @@ impl<'a> Checker<'a> {
                         }
                         self.handing(&args)
                     }
-                }
+                };
+                self.bounds_at_call(item, &given, Span::at(line, col));
+                flow
             }
 
             // "a field of a literal being built" (§2).
@@ -1251,6 +1504,17 @@ impl<'a> Checker<'a> {
             self.moving(arg);
         }
         Flow::Normal
+    }
+}
+
+// A parameter holding no region bound: `T: Show` is a trait's business and
+// `<T>` on its own is nobody's, and neither is a promise a caller keeps.
+fn bounds_none(g: &TTIRGeneric) -> bool {
+    match g {
+        TTIRGeneric::Life { bounds, .. } => bounds.is_empty(),
+        TTIRGeneric::Type { bounds, .. } => {
+            !bounds.iter().any(|b| matches!(b, TTIRBound::Life(_)))
+        }
     }
 }
 

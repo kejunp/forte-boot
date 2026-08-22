@@ -371,7 +371,7 @@ impl<'a> Lowerer<'a> {
             self.here = self.span(id);
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
-                    self.params = names_of(&f.generics);
+                    self.params = type_names_of(&f.generics);
                     self.open_regions(&f.generics);
                     let generics = self.generics(&f.generics, &f.wheres);
                     let made_wheres = self.wheres(&f.wheres, &f.generics);
@@ -434,7 +434,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 TIRItemKind::Struct { name: _, generics, fields, .. } => {
-                    self.params = names_of(&generics);
+                    self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let made_fields: Vec<TTIRFieldDecl> = fields
@@ -457,7 +457,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 TIRItemKind::Enum { generics, variants, .. } => {
-                    self.params = names_of(&generics);
+                    self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let made_variants: Vec<TTIRVariant> = variants
@@ -497,7 +497,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 TIRItemKind::TypeAlias { generics, ty, .. } => {
-                    self.params = names_of(&generics);
+                    self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
                     let named = self.ty(ty);
@@ -553,7 +553,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 TIRItemKind::Impl { generics, wheres, ty, for_ty, members, .. } => {
-                    self.params = names_of(&generics);
+                    self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &wheres);
                     let made_wheres = self.wheres(&wheres, &generics);
@@ -978,6 +978,19 @@ fn names_of(generics: &[TIRGeneric]) -> Vec<String> {
         .collect()
 }
 
+// The type parameters alone, which is the index space a `Ty::Param` counts in.
+// A lifetime is not a type: it takes no slot among them and gets no hole at a
+// call, since nothing a call could work out would ever fill one.
+fn type_names_of(generics: &[TIRGeneric]) -> Vec<String> {
+    generics
+        .iter()
+        .filter_map(|g| match g {
+            TIRGeneric::Type { name, .. } => Some(name.clone()),
+            TIRGeneric::Life { .. } => None,
+        })
+        .collect()
+}
+
 // ---- 3. Bodies ------------------------------------------------------------
 
 impl<'a> Lowerer<'a> {
@@ -988,7 +1001,7 @@ impl<'a> Lowerer<'a> {
                     let Some(made) = self.made[id] else { continue };
                     let Some(value) = f.body else { continue };
                     self.here = self.span(id);
-                    self.params = names_of(&f.generics);
+                    self.params = type_names_of(&f.generics);
                     self.open_regions(&f.generics);
                     self.close_regions();
                     let body = self.body(made, &f, value);
@@ -2708,7 +2721,10 @@ impl<'a> Lowerer<'a> {
         }
         let TTIRExprKind::Item(item) = self.out.exprs[callee].kind else { return held };
         let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return held };
-        let wanted = f.generics.len();
+        // One per type parameter. A lifetime takes no argument here: what it
+        // stands for is a region, and regions are worked out by the pass that
+        // compares them and not by unification.
+        let wanted = f.generics.iter().filter(|g| matches!(g, TTIRGeneric::Type { .. })).count();
         if wanted == 0 {
             if let Some(written) = written {
                 if !written.is_empty() {
@@ -2751,9 +2767,9 @@ impl<'a> Lowerer<'a> {
         let bounds: Vec<(String, Vec<TTIRBound>)> = f
             .generics
             .iter()
-            .map(|g| match g {
-                TTIRGeneric::Type { name, bounds } => (name.clone(), bounds.clone()),
-                TTIRGeneric::Life { name, .. } => (name.clone(), Vec::new()),
+            .filter_map(|g| match g {
+                TTIRGeneric::Type { name, bounds } => Some((name.clone(), bounds.clone())),
+                TTIRGeneric::Life { .. } => None,
             })
             .collect();
         for (arg, (name, held)) in args.iter().zip(bounds.iter()) {
