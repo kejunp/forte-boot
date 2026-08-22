@@ -170,12 +170,32 @@ fn a_number_on_its_own_is_an_i32() {
     assert_eq!(tys, vec![&Ty::Prim(TIRPrim::I32), &Ty::Prim(TIRPrim::F64)]);
 }
 
-// What this pass cannot do yet says so, once, and gives the expression an
-// `Error` so the rest of the body is still checked.
+// Every expression form is typed now. What is left for the checker is not a
+// form it cannot read but a rule it does not yet hold anyone to -- a bound, a
+// region, an exhaustive `match`.
 #[test]
-fn what_it_cannot_type_yet_says_so() {
-    let out = refused("fn f(): i32 {\n    let n = foo<i32>(1)\n    n\n}\n");
-    assert!(out.contains("`sema` cannot type type arguments at a call yet"), "{}", out);
+fn every_expression_form_is_typed() {
+    let with = "struct Range<T> {\n    pub n: i32,\n}\n\
+                struct Map<K, V> {\n    pub n: i32,\n}\n\
+                struct Set<T> {\n    pub n: i32,\n}\n\
+                struct P {\n    pub x: i32,\n}\n\
+                enum E {\n    A,\n    B(i32),\n}\n\
+                impl P {\n    fn get(&self): i32 { self.x }\n}\n";
+    clean(&format!(
+        "{}fn f(p: P, v: i32[2]): i32 {{\n\
+         \x20   let a = P {{ x: 1 }}\n\
+         \x20   let b = E::B(2)\n\
+         \x20   let c = E::A\n\
+         \x20   let d = {{1: 2}}\n\
+         \x20   let e = {{1, 2}}\n\
+         \x20   let g = 0..3\n\
+         \x20   let h = |x: i32| x\n\
+         \x20   let i = p.get()\n\
+         \x20   for x in v {{ }}\n\
+         \x20   match b {{ E::A => 0, E::B(n) => n }}\n\
+         }}\n",
+        with
+    ));
 }
 
 // ---- Struct literals ------------------------------------------------------
@@ -702,4 +722,98 @@ fn a_while_asks_a_bool() {
 fn a_break_outside_a_loop_is_refused() {
     let out = refused("fn f() {\n    break\n}\n");
     assert!(out.contains("`break` is not in a loop"), "{}", out);
+}
+
+// ---- Paths and variants ---------------------------------------------------
+
+// "`::` reaches into a namespace, a module or a type" -- and what it reaches is
+// a declaration, so the whole path is looked up rather than the base typed as
+// a value. An enum is not one.
+#[test]
+fn a_variant_is_a_value_reached_through_its_enum() {
+    let ttir = clean("enum C {\n    A,\n    B(i32),\n}\nfn f(): C { C::A }\n");
+    let (item, fields) = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::VariantLit { item, fields, .. } => Some((*item, fields.clone())),
+        _ => None,
+    }).expect("a variant");
+    assert!(matches!(ttir.items[item].kind, TTIRItemKind::Enum { .. }));
+    assert!(fields.is_empty(), "`A` carries nothing");
+}
+
+// A variant that carries something is built by handing it that.
+#[test]
+fn a_variant_that_carries_is_built_with_what_it_carries() {
+    let with = "enum C {\n    A,\n    B(i32),\n}\n";
+    let ttir = clean(&format!("{}fn f(): C {{ C::B(2) }}\n", with));
+    let fields = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::VariantLit { fields, .. } if !fields.is_empty() => Some(fields.clone()),
+        _ => None,
+    }).expect("a variant");
+    assert_eq!(fields.len(), 1);
+
+    let out = refused(&format!("{}fn f(): C {{ C::B(\"x\") }}\n", with));
+    assert!(out.contains("value 1 is `str` and it carries `i32`"), "{}", out);
+    let out = refused(&format!("{}fn f(): C {{ C::B(1, 2) }}\n", with));
+    assert!(out.contains("`B` carries 1 and was given 2"), "{}", out);
+    let out = refused(&format!("{}fn f(): C {{ C::Nope }}\n", with));
+    assert!(out.contains("nothing is called `C::Nope`"), "{}", out);
+}
+
+// A namespace is reached the same way.
+#[test]
+fn a_namespace_member_is_reached_through_it() {
+    clean(
+        "namespace limits {\n    pub const MAX: i32 = 255;\n}\n\
+         fn f(): i32 { limits::MAX }\n",
+    );
+}
+
+// ---- Type arguments -------------------------------------------------------
+
+// "what it stands for is settled at the call and not at the declaration": every
+// parameter gets a hole at each use, so one declaration serves every caller.
+#[test]
+fn a_generic_works_out_its_own_parameters() {
+    let ttir = clean(
+        "fn id<T>(x: T): T { x }\n\
+         fn f(): i32 { id(1) }\n\
+         fn g(): str { id(\"a\") }\n",
+    );
+    // Two calls of one declaration, each settled to its own type.
+    let calls: Vec<&Ty> = ttir
+        .exprs
+        .iter()
+        .filter(|e| matches!(e.kind, TTIRExprKind::Call { .. }))
+        .map(|e| &ttir.types[e.ty])
+        .collect();
+    assert_eq!(calls, vec![&Ty::Prim(TIRPrim::I32), &Ty::Prim(TIRPrim::Str)]);
+}
+
+// And where they are written, they are what is put there.
+#[test]
+fn type_arguments_may_be_written_at_the_call() {
+    clean("fn id<T>(x: T): T { x }\nfn f(): i32 { id<i32>(1) }\n");
+
+    // Written, they are held to: `id<str>(1)` is an i32 where a str was asked.
+    let out = refused("fn id<T>(x: T): T { x }\nfn f(): str { id<str>(1) }\n");
+    assert!(out.contains("argument 1 is"), "{}", out);
+    // The wrong number of them. Written with a `let` and not as the body's
+    // tail: a comma at the top level of a `{` is what tells the lexer a
+    // collection literal from a block, and it does not step over a type
+    // argument list to find out -- see the note in `lower.rs`.
+    let out = refused(
+        "fn id<T>(x: T): T { x }\nfn f(): i32 {\n    let n = id<i32, str>(1)\n    n\n}\n",
+    );
+    assert!(out.contains("takes 1 type arguments and was given 2"), "{}", out);
+    // And on something that has none.
+    let out = refused("fn plain(x: i32): i32 { x }\nfn f(): i32 { plain<i32>(1) }\n");
+    assert!(out.contains("takes no type arguments"), "{}", out);
+}
+
+// A parameter that appears twice is one type at each call.
+#[test]
+fn one_parameter_is_one_type_across_a_signature() {
+    clean("fn pair<T>(a: T, b: T): T { a }\nfn f(): i32 { pair(1, 2) }\n");
+    let out = refused("fn pair<T>(a: T, b: T): T { a }\nfn f(): i32 { pair(1, \"x\") }\n");
+    assert!(out.contains("argument 2 is `str`"), "{}", out);
 }

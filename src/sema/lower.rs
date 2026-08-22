@@ -28,6 +28,14 @@
 // it, which is the difference between a pass that is unfinished and one that
 // lies.
 //
+// One thing that is not this pass's and is worth knowing about here, since this
+// is where it shows: a type argument list with a comma in it cannot be written
+// as the trailing expression of a body. `fn f(): i32 { id<i32, str>(1) }` does
+// not parse, while `let n = id<i32, str>(1)` does -- the lexer tells a block's
+// `{` from a collection literal's by whether a comma stands at the top level of
+// it (§7), and it does not step over a `<..>` to decide. That is the lexer's to
+// fix and not this one's.
+//
 // Regions are not worked out either: every `Ty::Ref` gets region 0. Comparing
 // them is a pass of its own (§3), and `types::unify` already leaves them alone.
 //
@@ -901,30 +909,7 @@ impl<'a> Lowerer<'a> {
 
             // A name: a slot of this body first, and a declaration after --
             // "the innermost scope that has it answers".
-            TIRExprKind::Name(path) => {
-                if path.len() == 1 {
-                    if let Some(slot) = self.slot(&path[0]) {
-                        let ty = self.locals()[slot].ty;
-                        return self.make(TTIRExprKind::Local(slot), ty, id);
-                    }
-                }
-                match self.names.get(&path.join("::")).copied() {
-                    Some(item) => {
-                        let ty = self.item_ty(item);
-                        self.make(TTIRExprKind::Item(item), ty, id)
-                    }
-                    None => {
-                        let name = path.join("::");
-                        self.errors.push(
-                            Diagnostic::error(format!("nothing is called `{}`", name), self.at(id))
-                                .with_label("no such name here")
-                                .with_help("a name is a local, a parameter, or something declared"),
-                        );
-                        let ty = self.types.error();
-                        self.make(TTIRExprKind::Literal(TIRLit::Null), ty, id)
-                    }
-                }
-            }
+            TIRExprKind::Name(path) => self.named(&path, id),
 
             TIRExprKind::Block { stmts, tail } => self.block(&stmts, tail, id),
 
@@ -994,6 +979,13 @@ impl<'a> Lowerer<'a> {
             // nobody after it." The TIR has no method call of its own -- one is
             // a call of a field -- so which it is, is settled here.
             TIRExprKind::Call { callee, args } => {
+                // `Shape::Line(5)` is a variant being built and not a fn being
+                // called: which it is, is what the path names.
+                if let Some(path) = self.flatten(callee) {
+                    if let Some((of, index)) = self.variant_path(&path) {
+                        return self.variant_lit(of, index, &args, id);
+                    }
+                }
                 if let TIRExprKind::Field { base, name } = self.tir.exprs[callee].kind.clone() {
                     if let Some(made) = self.method(base, &name, &args, id) {
                         return made;
@@ -1224,9 +1216,32 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::For { name, iter, body } => self.for_each(&name, iter, body, id),
 
-            // Everything still to come. Each is one message and an `Error`.
-            TIRExprKind::Path { .. } => self.not_yet("a `::` path into a value", id),
-            TIRExprKind::TypeArgs { .. } => self.not_yet("type arguments at a call", id),
+            // "`::` reaches into a namespace, a module or a type" (§5). What it
+            // reaches is a declaration, so the whole path is looked up rather
+            // than the base being typed as a value -- an enum is not one.
+            TIRExprKind::Path { .. } => match self.flatten(id) {
+                Some(path) => self.named(&path, id),
+                None => self.not_yet("a `::` after something that is not a name", id),
+            },
+
+            // `foo<MyType>(x)`. The arguments are put where the parameters
+            // stood and are spent doing it: the tree below holds the type they
+            // made, and nothing of the writing.
+            TIRExprKind::TypeArgs { base, args } => {
+                let held: Vec<TyId> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        crate::tir::tir_nodes::TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
+                        crate::tir::tir_nodes::TIRGenericArg::Life(_) => None,
+                    })
+                    .collect();
+                let made = self.expr(base);
+                let ty = self.instantiate(made, Some(held), id);
+                // The node is spent: what is left is the base, with the type
+                // the arguments made of it.
+                self.out.exprs[made].ty = ty;
+                made
+            }
             // `self` is the receiver's slot, and the receiver is a parameter
             // like any other -- "a receiver comes first and comes only in a
             // method" is the checker's, and this is where it is taken as read.
@@ -1312,7 +1327,10 @@ impl<'a> Lowerer<'a> {
     // What a call comes to: the callee has to be a fn, and what it takes has to
     // agree with what it was handed.
     fn calling(&mut self, callee: TTIRExprId, args: &[TTIRExprId], at: TIRExprId) -> TyId {
-        let ct = self.out.exprs[callee].ty;
+        // Every parameter of what is called gets a hole, so `id(1)` works out
+        // its own `T` -- "what it stands for is settled at the call and not at
+        // the declaration".
+        let ct = self.instantiate(callee, None, at);
         let Ty::Fn { params, ret, .. } = self.types.get(ct).clone() else {
             if !matches!(self.types.get(ct), Ty::Error) {
                 let ct = self.spell(ct);
@@ -2226,5 +2244,159 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         }
+    }
+}
+
+// ---- Paths, variants and generic arguments --------------------------------
+
+impl<'a> Lowerer<'a> {
+    // The path an expression spells, where it spells one. A `::` chain of names
+    // and nothing else: "`::` reaches into a namespace, a module or a type",
+    // and all three are declarations rather than values.
+    fn flatten(&self, id: TIRExprId) -> Option<Vec<String>> {
+        match &self.tir.exprs[id].kind {
+            TIRExprKind::Name(path) => Some(path.clone()),
+            TIRExprKind::Path { base, name } => {
+                let mut held = self.flatten(*base)?;
+                held.push(name.clone());
+                Some(held)
+            }
+            _ => None,
+        }
+    }
+
+    // A name, however it was spelled: a slot of this body, a variant of an
+    // enum, or a declaration.
+    fn named(&mut self, path: &[String], id: TIRExprId) -> TTIRExprId {
+        if path.len() == 1 {
+            if let Some(slot) = self.slot(&path[0]) {
+                let ty = self.locals()[slot].ty;
+                return self.make(TTIRExprKind::Local(slot), ty, id);
+            }
+        }
+        // `Color::Red`: a variant carrying nothing is a value on its own.
+        if let Some((of, index)) = self.variant_path(path) {
+            return self.variant_lit(of, index, &[], id);
+        }
+        match self.names.get(&path.join("::")).copied() {
+            Some(item) => {
+                let ty = self.item_ty(item);
+                self.make(TTIRExprKind::Item(item), ty, id)
+            }
+            None => {
+                let name = path.join("::");
+                self.errors.push(
+                    Diagnostic::error(format!("nothing is called `{}`", name), self.at(id))
+                        .with_label("no such name here")
+                        .with_help("a name is a local, a parameter, a variant, or something declared"),
+                );
+                self.errored(id)
+            }
+        }
+    }
+
+    // One variant, built. `Color::Red` carries nothing and `Shape::Line(5)`
+    // carries what it was handed, and both are this.
+    fn variant_lit(
+        &mut self,
+        of: TTIRItemId,
+        index: usize,
+        args: &[TIRExprId],
+        at: TIRExprId,
+    ) -> TTIRExprId {
+        let carried = self.payload_tys(of, index);
+        let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
+        let name = match &self.out.items[of].kind {
+            TTIRItemKind::Enum { variants, .. } => variants[index].name.clone(),
+            _ => String::new(),
+        };
+
+        if carried.len() != made.len() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` carries {} and was given {}", name, carried.len(), made.len()),
+                    self.at(at),
+                )
+                .with_label("the wrong number of values"),
+            );
+        } else {
+            for (i, (&want, &got)) in carried.iter().zip(made.iter()).enumerate() {
+                let found = self.out.exprs[got].ty;
+                if self.types.unify(found, want).is_err() {
+                    let (found, want) = (self.spell(found), self.spell(want));
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("value {} is `{}` and it carries `{}`", i + 1, found, want),
+                            self.at(at),
+                        )
+                        .with_label("this is what it was given"),
+                    );
+                }
+            }
+        }
+
+        let ty = self.types.intern(Ty::Named { item: of, args: Vec::new() });
+        self.make(TTIRExprKind::VariantLit { item: of, variant: index, fields: made }, ty, at)
+    }
+
+    // What a declaration's type comes to at one use of it. A generic is written
+    // once and used many times, so every parameter is put out of the way before
+    // anything is held to it -- with the arguments where they were written, and
+    // with a hole for each where they were not.
+    //
+    // "what it stands for is settled at the call and not at the declaration",
+    // which is the whole of why this happens here and not in `resolve`.
+    fn instantiate(
+        &mut self,
+        callee: TTIRExprId,
+        written: Option<Vec<TyId>>,
+        at: TIRExprId,
+    ) -> TyId {
+        let held = self.out.exprs[callee].ty;
+        // Already settled: a `TypeArgs` puts the arguments in before the call
+        // is reached, and putting more in would make holes nobody fills. Only
+        // where none were written -- arguments written on something with no
+        // parameters still have to be answered for.
+        if written.is_none() && !self.types.has_param(held) {
+            return held;
+        }
+        let TTIRExprKind::Item(item) = self.out.exprs[callee].kind else { return held };
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return held };
+        let wanted = f.generics.len();
+        if wanted == 0 {
+            if let Some(written) = written {
+                if !written.is_empty() {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "this takes no type arguments".to_string(),
+                            self.at(at),
+                        )
+                        .with_label("nothing here is generic"),
+                    );
+                }
+            }
+            return held;
+        }
+
+        let args: Vec<TyId> = match written {
+            Some(written) if written.len() == wanted => written,
+            Some(written) => {
+                self.errors.push(
+                    Diagnostic::error(
+                        format!(
+                            "this takes {} type arguments and was given {}",
+                            wanted,
+                            written.len()
+                        ),
+                        self.at(at),
+                    )
+                    .with_label("the wrong number"),
+                );
+                (0..wanted).map(|_| self.types.error()).collect()
+            }
+            // Nothing written, so every one is worked out.
+            None => (0..wanted).map(|_| self.types.fresh()).collect(),
+        };
+        self.types.substitute(held, &args)
     }
 }

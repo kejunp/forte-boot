@@ -425,6 +425,24 @@ impl Types {
         self.intern(rebuilt)
     }
 
+    // Whether a parameter still stands anywhere in it -- which is whether it
+    // is a declaration's type or one use's. A type with none has been settled
+    // already and putting arguments in it again would make holes nobody fills.
+    pub fn has_param(&self, id: TyId) -> bool {
+        let here = self.shallow(id);
+        match &self.arena[here] {
+            Ty::Param { .. } => true,
+            Ty::Named { args, .. } => args.iter().any(|&a| self.has_param(a)),
+            Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner) => self.has_param(*inner),
+            Ty::Array { elem, .. } | Ty::Run(elem) => self.has_param(*elem),
+            Ty::Tuple(members) => members.iter().any(|&m| self.has_param(m)),
+            Ty::Fn { params, ret, .. } => {
+                params.iter().any(|&p| self.has_param(p)) || self.has_param(*ret)
+            }
+            Ty::Prim(_) | Ty::Var(_) | Ty::Error => false,
+        }
+    }
+
     // ---- Finishing -------------------------------------------------------
 
     // The arena as the typed tree holds it, and every hole that was never
