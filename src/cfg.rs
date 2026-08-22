@@ -21,15 +21,20 @@
 // An expression that had a value *and* branched gets a slot to put the answer
 // in, written on both sides.
 //
-// Nothing runs any of this yet. `sema` is what would hand `lower` a TTIR, and
-// it is not written -- so the driver stops at the TIR, and what is here is
-// reached only by tests that build a TTIR by hand (`fixture.rs`). Until one
-// exists most of this is constructed and never called, and the warning about it
-// would be on every build rather than about anything.
+// And where every release goes, which is what `drops` places: "a local at the
+// end of its block, a temporary at the end of its statement ... and nothing at
+// all where the value was moved away first" (§2). The first two are where the
+// lowering puts the statement; the third is a dataflow, which is what a graph
+// is for.
+//
+// Most of this is constructed and never called from the driver, which stops at
+// the TIR -- the warning about that would be on every build rather than about
+// anything.
 #![allow(dead_code)]
 
 #[cfg(test)]
 pub mod fixture;
+pub mod drops;
 pub mod lower;
 pub mod opt;
 pub mod source_map;

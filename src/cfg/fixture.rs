@@ -6,7 +6,9 @@
 // because the TTIR says it must be, and nothing here cares which type, so most
 // of them are `null`.
 
-use crate::tir::tir_nodes::{TIRBinOp, TIRBinding, TIRIntro, TIRLit, TIRPrim};
+use crate::tir::tir_nodes::{
+    TIRAttrs, TIRBinOp, TIRBinding, TIRFnAttrs, TIRInline, TIRIntro, TIRLit, TIRPrim, TIRVis,
+};
 use crate::tir::ttir_nodes::*;
 
 pub struct Fixture {
@@ -92,6 +94,100 @@ impl Fixture {
         -> TTIRExprId {
         let ty = self.p.exprs[then].ty;
         self.expr(TTIRExprKind::If { cond, then, els }, ty)
+    }
+
+    pub fn item(&mut self, kind: TTIRItemKind) -> TTIRItemId {
+        self.p.items.push(TTIRItem { kind, line: 1, col: 1 });
+        self.p.items.len() - 1
+    }
+
+    // A type with something to release: a struct, the trait the compiler knows
+    // by name, and the impl that ties them together.
+    pub fn dropper(&mut self, name: &str) -> TyId {
+        let held = self.item(TTIRItemKind::Struct {
+            vis:      TIRVis::Pub,
+            attrs:    TIRAttrs::default(),
+            name:     name.to_string(),
+            generics: Vec::new(),
+            fields:   Vec::new(),
+        });
+        let ty = self.ty(Ty::Named { item: held, args: Vec::new(), regions: Vec::new() });
+        let of = self.item(TTIRItemKind::Trait {
+            vis:      TIRVis::Pub,
+            attrs:    TIRAttrs::default(),
+            name:     "Drop".to_string(),
+            generics: Vec::new(),
+            wheres:   Vec::new(),
+            members:  Vec::new(),
+        });
+        self.item(TTIRItemKind::Impl {
+            vis:      TIRVis::Unwritten,
+            attrs:    TIRAttrs::default(),
+            generics: Vec::new(),
+            wheres:   Vec::new(),
+            ty,
+            of:       Some(of),
+            members:  Vec::new(),
+        });
+        ty
+    }
+
+    pub fn ty(&mut self, ty: Ty) -> TyId {
+        match self.p.types.iter().position(|held| *held == ty) {
+            Some(at) => at,
+            None => {
+                self.p.types.push(ty);
+                self.p.types.len() - 1
+            }
+        }
+    }
+
+    pub fn let_(&self, local: TTIRLocalId, init: Option<TTIRExprId>) -> TTIRStmt {
+        TTIRStmt::Let { is_unsafe: false, local, init }
+    }
+
+    pub fn eval(&self, expr: TTIRExprId) -> TTIRStmt {
+        TTIRStmt::Expr { is_unsafe: false, expr }
+    }
+
+    // A call that hands something over, for a statement that moves.
+    pub fn hands(&mut self, arg: TTIRExprId) -> TTIRExprId {
+        let ty = self.null;
+        let callee = self.expr(TTIRExprKind::Item(0), ty);
+        self.expr(TTIRExprKind::Call { callee, args: vec![arg] }, ty)
+    }
+
+    // The fn a body belongs to, so a pass over the graph knows which slots the
+    // parameters went in.
+    pub fn owns(&mut self, body: TTIRBodyId, params: Vec<TTIRLocalId>) -> TTIRItemId {
+        let ty = self.null;
+        self.item(TTIRItemKind::Fn(TTIRFn {
+            vis:       TIRVis::Pub,
+            attrs:     TIRFnAttrs {
+                common:   TIRAttrs::default(),
+                symbol:   None,
+                must_use: false,
+                inline:   TIRInline::Unwritten,
+                is_test:  false,
+            },
+            is_const:  false,
+            is_unsafe: false,
+            name:      "f".to_string(),
+            symbol:    String::new(),
+            generics:  Vec::new(),
+            wheres:    Vec::new(),
+            ty,
+            params:    params
+                .into_iter()
+                .map(|slot| TTIRParam {
+                    name: TIRBinding::Name("p".to_string()),
+                    slot: Some(slot),
+                })
+                .collect(),
+            ret:       ty,
+            outlives:  Vec::new(),
+            body:      Some(body),
+        }))
     }
 
     // Closes the body being built and hands back its handle.

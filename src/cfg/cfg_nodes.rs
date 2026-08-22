@@ -38,6 +38,10 @@ pub struct CFGBody {
     pub entry:  CFGBlockId,
     pub blocks: Vec<CFGBlock>,
     pub locals: Vec<CFGLocal>,
+    // Which slots the parameters were put in. Nothing fills them -- a caller
+    // did -- so without this a pass over the graph reads them as slots holding
+    // nothing, and a parameter's release is what it would leave out.
+    pub params: Vec<CFGLocalId>,
 }
 
 // A slot: a `let`, a `var`, a parameter, or a temporary the lowering made to
@@ -50,6 +54,9 @@ pub struct CFGLocal {
     // Made by the lowering rather than written, and named with a `$` -- which
     // no source can collide with, that being a macro parameter's sigil.
     pub synthetic: bool,
+    // Whether its type has anything to release: an `impl Drop`, or something
+    // holding one. A slot that has not is never dropped and needs no flag.
+    pub drops:     bool,
 }
 
 // Straight-line statements and the one edge out. Every block ends in a
@@ -86,6 +93,27 @@ pub enum CFGStmtKind {
     },
     // Evaluated for what it does, not for what it is.
     Eval(CFGExprId),
+    // Releasing a slot, which is what a `Drop` is for:
+    //
+    //     A value that move has one owner at a time, so the end of that owner
+    //     is the one place a release belongs: a local at the end of its block,
+    //     a temporary at the end of its statement, a field when the value
+    //     holding it goes, and nothing at all where the value was moved away
+    //     first. Fields go in the order they were declared and locals in the
+    //     reverse of it.                                 (docs/prose.txt, §2)
+    //
+    // A field is not here: what a struct's release comes to is its type's, and
+    // the order its fields go in is a fact about the type and not about this
+    // line. What is here is the other three -- where a local's release stands,
+    // where a temporary's does, and which of them the source moved away.
+    Drop {
+        local: CFGLocalId,
+        // Whether the value may already have gone. Certain on one path and not
+        // another is neither "release it" nor "leave it", and the prose does
+        // not settle which -- a flag beside the slot, set where it is filled
+        // and cleared where it is moved, is what a backend puts here.
+        guarded: bool,
+    },
 }
 
 // How a block ends, which is the whole of the control flow.

@@ -19,11 +19,17 @@
 use crate::tir::tir_nodes::{TIRBinOp, TIRBinding, TIRIntro, TIRLit, TIRUnaryOp};
 use crate::tir::ttir_nodes::*;
 
+use crate::sema::borrows::Copies;
+
 use super::cfg_nodes::*;
 
 pub struct Lowerer<'a> {
     ttir: &'a TTIRProgram,
     cfg:  CFGProgram,
+    // What each type has to release, and the declaration the body being
+    // lowered stands in -- a `Ty::Param` is answered by the second.
+    copies:  Copies,
+    generic: Vec<TTIRGeneric>,
     // The bodies being built, innermost last: a closure's graph is begun in the
     // middle of the one that holds it.
     stack: Vec<Builder>,
@@ -35,6 +41,11 @@ struct Builder {
     current: CFGBlockId,
     loops:   Vec<LoopCtx>,
     temps:   usize,
+    // The slots each open block declared, innermost last. Leaving one is where
+    // its slots are released, in the reverse of the order they were bound:
+    // "locals in the reverse of it, which is the order that lets a later one
+    // still refer to an earlier one" (§2).
+    scopes:  Vec<Vec<CFGLocalId>>,
 }
 
 // Where a `break` and a `continue` go, and where a `break x` puts its value.
@@ -43,11 +54,20 @@ struct LoopCtx {
     brk:   CFGBlockId,
     cont:  CFGBlockId,
     value: Option<CFGLocalId>,
+    // How many scopes were open when the loop began, so a `break` knows how
+    // many it is leaving.
+    depth: usize,
 }
 
 impl<'a> Lowerer<'a> {
     pub fn new(ttir: &'a TTIRProgram) -> Lowerer<'a> {
-        Lowerer { ttir, cfg: CFGProgram::default(), stack: Vec::new() }
+        Lowerer {
+            ttir,
+            copies: Copies::of(ttir),
+            generic: Vec::new(),
+            cfg: CFGProgram::default(),
+            stack: Vec::new(),
+        }
     }
 
     pub fn finish(self) -> CFGProgram {
@@ -56,6 +76,24 @@ impl<'a> Lowerer<'a> {
 
     // Every body the program holds, in the order the TTIR keeps them, so a
     // `TTIRBodyId` and the `CFGBodyId` it became are the same number.
+    // What each body is a body *of*: the parameters it was handed and the
+    // declaration it stands in. A `TTIRBody` holds neither, both being facts
+    // about the item that owns it.
+    fn about(&self, body: TTIRBodyId) -> (Vec<CFGLocalId>, Vec<TTIRGeneric>) {
+        for item in &self.ttir.items {
+            let TTIRItemKind::Fn(f) = &item.kind else { continue };
+            if f.body == Some(body) {
+                return (
+                    f.params.iter().filter_map(|p| p.slot).collect(),
+                    f.generics.clone(),
+                );
+            }
+        }
+        // A closure's body, which belongs to no declaration: its parameters
+        // are slots like any other and are filled where it is called.
+        (Vec::new(), Vec::new())
+    }
+
     pub fn lower(&mut self) {
         for id in 0..self.ttir.bodies.len() {
             self.body(id);
@@ -121,14 +159,20 @@ impl<'a> Lowerer<'a> {
     // A slot for a value that has to survive a branch, typed as the expression
     // it will hold.
     fn temp(&mut self, ty: TyId) -> CFGLocalId {
+        let n = {
+            let b = self.b();
+            let n = b.temps;
+            b.temps += 1;
+            n
+        };
+        let drops = self.copies.drops(ty, self.ttir, &self.generic);
         let b = self.b();
-        let n = b.temps;
-        b.temps += 1;
         b.locals.push(CFGLocal {
             name:      TIRBinding::Name(format!("${}", n)),
             ty,
             intro:     TIRIntro::Var,
             synthetic: true,
+            drops,
         });
         b.locals.len() - 1
     }
@@ -140,6 +184,14 @@ impl<'a> Lowerer<'a> {
 
     // The graph of one body.
     fn body(&mut self, id: TTIRBodyId) -> CFGBodyId {
+        let (params, generic) = self.about(id);
+        let held = std::mem::replace(&mut self.generic, generic);
+        let out = self.body_of(id, params);
+        self.generic = held;
+        out
+    }
+
+    fn body_of(&mut self, id: TTIRBodyId, params: Vec<CFGLocalId>) -> CFGBodyId {
         let source = &self.ttir.bodies[id];
         let locals: Vec<CFGLocal> = source
             .locals
@@ -149,6 +201,7 @@ impl<'a> Lowerer<'a> {
                 ty:        l.ty,
                 intro:     l.intro,
                 synthetic: false,
+                drops:     self.copies.drops(l.ty, self.ttir, &self.generic),
             })
             .collect();
         let value = source.value;
@@ -159,6 +212,11 @@ impl<'a> Lowerer<'a> {
             current: 0,
             loops:   Vec::new(),
             temps:   0,
+            // The outermost scope is the frame's, and what it holds is the
+            // parameters: they were filled by the caller and they go when the
+            // body does, which is one scope further out than anything the body
+            // declares.
+            scopes:  vec![params.clone()],
         });
         let entry = self.new_block(value);
         self.switch_to(entry);
@@ -167,11 +225,20 @@ impl<'a> Lowerer<'a> {
         // the graph ends by handing that slot back.
         let out = self.temp(self.ty(value));
         self.into(value, out);
+        // The frame goes, and then what it worked out is handed back: the slot
+        // holding the answer is not one of the frame's, so nothing released
+        // here is what the body is worth.
+        self.close_scope(value);
         let answer = self.local(out, value);
         self.terminate(CFGTerm::Return(Some(answer)));
 
         let built = self.stack.pop().expect("a body was being built");
-        self.cfg.bodies.push(CFGBody { entry, blocks: built.blocks, locals: built.locals });
+        self.cfg.bodies.push(CFGBody {
+            entry,
+            blocks: built.blocks,
+            locals: built.locals,
+            params,
+        });
         self.cfg.bodies.len() - 1
     }
 
@@ -180,6 +247,9 @@ impl<'a> Lowerer<'a> {
     fn stmt(&mut self, stmt: &TTIRStmt) {
         match stmt {
             TTIRStmt::Let { is_unsafe, local, init } => {
+                if let Some(scope) = self.b().scopes.last_mut() {
+                    scope.push(*local);
+                }
                 if let Some(init) = init {
                     if branches(&self.kind(*init)) {
                         self.flow(*init, Some(*local));
@@ -263,6 +333,7 @@ impl<'a> Lowerer<'a> {
     fn flow(&mut self, id: TTIRExprId, dest: Option<CFGLocalId>) {
         match self.kind(id) {
             TTIRExprKind::Block { stmts, tail } => {
+                self.b().scopes.push(Vec::new());
                 for s in &stmts {
                     self.stmt(s);
                 }
@@ -273,6 +344,10 @@ impl<'a> Lowerer<'a> {
                     },
                     None => self.fill_null(dest, id),
                 }
+                // "a local at the end of its block" -- and the tail is already
+                // in the slot that outlives the block, so nothing this releases
+                // is what the block is worth.
+                self.close_scope(id);
             }
 
             // The short-circuiting pair where a value is wanted: the branches
@@ -325,7 +400,8 @@ impl<'a> Lowerer<'a> {
                 self.switch_to(head);
                 self.cond(cond, inner, exit);
                 self.switch_to(inner);
-                self.b().loops.push(LoopCtx { brk: exit, cont: head, value: dest });
+                let depth = self.b().scopes.len();
+                self.b().loops.push(LoopCtx { brk: exit, cont: head, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
                 self.terminate(CFGTerm::Goto(head));
@@ -340,7 +416,8 @@ impl<'a> Lowerer<'a> {
                 let (inner, exit) = (self.new_block(body), self.new_block(id));
                 self.terminate(CFGTerm::ForEach { local, iter: it, body: inner, exit });
                 self.switch_to(inner);
-                self.b().loops.push(LoopCtx { brk: exit, cont: inner, value: dest });
+                let depth = self.b().scopes.len();
+                self.b().loops.push(LoopCtx { brk: exit, cont: inner, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
                 self.terminate(CFGTerm::Goto(inner));
@@ -376,6 +453,10 @@ impl<'a> Lowerer<'a> {
 
             TTIRExprKind::Return(value) => {
                 let value = value.map(|v| self.value(v));
+                // Everything still open goes, innermost first. The value has
+                // already been worked out, so what it was made of is not among
+                // what these release.
+                self.unwind_to(0, id);
                 self.terminate(CFGTerm::Return(value));
                 let next = self.new_block(id);
                 self.switch_to(next);
@@ -383,10 +464,13 @@ impl<'a> Lowerer<'a> {
 
             TTIRExprKind::Break(value) => {
                 let ctx = self.b().loops.last().copied();
-                if let Some(LoopCtx { brk, value: slot, .. }) = ctx {
+                if let Some(LoopCtx { brk, value: slot, depth, .. }) = ctx {
                     if let (Some(v), Some(slot)) = (value, slot) {
                         self.into(v, slot);
                     }
+                    // Every scope inside the loop goes; the loop's own and
+                    // everything outside it are still open after the `break`.
+                    self.unwind_to(depth, id);
                     self.terminate(CFGTerm::Goto(brk));
                 }
                 let next = self.new_block(id);
@@ -395,7 +479,10 @@ impl<'a> Lowerer<'a> {
 
             TTIRExprKind::Continue => {
                 let ctx = self.b().loops.last().copied();
-                if let Some(LoopCtx { cont, .. }) = ctx {
+                if let Some(LoopCtx { cont, depth, .. }) = ctx {
+                    // The same, and for the same reason: the next turn round
+                    // starts with the loop's own scopes and no others.
+                    self.unwind_to(depth, id);
                     self.terminate(CFGTerm::Goto(cont));
                 }
                 let next = self.new_block(id);
@@ -403,6 +490,44 @@ impl<'a> Lowerer<'a> {
             }
 
             other => panic!("a branching expression lowered from {:?}", other),
+        }
+    }
+
+    // ---- Releases --------------------------------------------------------
+
+    // The end of a block: everything it declared goes, "locals in the reverse
+    // of [the order they were declared], which is the order that lets a later
+    // one still refer to an earlier one" (§2).
+    fn close_scope(&mut self, at: TTIRExprId) {
+        let held = self.b().scopes.pop().unwrap_or_default();
+        self.release(&held, at);
+    }
+
+    // Leaving by a jump rather than by falling off the end: every scope down to
+    // `depth` goes, innermost first, and the ones below it stay open because
+    // the block being jumped out of is still inside them.
+    fn unwind_to(&mut self, depth: usize, at: TTIRExprId) {
+        let mut open: Vec<Vec<CFGLocalId>> = Vec::new();
+        while self.b().scopes.len() > depth {
+            open.push(self.b().scopes.pop().unwrap_or_default());
+        }
+        for held in &open {
+            self.release(held, at);
+        }
+        // A jump does not close them for what comes after: the tree is still
+        // inside those blocks, and what follows a `return` is unreachable but
+        // still lowered.
+        for held in open.into_iter().rev() {
+            self.b().scopes.push(held);
+        }
+    }
+
+    fn release(&mut self, held: &[CFGLocalId], at: TTIRExprId) {
+        for &local in held.iter().rev() {
+            if !self.b().locals[local].drops {
+                continue;
+            }
+            self.emit(CFGStmtKind::Drop { local, guarded: false }, false, at);
         }
     }
 

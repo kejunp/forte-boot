@@ -1906,9 +1906,15 @@ answer is not obvious from the rules alone.
     container section 3 says is a library's to write. The cost is Rust's
     cost twice over: whether a line moves or copies is a fact about a type
     and not about the line, and every program written before this one was
-    settled meant something slightly different. What is left is whether
-    "drop" may be called by hand, what a "Drop" means for a "const fn", and
-    how much of a value survives a "drop" that does not finish.
+    settled meant something slightly different. Where a release goes is
+    settled and placed: a local at the end of its block, a parameter at the
+    end of the body, in the reverse of the order they were bound, and none
+    at all for a slot the source moved away from. A slot moved away on one
+    path and not another is the one shape left over — neither releasing it
+    nor leaving it is right, and a flag beside the slot is what a backend
+    puts there. What is left is whether "drop" may be called by hand, what a
+    "Drop" means for a "const fn", and how much of a value survives a "drop"
+    that does not finish.
   - "unsafe" is a modifier on a <fn_decl> and a prefix on a <statement>, and
     those are its only two places (sections 2 and 4). Settled — the statement
     form is one rule because a block is already a statement, so the braces

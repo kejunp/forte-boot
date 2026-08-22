@@ -60,7 +60,11 @@
 //     without being written, and `TTIRCapture` is what says so -- but the
 //     borrow it takes lasts as long as the name the closure was bound to, and
 //     what the body does with its own slot for it is the body's own business.
-//   - Where a `Drop` runs. Settled in §2 and codegen's, not the checker's.
+//   - Where a `Drop` runs. Settled in §2 and placed by `cfg::drops`, which is
+//     where the graph is: "nothing at all where the value was moved away
+//     first" is a question about a program point, and a graph is what answers
+//     one. What this pass does with a move is refuse it, which wants the line
+//     it was written on and so wants the tree.
 
 #![allow(dead_code)]
 
@@ -161,6 +165,71 @@ impl Copies {
             }
         }
         Copies { copy, drop }
+    }
+
+    // Whether a value of this type has anything to release. An `impl Drop`
+    // says so outright; a struct or an enum holding one says so because its
+    // fields go when it does -- "a field when the value holding it goes" (§2).
+    //
+    // A `Ty::Param` is answered by whether it moves at all: what it turns out
+    // to be is the caller's, and a fn is checked once for every caller there
+    // will ever be. So anything that is not known to copy is treated as having
+    // something to release, which costs a release that does nothing where it
+    // has not.
+    pub fn drops(&self, ty: TyId, p: &TTIRProgram, generics: &[TTIRGeneric]) -> bool {
+        self.drops_past(ty, p, generics, &mut Vec::new())
+    }
+
+    fn drops_past(
+        &self,
+        ty: TyId,
+        p: &TTIRProgram,
+        generics: &[TTIRGeneric],
+        seen: &mut Vec<TTIRItemId>,
+    ) -> bool {
+        match &p.types[ty] {
+            // Nothing a primitive holds is anybody's to release, and what a
+            // reference or a pointer refers to is owned somewhere else.
+            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Fn { .. } | Ty::Run(_) => false,
+            Ty::Named { item, args, .. } => {
+                if self.drop[*item] {
+                    return true;
+                }
+                if args.iter().any(|&a| self.drops_past(a, p, generics, seen)) {
+                    return true;
+                }
+                if seen.contains(item) {
+                    return false;
+                }
+                seen.push(*item);
+                let held = match &p.items[*item].kind {
+                    TTIRItemKind::Struct { fields, .. } => {
+                        fields.iter().any(|f| self.drops_past(f.ty, p, generics, seen))
+                    }
+                    TTIRItemKind::Enum { variants, .. } => {
+                        variants.iter().any(|v| match &v.payload {
+                            TTIRPayload::None => false,
+                            TTIRPayload::Tuple(tys) => {
+                                tys.iter().any(|&t| self.drops_past(t, p, generics, seen))
+                            }
+                            TTIRPayload::Named(fields) => {
+                                fields.iter().any(|f| self.drops_past(f.ty, p, generics, seen))
+                            }
+                        })
+                    }
+                    _ => false,
+                };
+                seen.pop();
+                held
+            }
+            Ty::Array { elem, .. } => self.drops_past(*elem, p, generics, seen),
+            Ty::GC(_) => false,
+            Ty::Tuple(members) => {
+                members.iter().any(|&m| self.drops_past(m, p, generics, seen))
+            }
+            Ty::Param { .. } => !self.is_copy(ty, p, generics),
+            Ty::Var(_) | Ty::Error => false,
+        }
     }
 
     // Whether a value of this type is copied where it is handed over, rather
