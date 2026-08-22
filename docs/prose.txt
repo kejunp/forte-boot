@@ -1785,6 +1785,13 @@ answer is not obvious from the rules alone.
     writes the answer; this has one that answers all of them, conservatively,
     and lets a person write a better one. Nothing has to be annotated to
     compile.
+    What a named type carrying a reference promises is the piece not yet
+    settled: "Held<'a>" parses and the "'a" is checked, but a type argument
+    that is a lifetime is not kept alongside the type arguments that are
+    types, so nothing compares two of them. Until it is kept, a result of
+    such a type is held to every parameter — the answer the rule gives with
+    nothing written, which is sound and blunter than a written "'a" should
+    have to be.
     The cost is where the refusal lands. Too conservative a signature is
     turned down at the call and not at the declaration, so the message points
     at a use and the fix belongs somewhere else — the one place in the

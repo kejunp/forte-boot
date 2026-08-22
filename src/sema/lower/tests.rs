@@ -1456,3 +1456,103 @@ fn a_captured_reference_holds_the_slot_as_well_as_what_it_points_at() {
 fn a_closure_that_captured_nothing_may_go_anywhere() {
     clean("fn f() {\n    var c = || 1;\n    {\n        c = || 2;\n    }\n}\n");
 }
+
+// ---- What carries a reference ----------------------------------------------
+
+// A value built out of references points where they did, whatever was built.
+// A tuple was followed from the start; a struct, a variant, a map, a set and a
+// range are the rest of them.
+#[test]
+fn every_aggregate_is_followed_to_what_it_was_built_from() {
+    let with = "struct Held<'a> {\n    pub it: &'a i32,\n}\n\
+                enum E<'a> {\n    Some(&'a i32),\n    None,\n}\n";
+    for (ret, built) in [
+        ("Held", "Held { it: &n }"),
+        ("E", "E::Some(&n)"),
+        ("(&i32, i32)", "(&n, 1)"),
+        ("(&i32)[1]", "[&n]"),
+    ] {
+        let out = refused(&format!(
+            "{}fn f(): {} {{\n    let n = 1;\n    {}\n}}\n",
+            with, ret, built
+        ));
+        assert!(out.contains("`n` does not live long enough"), "{} -- {}", built, out);
+    }
+    // And each of them built out of what the caller handed in still stands.
+    clean(&format!(
+        "{}fn f(p: &i32): Held {{\n    Held {{ it: p }}\n}}\n\
+         fn g(p: &i32): E {{\n    E::Some(p)\n}}\n",
+        with
+    ));
+}
+
+// A named type holds a reference where its *declaration* does. The regions are
+// the declaration's and not the use's, so a `Held` written bare carries the
+// same reference a `Held<'a>` does -- which is what lets this see one at all,
+// since `Ty::Named` keeps no regions of its own.
+#[test]
+fn a_named_type_carries_what_it_was_declared_to_carry() {
+    let out = refused(
+        "struct Inner<'a> {\n    pub it: &'a i32,\n}\n\
+         struct Outer<'a> {\n    pub inner: Inner<'a>,\n}\n\
+         fn f(): Outer {\n    let n = 1;\n    Outer { inner: Inner { it: &n } }\n}\n",
+    );
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    // A named type carrying nothing carries nothing, however it is built.
+    clean(
+        "struct Plain {\n    pub x: i32,\n}\n\
+         fn f(): Plain {\n    let n = 1;\n    Plain { x: n }\n}\n",
+    );
+}
+
+// A fn whose result is a named type carrying a reference is tied to every one
+// of its parameters. The regions cannot be compared -- `Ty::Named` lost them --
+// so the answer is the one §3 gives before anybody writes a lifetime: hold the
+// caller to everything, which is never wrong.
+#[test]
+fn a_named_result_ties_a_caller_to_everything() {
+    let with = "struct Held<'a> {\n    pub it: &'a i32,\n}\n\
+                fn make(p: &i32): Held {\n    Held { it: p }\n}\n";
+    let out = refused(&format!(
+        "{}fn f(): Held {{\n    let n = 1;\n    make(&n)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    clean(&format!("{}fn f(p: &i32): Held {{\n    make(p)\n}}\n", with));
+}
+
+// A name a pattern binds came out of what was matched on, so it points wherever
+// that did. Not *at* it: what `opt` held is what comes out, and a reference
+// `opt` was built from is a reference the arm gives back.
+#[test]
+fn a_name_bound_by_a_pattern_points_where_the_scrutinee_did() {
+    let with = "enum E<'a> {\n    Some(&'a i32),\n    None,\n}\n";
+    let out = refused(&format!(
+        "{}fn f(p: &i32): &i32 {{\n    let n = 1;\n    let e = E::Some(&n);\n\
+         \x20   match e {{\n        E::Some(v) => v,\n        E::None => p,\n    }}\n}}\n",
+        with
+    ));
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    // Built out of what the caller handed in, the same arm gives back something
+    // that outlives the body -- which is why the scrutinee's own slot is not a
+    // root: `e` is a local, and holding the arm to `e` would refuse this.
+    clean(&format!(
+        "{}fn f(p: &i32): &i32 {{\n    let e = E::Some(p);\n\
+         \x20   match e {{\n        E::Some(v) => v,\n        E::None => p,\n    }}\n}}\n",
+        with
+    ));
+}
+
+// And a loop variable comes out of what is being gone through, the same way.
+#[test]
+fn a_loop_variable_points_where_what_it_goes_through_did() {
+    let out = refused(
+        "fn f(): &i32 {\n    let a = 1;\n    let things = [&a];\n\
+         \x20   for v in things {\n        return v;\n    }\n    &a\n}\n",
+    );
+    assert!(out.contains("`a` does not live long enough"), "{}", out);
+    clean(
+        "fn f(p: &i32): &i32 {\n    let things = [p];\n\
+         \x20   for v in things {\n        return v;\n    }\n    p\n}\n",
+    );
+}

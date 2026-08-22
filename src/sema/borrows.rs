@@ -40,10 +40,12 @@
 //     holds it, which is the rule before Rust's NLL: it turns down some
 //     programs that are fine, and the prose allows for that, its own lifetime
 //     rule being "only ever answered too conservatively".
-//   - Follow a reference out of an iterator or a pattern. `for v in items` and
-//     `Some(v) => v` bind a name this cannot tell points into `items`, so a
-//     reference reaching a body that way is followed no further. Permissive,
-//     and the one place these rules are.
+//   - Compare the regions of a named type. `Ty::Named` holds types, so a
+//     `Held<'a>` loses the `'a` on the way in and there is nothing left to
+//     compare. What is done instead is the elision rule's own answer -- a fn
+//     whose result is a named type carrying a reference is tied to every one
+//     of its parameters -- which is sound and less sharp than a written `'a`
+//     ought to buy. Sharpening it means regions on `Ty::Named`.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
@@ -66,7 +68,8 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
     RegionId, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
-    TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRProgram, TTIRStmt, Ty, TyId,
+    TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, Ty,
+    TyId,
 };
 
 // ---- Places ---------------------------------------------------------------
@@ -417,6 +420,10 @@ pub struct Checker<'a> {
     // then given back out of the body is one thing gone wrong in two places,
     // and the first place is the one worth reading.
     said_of: Vec<TTIRLocalId>,
+    // Where the value a pattern is being taken apart points. A pattern binds
+    // names out of something, and this is that something's roots, held while
+    // `binds` walks -- a pattern has no expression of its own to ask.
+    from_of: Vec<(TTIRLocalId, TTIRExprId)>,
     // What each slot's value points into, where it points into this body at
     // all. `let r = &x` makes r point into x, and `let s = r` makes s point
     // where r did -- so a reference is followed however many names it is
@@ -440,6 +447,7 @@ impl<'a> Checker<'a> {
             leaves: false,
             depth: HashMap::new(),
             said_of: Vec::new(),
+            from_of: Vec::new(),
             from: HashMap::new(),
         }
     }
@@ -517,8 +525,48 @@ impl<'a> Checker<'a> {
     // Region 0 is what a reference in a body gets, where how long it is good
     // for was nobody's question -- so it does not count.
     fn holds_ref(&self, ty: TyId) -> bool {
+        self.holds_ref_past(ty, &mut Vec::new())
+    }
+
+    // `seen` is the declarations already being looked through. A struct cannot
+    // hold itself by value, so a cycle is not reachable today -- but this walks
+    // declarations rather than types, and a walk over declarations that cannot
+    // be stopped is a hang waiting for a language change.
+    fn holds_ref_past(&self, ty: TyId, seen: &mut Vec<TTIRItemId>) -> bool {
         match &self.p.types[ty] {
-            Ty::Ref { life, inner, .. } => *life != 0 || self.holds_ref(*inner),
+            Ty::Ref { life, inner, .. } => *life != 0 || self.holds_ref_past(*inner, seen),
+            // A named type holds a reference where what it was declared to hold
+            // does. The regions are the declaration's and not the use's -- a
+            // `Held` written bare carries the same reference a `Held<'a>` does,
+            // and it is the declaration that says so.
+            Ty::Named { item, args } => {
+                if args.iter().any(|&a| self.holds_ref_past(a, seen)) {
+                    return true;
+                }
+                if seen.contains(item) {
+                    return false;
+                }
+                seen.push(*item);
+                let held = match &self.p.items[*item].kind {
+                    TTIRItemKind::Struct { fields, .. } => {
+                        fields.iter().any(|f| self.holds_ref_past(f.ty, seen))
+                    }
+                    TTIRItemKind::Enum { variants, .. } => {
+                        variants.iter().any(|v| match &v.payload {
+                            TTIRPayload::None => false,
+                            TTIRPayload::Tuple(tys) => {
+                                tys.iter().any(|&t| self.holds_ref_past(t, seen))
+                            }
+                            TTIRPayload::Named(fields) => {
+                                fields.iter().any(|f| self.holds_ref_past(f.ty, seen))
+                            }
+                        })
+                    }
+                    _ => false,
+                };
+                seen.pop();
+                held
+            }
             // A fn type says nothing about what a closure behind it captured,
             // so the question cannot be answered here and is left to the value:
             // `roots` returns nothing for a `move` closure or a plain fn, and
@@ -530,8 +578,9 @@ impl<'a> Checker<'a> {
             // the answer for when one is added, and it is here so that adding
             // one does not quietly reopen the hole.
             Ty::Fn { .. } => true,
-            Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref(m)),
-            Ty::Array { elem, .. } => self.holds_ref(*elem),
+            Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref_past(m, seen)),
+            Ty::Array { elem, .. } | Ty::Run(elem) => self.holds_ref_past(*elem, seen),
+            Ty::GC(inner) => self.holds_ref_past(*inner, seen),
             _ => false,
         }
     }
@@ -575,6 +624,16 @@ impl<'a> Checker<'a> {
         let mut reach = Vec::new();
         self.regions_in(f.ret, &mut reach);
         if reach.is_empty() {
+            // A named type carries references without carrying their regions:
+            // `Ty::Named` holds types, and a `Held<'a>` loses the `'a` on the
+            // way in. So the regions cannot be compared and the answer is the
+            // one the elision rule would have given before anybody wrote a
+            // lifetime -- tied to everything, which is never wrong and is what
+            // §3 means by spending precision at the call.
+            if self.holds_ref(f.ret) {
+                let Ty::Fn { params, .. } = &self.p.types[f.ty] else { return None };
+                return Some((0..params.len()).collect());
+            }
             return None;
         }
         // Everything that outlives something already reached, until nothing
@@ -731,10 +790,28 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            // What is built out of references points where they did.
-            TTIRExprKind::ArrayLit(parts) | TTIRExprKind::TupleLit(parts) => {
+            // What is built out of references points where they did, whatever
+            // was built: a struct and a variant carry them in named places and
+            // an array, a tuple, a map, a set and a range in unnamed ones, and
+            // none of that changes where the references came from.
+            TTIRExprKind::ArrayLit(parts)
+            | TTIRExprKind::TupleLit(parts)
+            | TTIRExprKind::StructLit { fields: parts, .. }
+            | TTIRExprKind::VariantLit { fields: parts, .. }
+            | TTIRExprKind::Set { elems: parts, .. } => {
                 for &part in parts {
                     self.walk_roots(part, out);
+                }
+            }
+            TTIRExprKind::Map { entries, .. } => {
+                for &(key, value) in entries {
+                    self.walk_roots(key, out);
+                    self.walk_roots(value, out);
+                }
+            }
+            TTIRExprKind::Range { start, end, .. } => {
+                for held in [start, end].into_iter().flatten() {
+                    self.walk_roots(*held, out);
                 }
             }
             // Every way out of a block or a branch is a way the value can come.
@@ -1438,11 +1515,14 @@ impl<'a> Checker<'a> {
         let mut joined: Option<Gone> = None;
         let mut all_left = !arms.is_empty();
 
+        let from_of = self.roots(scrutinee);
         for arm in arms {
             self.gone = before.clone();
+            self.from_of = from_of.clone();
             for &pat in &arm.pats {
                 self.binds(pat);
             }
+            self.from_of.clear();
             if !self.expr(arm.body, Use::Read).left() {
                 all_left = false;
                 let reached = self.gone.clone();
@@ -1472,6 +1552,16 @@ impl<'a> Checker<'a> {
                 // A name a pattern binds stands in the arm and nowhere else, so
                 // it is one block shorter-lived than where the `match` is.
                 self.depth.insert(*local, self.marks.len() + 1);
+                // And it came out of what was matched on, so it points wherever
+                // that did. Not *at* it: a name bound out of a value is the
+                // value's own, and `match opt { Some(v) => v }` gives back what
+                // `opt` held rather than a reference into `opt`.
+                let (local, from) = (*local, self.from_of.clone());
+                if from.is_empty() {
+                    self.from.remove(&local);
+                } else {
+                    self.from.insert(local, from);
+                }
                 self.gone.filled(&place);
             }
             TTIRPatKind::Variant { elems, .. } => {
@@ -1521,6 +1611,15 @@ impl<'a> Checker<'a> {
             // The loop variable stands in the body and nowhere else, so it is
             // one block shorter-lived than where the `for` is.
             self.depth.insert(local, self.marks.len() + 1);
+            // And it comes out of what is being gone through, so it points
+            // wherever that did: `for v in &things` hands out references into
+            // `things`, and `for v in things` hands out what `things` held.
+            let from = self.roots(iter);
+            if from.is_empty() {
+                self.from.remove(&local);
+            } else {
+                self.from.insert(local, from);
+            }
             self.gone.filled(&Place::of(local));
         }
 
