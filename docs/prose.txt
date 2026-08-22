@@ -1785,15 +1785,14 @@ answer is not obvious from the rules alone.
     writes the answer; this has one that answers all of them, conservatively,
     and lets a person write a better one. Nothing has to be annotated to
     compile.
-    A type that carries a reference carries a region the same way: "Held<'a>"
-    names one and a bare "Held" is handed one, so the two promise the same
-    thing and only the first says which. What is not settled is the
-    declaration that carries a reference and names no lifetime for it —
-    "struct Held { it: &i32 }" parses, and the region its field stands in is
-    one nothing can instantiate. A result of such a type is held to every
-    parameter, which is sound and blunter than it has to be; either the
-    declaration is refused for want of the lifetime, as Rust refuses it, or
-    it means one lifetime declared for it and nothing says which.
+    A type that carries a reference carries a region the same way, and a
+    declaration that names no lifetime for the references in it is read as
+    declaring one for each: "struct Held { it: &i32 }" takes a region, so
+    "Held<'a>" names it and a bare "Held" is handed one, and the two promise
+    the same thing. A declaration reached from itself is the one shape with
+    no finite number of them — "struct A { b: &B }" beside "struct B { a: &A
+    }" adds one every turn round — and what comes of such a type is held to
+    every parameter, which is sound and blunter than it has to be.
     The cost is where the refusal lands. Too conservative a signature is
     turned down at the call and not at the declaration, so the message points
     at a use and the fix belongs somewhere else — the one place in the
@@ -1823,6 +1822,10 @@ answer is not obvious from the rules alone.
     hand is settled with them: it lasts from where it is taken to the last
     place anything can reach through it, which is where the name holding it
     is last read, and a name read inside a loop is read for all of the loop.
+    A borrow that reached no name is a temporary and goes with its statement,
+    and what a call gives back is what says whether one reached: "len(&x)"
+    hands back a number and holds nothing, so the borrow is over with the
+    line.
     What is left is how finely a place is tracked: whether two fields of one
     struct, or two mutable views of one array whose ranges do not meet, are
     one place or two.

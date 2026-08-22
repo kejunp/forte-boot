@@ -25,7 +25,11 @@
 // reached with NLL, and sharper than the block-long extent this used to have.
 // Everything is numbered in the order it was written; a loop is the one place
 // that is not enough, since what stands above a use runs below it on the next
-// turn, and a slot last read inside one is held to all of it.
+// turn, and a slot last read inside one is held to all of it. Which borrows
+// keep a slot's extent is the other half: a `&` that got as far as the value
+// keeps it, and one that did not is a temporary and goes with the statement --
+// `len(&x)` gives back an `i32` and can hold nothing, so the `&x` is over when
+// the line is.
 //
 // Regions are checked too, and so are the bounds on them -- a `'a: 'b` and a
 // `T: 'a` are promises a *caller* keeps, so they are held to at the call. The
@@ -45,17 +49,12 @@
 //
 // What it does not do:
 //
-//   - Tell which borrow taken working out a `let`'s value reached the slot.
-//     All of them are held to the slot's extent, whether they reached it or
-//     not. Blunt in which and sharp in how long, and sharpening the first
-//     costs a reachability walk over the initialiser.
-//   - Reach through a declaration for its regions. `struct Outer { inner:
-//     Inner }` written bare takes no region of its own, though `Inner` does,
-//     so what `Outer` carries cannot be told apart. A fn whose result is such
-//     a type is tied to every one of its parameters instead, which is the
-//     elision rule's own answer and never wrong. A declaration whose own
-//     references are elided does not go this way: they are counted and it
-//     carries a region for each.
+//   - Count the regions of a declaration reached from itself. `struct A { b:
+//     &B }` beside `struct B { a: &A }` has no finite number of them, each
+//     turn round adding the last one's, and 0 is what such a declaration is
+//     given. `holds_ref` still sees the reference, so what comes of one is
+//     held to every parameter -- the elision rule's own answer, and never
+//     wrong.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
@@ -359,6 +358,9 @@ struct Held {
     // `usize::MAX` for one that reached no slot: nothing can read it, so
     // nothing says when it stops being read, and the block is the answer.
     until: usize,
+    // The expression that took it, which is how `reaching` says whether it got
+    // as far as the slot a `let` was filling.
+    at:    TTIRExprId,
 }
 
 // ---- Where the walk got to ------------------------------------------------
@@ -916,6 +918,101 @@ impl<'a> Checker<'a> {
         }
     }
 
+    // Which borrows taken working a value out get as far as the value. The
+    // same walk `roots` is, asking the other half of the question: `roots` says
+    // what a value points into, and this says which `&` put it there.
+    //
+    // What it turns on at a call is the callee's own signature -- `len(&x)`
+    // gives back an `i32` and can hold nothing, so the `&x` is a temporary and
+    // goes with the statement; `pick(&x, &y)` gives back a reference tied to
+    // both, so both get as far as whatever the result is bound to.
+    fn reaching(&self, id: TTIRExprId) -> Vec<TTIRExprId> {
+        let mut out = Vec::new();
+        self.walk_reaching(id, &mut out);
+        out
+    }
+
+    fn walk_reaching(&self, id: TTIRExprId, out: &mut Vec<TTIRExprId>) {
+        match &self.p.exprs[id].kind {
+            TTIRExprKind::Unary { op: TIRUnaryOp::Ref(_), .. } => out.push(id),
+            // A closure holds what it captured by reference for as long as it
+            // is in hand, so the closure is what took those borrows.
+            TTIRExprKind::Closure { captures, .. } => {
+                if captures.iter().any(|c| matches!(c.mode, TTIRCaptureMode::Ref(_))) {
+                    out.push(id);
+                }
+            }
+            TTIRExprKind::Field { base, .. }
+            | TTIRExprKind::TupleIndex { base, .. }
+            | TTIRExprKind::Index { base, .. } => self.walk_reaching(*base, out),
+            TTIRExprKind::Cast(inner) => self.walk_reaching(*inner, out),
+            TTIRExprKind::Call { callee, args } => match self.callee(*callee).map(|i| self.tied(i)) {
+                Some(None) => {}
+                Some(Some(ties)) => {
+                    for (i, &arg) in args.iter().enumerate() {
+                        if ties.contains(&i) {
+                            self.walk_reaching(arg, out);
+                        }
+                    }
+                }
+                None => {
+                    for &arg in args {
+                        self.walk_reaching(arg, out);
+                    }
+                }
+            },
+            TTIRExprKind::Method { recv, item, args } => {
+                if let Some(ties) = self.tied(*item) {
+                    if ties.contains(&0) {
+                        self.walk_reaching(*recv, out);
+                    }
+                    for (i, &arg) in args.iter().enumerate() {
+                        if ties.contains(&(i + 1)) {
+                            self.walk_reaching(arg, out);
+                        }
+                    }
+                }
+            }
+            TTIRExprKind::ArrayLit(parts)
+            | TTIRExprKind::TupleLit(parts)
+            | TTIRExprKind::StructLit { fields: parts, .. }
+            | TTIRExprKind::VariantLit { fields: parts, .. }
+            | TTIRExprKind::Set { elems: parts, .. } => {
+                for &part in parts {
+                    self.walk_reaching(part, out);
+                }
+            }
+            TTIRExprKind::Map { entries, .. } => {
+                for &(key, value) in entries {
+                    self.walk_reaching(key, out);
+                    self.walk_reaching(value, out);
+                }
+            }
+            TTIRExprKind::Range { start, end, .. } => {
+                for held in [start, end].into_iter().flatten() {
+                    self.walk_reaching(*held, out);
+                }
+            }
+            TTIRExprKind::Block { tail, .. } => {
+                if let Some(tail) = tail {
+                    self.walk_reaching(*tail, out);
+                }
+            }
+            TTIRExprKind::If { then, els, .. } => {
+                self.walk_reaching(*then, out);
+                if let Some(els) = els {
+                    self.walk_reaching(*els, out);
+                }
+            }
+            TTIRExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.walk_reaching(arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // What a parameter's regions were handed, worked out against the argument
     // as it was written. A `(&'a i32, &'b i32)` given a tuple written on the
     // spot answers for each half on its own; anything this cannot take apart
@@ -1454,7 +1551,7 @@ impl<'a> Checker<'a> {
             // not a reference, so none of the above is asked of it and none of
             // it is promised" (§5).
             TTIRExprKind::Unary { op: TIRUnaryOp::Ref(op), operand } => {
-                self.borrowing(operand, op, line, col)
+                self.borrowing(id, operand, op, line, col)
             }
             TTIRExprKind::Unary { op: TIRUnaryOp::Addr, operand } => {
                 self.expr(operand, Use::Read)
@@ -1552,7 +1649,7 @@ impl<'a> Checker<'a> {
                             TIRRefOp::Imm
                         };
                         let mark = self.held.len();
-                        if self.borrowing(recv, op, line, col).left() {
+                        if self.borrowing(id, recv, op, line, col).left() {
                             return Flow::Left;
                         }
                         let out = self.handing(&args);
@@ -1603,7 +1700,7 @@ impl<'a> Checker<'a> {
                         // takes a `*`" (§5), and the reference is held for as
                         // long as the closure is.
                         TTIRCaptureMode::Ref(op) => {
-                            self.captured(&place, op, held.line, held.col);
+                            self.captured(id, &place, op, held.line, held.col);
                         }
                         // "By value is a copy where the name's type copies and
                         // a move where it does not" -- the same rule every
@@ -1701,7 +1798,14 @@ impl<'a> Checker<'a> {
     // A reference nobody wrote. Held like any other, and reported like any
     // other -- what changes is only what the secondary says, a reader who did
     // not write a `&` needing to be told one is there.
-    fn captured(&mut self, place: &Place, op: TIRRefOp, line: usize, col: usize) {
+    fn captured(
+        &mut self,
+        id: TTIRExprId,
+        place: &Place,
+        op: TIRRefOp,
+        line: usize,
+        col: usize,
+    ) {
         let now = self.now;
         if let Some(other) = self
             .held
@@ -1726,7 +1830,7 @@ impl<'a> Checker<'a> {
                     ),
             );
         }
-        self.held.push(Held { place: place.clone(), op, line, col, until: usize::MAX });
+        self.held.push(Held { place: place.clone(), op, line, col, until: usize::MAX, at: id });
     }
 
     // A run of things each of which is handed over: an argument list, the
@@ -1831,6 +1935,7 @@ impl<'a> Checker<'a> {
     // and how many of each may stand at once.
     fn borrowing(
         &mut self,
+        id: TTIRExprId,
         operand: TTIRExprId,
         op: TIRRefOp,
         line: usize,
@@ -1887,7 +1992,7 @@ impl<'a> Checker<'a> {
             );
         }
 
-        self.held.push(Held { place, op, line, col, until: usize::MAX });
+        self.held.push(Held { place, op, line, col, until: usize::MAX, at: id });
         Flow::Normal
     }
 
@@ -1963,16 +2068,21 @@ impl<'a> Checker<'a> {
                             self.from.insert(*local, roots);
                         }
                     }
-                    // Every borrow taken working the value out may have
-                    // reached the slot, so all of them keep the slot's extent
-                    // -- which ends where the slot is last read and not where
-                    // the block does. Blunt in which borrows are held and
-                    // sharp in how long: sharpening the first costs a
-                    // reachability walk, and the second is what turns down
-                    // programs that are fine.
+                    // A borrow that got as far as the slot keeps the slot's
+                    // extent, which ends where the slot is last read. One that
+                    // did not is a temporary and goes with the statement:
+                    // "a local at the end of its block, a temporary at the end
+                    // of its statement" (§2), and a `&` handed to something
+                    // that gives back no reference is a temporary however it
+                    // was written.
                     let until = self.last.get(local).copied().unwrap_or(usize::MAX);
+                    let reaching = match init {
+                        Some(init) => self.reaching(*init),
+                        None => Vec::new(),
+                    };
+                    let now = self.now;
                     for held in &mut self.held[taken..] {
-                        held.until = until;
+                        held.until = if reaching.contains(&held.at) { until } else { now };
                     }
                     // The slot is filled, whatever was in it before.
                     self.gone.filled(&Place::of(*local));

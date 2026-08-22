@@ -1781,3 +1781,57 @@ fn two_regions_of_one_argument_are_told_apart() {
     ));
     assert!(out.contains("`'x` does not outlive `'y`"), "{}", out);
 }
+
+// Which borrows keep a slot's extent: the ones that got as far as the value.
+// "a local at the end of its block, a temporary at the end of its statement"
+// (§2), and a `&` handed to something that gives back no reference is a
+// temporary however it was written.
+#[test]
+fn a_borrow_that_reached_nothing_goes_with_the_statement() {
+    // `len` gives back an `i32` and can hold nothing, so the `&x` is over when
+    // the line is -- even though `n` is read after the `*`.
+    clean(
+        "fn len(s: &i32): i32 {\n    1\n}\n\
+         fn f() {\n    var x = 1;\n    let n = len(&x);\n    let m = *x;\n    let k = n;\n}\n",
+    );
+    // `pick` gives back a reference tied to both, so both get as far as `r`.
+    let out = refused(
+        "fn pick(a: &i32, b: &i32): &i32 {\n    a\n}\n\
+         fn f() {\n    var x = 1;\n    let r = pick(&x, &x);\n\
+         \x20   let m = *x;\n    let k = r;\n}\n",
+    );
+    assert!(out.contains("`x` is borrowed already"), "{}", out);
+}
+
+// A declaration carries the regions of what it holds, however deep: the
+// references inside `Inner` have to stand in a region, and `Outer` is where
+// that region comes from.
+#[test]
+fn a_declaration_carries_the_regions_of_what_it_holds() {
+    let with = "struct Inner {\n    pub it: &i32,\n}\n\
+                struct Outer {\n    pub inner: Inner,\n}\n";
+    let out = refused(&format!(
+        "{}fn loose(p: &i32, q: &i32): Outer {{\n    Outer {{ inner: Inner {{ it: p }} }}\n}}\n\
+         fn f(p: &i32): Outer {{\n    let n = 1;\n    loose(p, &n)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    clean(&format!(
+        "{}fn tight<'a>(p: &'a i32, q: &i32): Outer<'a> {{\n\
+         \x20   Outer {{ inner: Inner {{ it: p }} }}\n}}\n\
+         fn f(p: &i32): Outer {{\n    let n = 1;\n    tight(p, &n)\n}}\n",
+        with
+    ));
+}
+
+// A declaration reached from itself has no finite number of regions -- each
+// turn round adds the last one's -- and the count stops rather than running
+// away. Written down because a hang is what the other answer would be.
+#[test]
+fn a_declaration_reached_from_itself_is_counted_and_not_chased() {
+    clean(
+        "struct A {\n    pub b: &B,\n}\n\
+         struct B {\n    pub a: &A,\n}\n\
+         fn f(p: &i32): i32 {\n    1\n}\n",
+    );
+}
