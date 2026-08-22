@@ -40,12 +40,19 @@
 //     holds it, which is the rule before Rust's NLL: it turns down some
 //     programs that are fine, and the prose allows for that, its own lifetime
 //     rule being "only ever answered too conservatively".
-//   - Compare the regions of a named type. `Ty::Named` holds types, so a
-//     `Held<'a>` loses the `'a` on the way in and there is nothing left to
-//     compare. What is done instead is the elision rule's own answer -- a fn
-//     whose result is a named type carrying a reference is tied to every one
-//     of its parameters -- which is sound and less sharp than a written `'a`
-//     ought to buy. Sharpening it means regions on `Ty::Named`.
+//   - Tell one region of a named type from another where the declaration
+//     names none. `struct Held { it: &i32 }` parses -- the field's reference
+//     gets a region of the struct's own numbering, which is a region nothing
+//     can instantiate -- so `Ty::Named` has no slot to carry it and there is
+//     nothing to compare. A fn whose result is such a type is tied to every
+//     one of its parameters instead, which is the elision rule's own answer
+//     and never wrong. A declaration that takes a lifetime does not go this
+//     way: `Held<'a>` carries its region and is compared like any other.
+//   - Hold anything to a `'a: 'b` or a `T: 'a`. Both are resolved to the
+//     regions they name and both are on the tree, and nothing reads them:
+//     what they constrain is the caller's regions against the callee's, and
+//     what `tied` does instead is the elision rule's answer for the whole
+//     signature at once.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
@@ -539,7 +546,7 @@ impl<'a> Checker<'a> {
             // does. The regions are the declaration's and not the use's -- a
             // `Held` written bare carries the same reference a `Held<'a>` does,
             // and it is the declaration that says so.
-            Ty::Named { item, args } => {
+            Ty::Named { item, args, .. } => {
                 if args.iter().any(|&a| self.holds_ref_past(a, seen)) {
                     return true;
                 }
@@ -601,7 +608,12 @@ impl<'a> Checker<'a> {
             }
             Ty::Array { elem, .. } | Ty::Run(elem) => self.regions_in(*elem, out),
             Ty::Ptr(inner) | Ty::GC(inner) => self.regions_in(*inner, out),
-            Ty::Named { args, .. } => {
+            Ty::Named { args, regions, .. } => {
+                for &r in regions {
+                    if r != 0 && !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
                 for &a in args {
                     self.regions_in(a, out);
                 }

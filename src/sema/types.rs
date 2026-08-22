@@ -166,9 +166,10 @@ impl Types {
         let here = self.shallow(id);
         let rebuilt = match self.arena[here].clone() {
             Ty::Var(_) | Ty::Prim(_) | Ty::Param { .. } | Ty::Error => return here,
-            Ty::Named { item, args } => Ty::Named {
+            Ty::Named { item, args, regions } => Ty::Named {
                 item,
                 args: args.iter().map(|&a| self.deep(a)).collect(),
+                regions,
             },
             Ty::Ref { op, life, inner } => Ty::Ref { op, life, inner: self.deep(inner) },
             Ty::Ptr(inner) => Ty::Ptr(self.deep(inner)),
@@ -262,11 +263,16 @@ impl Types {
         match (self.arena[a].clone(), self.arena[b].clone()) {
             (Ty::Prim(x), Ty::Prim(y)) if x == y => Ok(a),
 
-            (Ty::Named { item: x, args: xs }, Ty::Named { item: y, args: ys })
-                if x == y && xs.len() == ys.len() =>
-            {
+            // The regions are not unified, for the same reason a `Ref`'s is
+            // not: how long a thing is good for is a pass of its own, and a
+            // type that agrees but for its regions is a type that agrees. The
+            // left's are kept, `unify` giving back one type and not two.
+            (
+                Ty::Named { item: x, args: xs, regions },
+                Ty::Named { item: y, args: ys, .. },
+            ) if x == y && xs.len() == ys.len() => {
                 let args = self.unify_all(&xs, &ys)?;
-                Ok(self.intern(Ty::Named { item: x, args }))
+                Ok(self.intern(Ty::Named { item: x, args, regions }))
             }
 
             // The region is not unified here: how long a reference is good for
@@ -402,9 +408,10 @@ impl Types {
         let rebuilt = match self.arena[here].clone() {
             Ty::Param { index, .. } => return args.get(index).copied().unwrap_or(here),
             Ty::Prim(_) | Ty::Var(_) | Ty::Error => return here,
-            Ty::Named { item, args: inner } => Ty::Named {
+            Ty::Named { item, args: inner, regions } => Ty::Named {
                 item,
                 args: inner.iter().map(|&a| self.substitute(a, args)).collect(),
+                regions,
             },
             Ty::Ref { op, life, inner } => {
                 Ty::Ref { op, life, inner: self.substitute(inner, args) }
@@ -507,7 +514,7 @@ impl Types {
         let here = self.shallow(id);
         match &self.arena[here] {
             Ty::Prim(prim) => prim_name(*prim).to_string(),
-            Ty::Named { item, args } => {
+            Ty::Named { item, args, .. } => {
                 let mut out = name(*item);
                 if !args.is_empty() {
                     out.push('<');

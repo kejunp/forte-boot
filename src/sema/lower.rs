@@ -97,6 +97,10 @@ pub struct Lowerer<'a> {
     // The declaration being resolved, for a refusal about something written in
     // it that carries no position of its own -- a lifetime in a bound.
     here: Span,
+    // How many lifetimes each declaration takes, by the item it became. Filled
+    // while declaring, since a type may name a declaration that has not been
+    // resolved yet and the count is the only thing about it this needs.
+    lifes: Vec<usize>,
     // Bounds still to be asked. A parameter is a hole at the moment the call
     // is reached -- what fills it is what the call settles -- so asking there
     // asks nothing. They are put by until the body is walked and every hole is
@@ -158,6 +162,7 @@ impl<'a> Lowerer<'a> {
             lifetimes: HashMap::new(),
             in_sig: false,
             here: Span::at(1, 1),
+            lifes: Vec::new(),
             pending: Vec::new(),
             breaks: Vec::new(),
             subject: None,
@@ -299,6 +304,18 @@ impl<'a> Lowerer<'a> {
 
             let made = self.push(kind, id);
             self.made[id] = Some(made);
+            let takes = match &self.tir.items[id].kind {
+                TIRItemKind::Struct { generics, .. }
+                | TIRItemKind::Enum { generics, .. }
+                | TIRItemKind::TypeAlias { generics, .. } => {
+                    generics.iter().filter(|g| matches!(g, TIRGeneric::Life { .. })).count()
+                }
+                _ => 0,
+            };
+            if self.lifes.len() <= made {
+                self.lifes.resize(made + 1, 0);
+            }
+            self.lifes[made] = takes;
             if !name.is_empty() {
                 // By the bare name and by the path it is reached at, so
                 // `limits::MAX` and a `MAX` inside `limits` are one entry each.
@@ -586,7 +603,12 @@ impl<'a> Lowerer<'a> {
                 }
                 self.walk_regions(inner, out);
             }
-            Ty::Named { args, .. } => {
+            Ty::Named { args, regions, .. } => {
+                for r in regions {
+                    if r != 0 && !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
                 for a in args {
                     self.walk_regions(a, out);
                 }
@@ -718,6 +740,24 @@ impl<'a> Lowerer<'a> {
         self.regions
     }
 
+    // The regions a named type is handed, one per lifetime its declaration
+    // takes. A written `'a` names a region the declaration declared; where none
+    // was written, "every reference in a signature with no lifetime of its own
+    // gets one" (§3) reaches here too, and a fresh one is made -- so a `Held`
+    // and a `Held<'a>` carry the same promise and only one of them says which.
+    fn named_regions(&mut self, item: TTIRItemId, written: &[String], at: Span) -> Vec<RegionId> {
+        let takes = self.lifes.get(item).copied().unwrap_or(0);
+        let mut out = Vec::with_capacity(takes.max(written.len()));
+        for name in written {
+            let name = name.clone();
+            out.push(self.life(&name, at));
+        }
+        while out.len() < takes {
+            out.push(self.region());
+        }
+        out
+    }
+
     fn region(&mut self) -> RegionId {
         if !self.in_sig {
             return 0;
@@ -833,20 +873,21 @@ impl<'a> Lowerer<'a> {
                         return self.types.intern(Ty::Param { name: path[0].clone(), index });
                     }
                 }
+                // Types and lifetimes are written in one list and kept in
+                // two: a `Ty` is what unification works on and a region is what
+                // it skips, so they cannot share a slot.
+                let written: Vec<String> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        crate::tir::tir_nodes::TIRGenericArg::Life(name) => Some(name.clone()),
+                        crate::tir::tir_nodes::TIRGenericArg::Type(_) => None,
+                    })
+                    .collect();
                 let args: Vec<TyId> = args
                     .iter()
                     .filter_map(|a| match a {
                         crate::tir::tir_nodes::TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
-                        // A lifetime argument names a region, and `Ty::Named`
-                        // holds types. So it is checked and then dropped: an
-                        // undeclared one is still a mistake and still said
-                        // once, and what a `Foo<'a>` promises about its
-                        // insides is nothing this pass compares.
-                        crate::tir::tir_nodes::TIRGenericArg::Life(name) => {
-                            let name = name.clone();
-                            self.life(&name, at);
-                            None
-                        }
+                        crate::tir::tir_nodes::TIRGenericArg::Life(_) => None,
                     })
                     .collect();
                 match self.names.get(&path.join("::")).copied() {
@@ -854,7 +895,10 @@ impl<'a> Lowerer<'a> {
                     // the resolver has followed it there is nothing left of it"
                     Some(item) => match &self.out.items[item].kind {
                         TTIRItemKind::TypeAlias { ty, .. } => *ty,
-                        _ => self.types.intern(Ty::Named { item, args }),
+                        _ => {
+                            let regions = self.named_regions(item, &written, at);
+                            self.types.intern(Ty::Named { item, args, regions })
+                        }
                     },
                     None => {
                         let name = path.join("::");
@@ -1798,7 +1842,8 @@ impl<'a> Lowerer<'a> {
         }
 
         let fields: Vec<TTIRExprId> = placed.into_iter().flatten().collect();
-        let ty = self.types.intern(Ty::Named { item, args: Vec::new() });
+        let regions = self.named_regions(item, &[], self.at(at));
+        let ty = self.types.intern(Ty::Named { item, args: Vec::new(), regions });
         self.make(TTIRExprKind::StructLit { item, fields }, ty, at)
     }
 
@@ -1898,7 +1943,7 @@ impl<'a> Lowerer<'a> {
                 // Or a variant carrying nothing: `Color::Red`, reached through
                 // the enum that holds it.
                 if let Some((of, index)) = self.variant_path(&path) {
-                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new() });
+                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
                     self.hold(ty, want, id);
                     return self.make_pat(
                         TTIRPatKind::Variant { item: of, variant: index, elems: Vec::new() },
@@ -1977,7 +2022,7 @@ impl<'a> Lowerer<'a> {
                     );
                     return self.errored_pat(id, want);
                 };
-                let ty = self.types.intern(Ty::Named { item: of, args: Vec::new() });
+                let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
                 self.hold(ty, want, id);
                 let carried = self.payload_tys(of, index);
                 let made: Vec<TTIRPatId> = elems
@@ -2000,7 +2045,7 @@ impl<'a> Lowerer<'a> {
                 // written like a struct and is a variant, and which it is is
                 // what the path names.
                 if let Some((of, index)) = self.variant_path(&path) {
-                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new() });
+                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
                     self.hold(ty, want, id);
                     let named = self.payload_names(of, index);
                     let mut placed: Vec<Option<TTIRPatId>> = vec![None; named.len()];
@@ -2069,7 +2114,8 @@ impl<'a> Lowerer<'a> {
                 let held = name.clone();
                 let declared: Vec<(String, TyId)> =
                     declared.iter().map(|f| (f.name.clone(), f.ty)).collect();
-                let ty = self.types.intern(Ty::Named { item, args: Vec::new() });
+                let regions = self.named_regions(item, &[], self.pat_at(id));
+                let ty = self.types.intern(Ty::Named { item, args: Vec::new(), regions });
                 self.hold(ty, want, id);
 
                 // "Fields in declaration order, `None` where the pattern named
@@ -2412,7 +2458,8 @@ impl<'a> Lowerer<'a> {
                 TTIRItemKind::Struct { .. } | TTIRItemKind::Enum { .. }
             ) =>
             {
-                self.types.intern(Ty::Named { item, args })
+                let regions = self.named_regions(item, &[], self.at(at));
+                self.types.intern(Ty::Named { item, args, regions })
             }
             _ => {
                 self.errors.push(
@@ -2526,7 +2573,7 @@ impl<'a> Lowerer<'a> {
             // "A reference to a fixed array is a view of it" (§3), and a view
             // is what is run through.
             Ty::Ref { inner, .. } => self.elem_of(inner),
-            Ty::Named { item, args } => {
+            Ty::Named { item, args, .. } => {
                 let held = match &self.out.items[item].kind {
                     TTIRItemKind::Struct { name, .. } | TTIRItemKind::Enum { name, .. } => {
                         name.as_str()
@@ -2634,7 +2681,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let ty = self.types.intern(Ty::Named { item: of, args: Vec::new() });
+        let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
         self.make(TTIRExprKind::VariantLit { item: of, variant: index, fields: made }, ty, at)
     }
 

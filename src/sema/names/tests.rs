@@ -113,7 +113,7 @@ fn the_whole_format_in_one_name() {
     let mut s = Suite::new();
     let i32 = s.prim(TIRPrim::I32);
     let mytype = s.strukt("mytype");
-    let mytype_ty = s.ty(Ty::Named { item: mytype, args: Vec::new() });
+    let mytype_ty = s.ty(Ty::Named { item: mytype, args: Vec::new(), regions: Vec::new() });
     let foo = s.func("foo", vec![i32, mytype_ty]);
     let ns = s.item(TTIRItemKind::Namespace {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
@@ -208,7 +208,7 @@ fn namespaces_nest() {
 fn a_method_is_named_by_the_impl_it_is_in() {
     let mut s = Suite::new();
     let buf = s.strukt("Buf");
-    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new(), regions: Vec::new() });
 
     let bare = s.func("len", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
@@ -281,8 +281,8 @@ fn a_named_type_carries_where_it_was_declared() {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "shapes".to_string(), items: vec![nested],
     });
-    let a = s.ty(Ty::Named { item: bare, args: Vec::new() });
-    let b = s.ty(Ty::Named { item: nested, args: Vec::new() });
+    let a = s.ty(Ty::Named { item: bare, args: Vec::new(), regions: Vec::new() });
+    let b = s.ty(Ty::Named { item: nested, args: Vec::new(), regions: Vec::new() });
     let roots = vec![bare, ns];
     assert_eq!(s.spell_of(a, roots.clone()), "Point");
     assert_eq!(s.spell_of(b, roots), "shapes::Point");
@@ -298,8 +298,8 @@ fn a_generic_type_carries_its_arguments() {
     let vec = s.strukt("Vec");
     let map = s.strukt("Map");
 
-    let of_i32 = s.ty(Ty::Named { item: vec, args: vec![i32] });
-    let nested = s.ty(Ty::Named { item: map, args: vec![str, of_i32] });
+    let of_i32 = s.ty(Ty::Named { item: vec, args: vec![i32], regions: Vec::new() });
+    let nested = s.ty(Ty::Named { item: map, args: vec![str, of_i32], regions: Vec::new() });
     let roots = vec![vec, map];
     assert_eq!(s.spell_of(of_i32, roots.clone()), "Vec<i32>");
     assert_eq!(s.spell_of(nested, roots.clone()), "Map<str,Vec<i32>>");
@@ -454,7 +454,7 @@ fn each_kind_of_declaration_gets_its_own_letter() {
 fn an_impl_is_not_in_the_table_but_its_methods_are() {
     let mut s = Suite::new();
     let buf = s.strukt("Buf");
-    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new(), regions: Vec::new() });
     let len = s.func("len", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
@@ -479,7 +479,7 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
     let mut s = Suite::new();
     s.module = vec!["shapes".to_string()];
     let here = s.strukt("Point");
-    let here_ty = s.ty(Ty::Named { item: here, args: Vec::new() });
+    let here_ty = s.ty(Ty::Named { item: here, args: Vec::new(), regions: Vec::new() });
     let mine = s.func("norm", Vec::new());
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
@@ -489,7 +489,7 @@ fn an_impl_does_not_repeat_the_module_it_is_in() {
     });
 
     let away = s.strukt("Buf");
-    let away_ty = s.ty(Ty::Named { item: away, args: Vec::new() });
+    let away_ty = s.ty(Ty::Named { item: away, args: Vec::new(), regions: Vec::new() });
     let theirs = s.func("len", Vec::new());
     let imp2 = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),

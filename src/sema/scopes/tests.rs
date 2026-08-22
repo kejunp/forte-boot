@@ -272,7 +272,7 @@ fn a_namespace_is_a_scope_of_its_own() {
 fn an_impl_holds_its_methods_and_declares_no_name() {
     let mut s = Suite::new();
     let buf = s.strukt("Buf");
-    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new(), regions: Vec::new() });
     let len = s.func("len", Vec::new(), None);
     let imp = s.item(TTIRItemKind::Impl {
         generics: Vec::new(),
@@ -362,7 +362,7 @@ fn an_imported_name_stands_in_the_scope_that_imported_it() {
 fn a_fn_holds_its_generic_parameters() {
     let mut s = Suite::new();
     let ord = s.strukt("Ord");
-    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new() });
+    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new(), regions: Vec::new() });
     let t = s.ty(Ty::Param { name: "T".to_string(), index: 1 });
     let body = s.body(vec![("x", t, TIRIntro::Let)], Vec::new());
     let f = s.func("first", vec![t], Some(body));
@@ -437,7 +437,7 @@ fn a_struct_and_an_enum_hold_their_parameters() {
 fn an_impls_parameters_reach_its_methods() {
     let mut s = Suite::new();
     let stack = s.strukt("Stack");
-    let stack_ty = s.ty(Ty::Named { item: stack, args: Vec::new() });
+    let stack_ty = s.ty(Ty::Named { item: stack, args: Vec::new(), regions: Vec::new() });
     let push = s.func("push", Vec::new(), None);
     let imp = s.item(TTIRItemKind::Impl {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
@@ -463,7 +463,7 @@ fn an_impls_parameters_reach_its_methods() {
 fn a_fns_parameter_hides_the_impls() {
     let mut s = Suite::new();
     let buf = s.strukt("Buf");
-    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new() });
+    let buf_ty = s.ty(Ty::Named { item: buf, args: Vec::new(), regions: Vec::new() });
     let m = s.func("take", Vec::new(), None);
     let TTIRItemKind::Fn(held) = &mut s.p.items[m].kind else { panic!() };
     held.generics = vec![TTIRGeneric::Type { name: "T".to_string(), bounds: Vec::new() }];
@@ -493,12 +493,12 @@ fn a_fns_parameter_hides_the_impls() {
 fn a_where_clause_keeps_what_no_parameter_can_hold() {
     let mut s = Suite::new();
     let ord = s.strukt("Ord");
-    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new() });
+    let ord_ty = s.ty(Ty::Named { item: ord, args: Vec::new(), regions: Vec::new() });
     let show = s.strukt("Show");
-    let show_ty = s.ty(Ty::Named { item: show, args: Vec::new() });
+    let show_ty = s.ty(Ty::Named { item: show, args: Vec::new(), regions: Vec::new() });
     let vec = s.strukt("Vec");
     let t = s.ty(Ty::Param { name: "T".to_string(), index: 0 });
-    let vec_t = s.ty(Ty::Named { item: vec, args: vec![t] });
+    let vec_t = s.ty(Ty::Named { item: vec, args: vec![t], regions: Vec::new() });
 
     let f = s.func("go", vec![t], None);
     let TTIRItemKind::Fn(held) = &mut s.p.items[f].kind else { panic!() };

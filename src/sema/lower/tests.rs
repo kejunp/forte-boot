@@ -1556,3 +1556,66 @@ fn a_loop_variable_points_where_what_it_goes_through_did() {
          \x20   for v in things {\n        return v;\n    }\n    p\n}\n",
     );
 }
+
+// ---- The regions a named type carries --------------------------------------
+
+// A named type is handed one region per lifetime its declaration takes, written
+// or not: "every reference in a signature with no lifetime of its own gets one"
+// (§3) reaches a type that carries references and not only a reference.
+#[test]
+fn a_named_type_is_handed_a_region_for_every_lifetime_it_takes() {
+    let with = "struct Held<'a> {\n    pub it: &'a i32,\n}\n";
+    // Nothing written: the reference is region 1 and the `Held` gets region 2,
+    // and the rule ties the second to the first.
+    let ttir = clean(&format!(
+        "{}fn make(p: &i32): Held {{\n    Held {{ it: p }}\n}}\n",
+        with
+    ));
+    let (brought, given, outlives) = signature(&ttir, "make");
+    assert_eq!(brought, vec![1]);
+    assert!(given.is_empty(), "the return is a named type and not a reference");
+    assert_eq!(outlives, vec![(1, 2)]);
+}
+
+// And a written one is the same sharpening it is anywhere else: `Held<'a>` ties
+// the result to `p` and leaves `q` out of it.
+#[test]
+fn a_written_lifetime_sharpens_a_named_result_too() {
+    let with = "struct Held<'a> {\n    pub it: &'a i32,\n}\n";
+    let out = refused(&format!(
+        "{}fn loose(p: &i32, q: &i32): Held {{\n    Held {{ it: p }}\n}}\n\
+         fn f(p: &i32): Held {{\n    let n = 1;\n    loose(p, &n)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    clean(&format!(
+        "{}fn tight<'a>(p: &'a i32, q: &i32): Held<'a> {{\n    Held {{ it: p }}\n}}\n\
+         fn f(p: &i32): Held {{\n    let n = 1;\n    tight(p, &n)\n}}\n",
+        with
+    ));
+}
+
+// A declaration that names no lifetime has no region to carry, and a fn whose
+// result is such a type is held to everything -- the elision rule's own answer,
+// which is never wrong and is what there is to say without a slot to say it in.
+#[test]
+fn a_declaration_that_names_no_lifetime_is_held_to_everything() {
+    let out = refused(
+        "struct Held {\n    pub it: &i32,\n}\n\
+         fn make(p: &i32, q: &i32): Held {\n    Held { it: p }\n}\n\
+         fn f(p: &i32): Held {\n    let n = 1;\n    make(p, &n)\n}\n",
+    );
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+}
+
+// Two `Held`s agree whatever regions they stand in: "a type that agrees but for
+// its regions is a type that agrees", which is what `unify` already does for a
+// reference and now does for what carries one.
+#[test]
+fn two_named_types_agree_whatever_regions_they_stand_in() {
+    clean(
+        "struct Held<'a> {\n    pub it: &'a i32,\n}\n\
+         fn f<'a, 'b>(x: Held<'a>, y: Held<'b>, c: bool): Held<'a> {\n\
+         \x20   if c {\n        x\n    } else {\n        x\n    }\n}\n",
+    );
+}

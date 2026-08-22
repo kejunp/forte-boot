@@ -146,8 +146,17 @@ pub enum Ty {
     Prim(TIRPrim),
     // A struct, an enum or a trait, with the arguments it was given.
     Named {
-        item: TTIRItemId,
-        args: Vec<TyId>,
+        item:    TTIRItemId,
+        args:    Vec<TyId>,
+        // The regions it was handed, one per lifetime its declaration takes.
+        // "Every reference in a signature with no lifetime of its own gets one"
+        // (§3) reaches here too: a `Held` written bare gets as many fresh
+        // regions as a `Held<'a>` names, so the two carry the same promise and
+        // only one of them says which region it is.
+        //
+        // Kept beside `args` and not among them because they are not types: a
+        // `Ty` is what unification works on, and a region is what it skips.
+        regions: Vec<RegionId>,
     },
     Ref {
         op:    TIRRefOp,

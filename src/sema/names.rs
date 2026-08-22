@@ -379,7 +379,7 @@ impl Mangler {
         match &p.types[id] {
             Ty::Prim(prim) => prim_name(*prim).to_string(),
 
-            Ty::Named { item, args } => {
+            Ty::Named { item, args, .. } => {
                 let mut out = self.paths[*item]
                     .iter()
                     .map(|s| format!("{}::", s))

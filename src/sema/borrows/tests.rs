@@ -49,7 +49,7 @@ impl Suite {
             vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: name.to_string(),
             generics: Vec::new(), fields: Vec::new(),
         });
-        self.ty(Ty::Named { item, args: Vec::new() })
+        self.ty(Ty::Named { item, args: Vec::new(), regions: Vec::new() })
     }
 
     fn trait_named(&mut self, name: &str) -> TTIRItemId {
@@ -546,7 +546,7 @@ fn an_array_copies_when_its_element_does() {
 fn a_parameter_copies_where_it_is_bounded_to() {
     let mut s = Suite::new();
     let copy = s.trait_named("Copy");
-    let copy_ty = s.ty(Ty::Named { item: copy, args: Vec::new() });
+    let copy_ty = s.ty(Ty::Named { item: copy, args: Vec::new(), regions: Vec::new() });
     let t = s.ty(Ty::Param { name: "T".to_string(), index: 0 });
     s.func(Suite::NULL);
 

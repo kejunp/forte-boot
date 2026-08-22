@@ -19,8 +19,8 @@ fn one_type_is_one_handle() {
     assert_ne!(a, c);
 
     // And through a type that holds one: `Vec<i32>` twice is one entry.
-    let one = t.intern(Ty::Named { item: 0, args: vec![a] });
-    let two = t.intern(Ty::Named { item: 0, args: vec![b] });
+    let one = t.intern(Ty::Named { item: 0, args: vec![a], regions: Vec::new() });
+    let two = t.intern(Ty::Named { item: 0, args: vec![b], regions: Vec::new() });
     assert_eq!(one, two);
 }
 
@@ -60,8 +60,8 @@ fn a_hole_inside_a_type_is_filled_from_outside() {
     let mut t = Types::new();
     let hole = t.fresh();
     let i32 = t.prim(TIRPrim::I32);
-    let of_hole = t.intern(Ty::Named { item: 0, args: vec![hole] });
-    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32] });
+    let of_hole = t.intern(Ty::Named { item: 0, args: vec![hole], regions: Vec::new() });
+    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32], regions: Vec::new() });
 
     assert!(t.unify(of_hole, of_i32).is_ok());
     assert_eq!(t.shallow(hole), i32);
@@ -103,14 +103,14 @@ fn two_types_that_are_not_one_say_which_part_disagreed() {
     let mut t = Types::new();
     let i32 = t.prim(TIRPrim::I32);
     let str = t.prim(TIRPrim::Str);
-    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32] });
-    let of_str = t.intern(Ty::Named { item: 0, args: vec![str] });
+    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32], regions: Vec::new() });
+    let of_str = t.intern(Ty::Named { item: 0, args: vec![str], regions: Vec::new() });
 
     // The report is the innermost disagreement and not the whole type: the
     // rest of `Vec<i32>` and `Vec<str>` is the same on both sides.
     assert_eq!(t.unify(of_i32, of_str), Err(Mismatch { found: i32, wanted: str }));
     // A different declaration is a different type however alike they read.
-    let other = t.intern(Ty::Named { item: 1, args: vec![i32] });
+    let other = t.intern(Ty::Named { item: 1, args: vec![i32], regions: Vec::new() });
     assert!(t.unify(of_i32, other).is_err());
 }
 
@@ -163,7 +163,7 @@ fn a_fn_type_agrees_by_all_three() {
 fn a_hole_may_not_be_filled_with_itself() {
     let mut t = Types::new();
     let hole = t.fresh();
-    let of_hole = t.intern(Ty::Named { item: 0, args: vec![hole] });
+    let of_hole = t.intern(Ty::Named { item: 0, args: vec![hole], regions: Vec::new() });
     assert!(t.unify(hole, of_hole).is_err());
     // And it is still a hole afterwards, not half-filled.
     assert_eq!(t.shallow(hole), hole);
@@ -176,8 +176,8 @@ fn an_error_does_not_report_twice() {
     let mut t = Types::new();
     let error = t.error();
     let i32 = t.prim(TIRPrim::I32);
-    let of_error = t.intern(Ty::Named { item: 0, args: vec![error] });
-    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32] });
+    let of_error = t.intern(Ty::Named { item: 0, args: vec![error], regions: Vec::new() });
+    let of_i32 = t.intern(Ty::Named { item: 0, args: vec![i32], regions: Vec::new() });
     assert!(t.unify(error, i32).is_ok());
     assert!(t.unify(of_error, of_i32).is_ok());
 }
@@ -238,16 +238,16 @@ fn finishing_settles_every_hole_and_names_the_rest() {
     let filled = t.fresh();
     let open = t.fresh();
     let i32 = t.prim(TIRPrim::I32);
-    let of_filled = t.intern(Ty::Named { item: 0, args: vec![filled] });
+    let of_filled = t.intern(Ty::Named { item: 0, args: vec![filled], regions: Vec::new() });
     t.unify(filled, i32).expect("a hole takes what is put in it");
-    let of_open = t.intern(Ty::Named { item: 0, args: vec![open] });
+    let of_open = t.intern(Ty::Named { item: 0, args: vec![open], regions: Vec::new() });
 
     let (arena, unsettled) = t.finish();
     // The one nobody filled is reported, by the handle a caller keyed its span
     // by.
     assert_eq!(unsettled.len(), 1);
     // The one that was filled is the type it was filled with, all the way down.
-    assert_eq!(arena[of_filled], Ty::Named { item: 0, args: vec![i32] });
+    assert_eq!(arena[of_filled], Ty::Named { item: 0, args: vec![i32], regions: Vec::new() });
     // And the one that was not is an `Error`, so nothing below carries a case
     // for a type that was never settled.
     let Ty::Named { args, .. } = &arena[of_open] else { panic!() };
@@ -282,7 +282,7 @@ fn a_type_is_spelled_the_way_it_was_written() {
         assert_eq!(spell(&t, id), want, "{:?}", ty);
     }
     // A named type is asked what it is called, this module holding no items.
-    let vec_of = t.intern(Ty::Named { item: 4, args: vec![i32, str] });
+    let vec_of = t.intern(Ty::Named { item: 4, args: vec![i32, str], regions: Vec::new() });
     assert_eq!(
         t.spell(vec_of, &|item| if item == 4 { "Map".to_string() } else { "?".into() }),
         "Map<i32, str>"
