@@ -20,16 +20,30 @@
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
+// Regions are checked too, and the shape they take here is worth saying:
+//
+//     What the rule costs is precision, and it spends it at the call rather
+//     than at the declaration ... the program that cannot be proved is turned
+//     down where it is used and not where the thing that could not be proved
+//     was written.                                      (docs/prose.txt, §3)
+//
+// So there is no second frame and no constraint solver. A signature's
+// `outlives` says which of its parameters its result is tied to; a body orders
+// its own slots by how deeply nested the block that declared each one is; and
+// the check is that a value never reaches a place that outlives it. What the
+// return type asks for is the same question with the place being the caller,
+// which outlives everything the body declares.
+//
 // What it does not do:
 //
-//   - Regions at the call. A borrow here lasts to the end of the block that
+//   - Sharpen a borrow's extent. A borrow lasts to the end of the block that
 //     holds it, which is the rule before Rust's NLL: it turns down some
 //     programs that are fine, and the prose allows for that, its own lifetime
-//     rule being "only ever answered too conservatively". What is checked is
-//     the other end -- a reference that leaves the body it was taken in, which
-//     is the one region question a body can answer on its own. Whether a
-//     *caller* satisfies what a signature's `outlives` asks is the pass that
-//     compares two frames, and that one is not written.
+//     rule being "only ever answered too conservatively".
+//   - Follow a reference out of an iterator or a pattern. `for v in items` and
+//     `Some(v) => v` bind a name this cannot tell points into `items`, so a
+//     reference reaching a body that way is followed no further. Permissive,
+//     and the one place these rules are.
 //   - A closure that leaves the body it was written in. "A closure that
 //     captures by reference cannot outlive what it captured, and `move` is the
 //     only thing that lets one be returned" (§8) -- and a closure's type says
@@ -49,7 +63,7 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
-    TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
+    RegionId, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
     TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRProgram, TTIRStmt, Ty, TyId,
 };
 
@@ -388,10 +402,19 @@ pub struct Checker<'a> {
     // of the signature. If it does not, nothing it gives back can outstay
     // anything, and the escape check has nothing to ask.
     leaves:  bool,
-    // The slots the parameters were put in. A reference rooted at one of them
-    // came from outside and goes on living there; every other local of the body
-    // goes when the body does.
-    args:    Vec<TTIRLocalId>,
+    // How deeply nested the block that declared each slot is. A parameter is 0,
+    // since it came from outside and outlives everything the body declares; a
+    // local of the body's own block is 1, one inside a block inside that is 2,
+    // and a bigger number is a shorter life. Comparing two of them is the whole
+    // of the ordering this pass has, and it is the ordering the language has:
+    // "a local at the end of its block" (§2) is what a block being nested in
+    // another one comes to.
+    depth:   HashMap<TTIRLocalId, usize>,
+    // Which locals have already been refused for outstaying something. One
+    // mistake is one message: a reference put in a slot that outlives it and
+    // then given back out of the body is one thing gone wrong in two places,
+    // and the first place is the one worth reading.
+    said_of: Vec<TTIRLocalId>,
     // What each slot's value points into, where it points into this body at
     // all. `let r = &x` makes r point into x, and `let s = r` makes s point
     // where r did -- so a reference is followed however many names it is
@@ -413,7 +436,8 @@ impl<'a> Checker<'a> {
             breaks: Vec::new(),
             quiet: false,
             leaves: false,
-            args: Vec::new(),
+            depth: HashMap::new(),
+            said_of: Vec::new(),
             from: HashMap::new(),
         }
     }
@@ -450,7 +474,11 @@ impl<'a> Checker<'a> {
     fn walk_fn(&mut self, f: &TTIRFn) {
         let Some(body) = f.body else { return };
         self.leaves = self.holds_ref(f.ret);
-        self.args = f.params.iter().filter_map(|p| p.slot).collect();
+        self.depth.clear();
+        self.said_of.clear();
+        for slot in f.params.iter().filter_map(|p| p.slot) {
+            self.depth.insert(slot, 0);
+        }
         self.from.clear();
         self.walk_body(body, f.generics.clone());
         // The tail. A `return` is checked where it stands, since what follows
@@ -492,6 +520,88 @@ impl<'a> Checker<'a> {
             Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref(m)),
             Ty::Array { elem, .. } => self.holds_ref(*elem),
             _ => false,
+        }
+    }
+
+    // Every region standing anywhere in a type.
+    fn regions_in(&self, ty: TyId, out: &mut Vec<RegionId>) {
+        match &self.p.types[ty] {
+            Ty::Ref { life, inner, .. } => {
+                if *life != 0 && !out.contains(life) {
+                    out.push(*life);
+                }
+                self.regions_in(*inner, out);
+            }
+            Ty::Tuple(members) => {
+                for &m in members {
+                    self.regions_in(m, out);
+                }
+            }
+            Ty::Array { elem, .. } | Ty::Run(elem) => self.regions_in(*elem, out),
+            Ty::Ptr(inner) | Ty::GC(inner) => self.regions_in(*inner, out),
+            Ty::Named { args, .. } => {
+                for &a in args {
+                    self.regions_in(a, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Which of a fn's parameters its result is tied to, or `None` where its
+    // result is tied to nothing because it gives back no reference.
+    //
+    // This is the other half of the bargain §3 strikes. The declaration was
+    // never refused for want of a lifetime -- every reference in it got a
+    // region and the return was held to all of them -- and here is where that
+    // is paid for: a caller is held to every parameter the return's region can
+    // be reached from. Writing `'a` is what buys the precision back, and it
+    // buys it exactly here, by leaving a parameter out of this list.
+    fn tied(&self, item: TTIRItemId) -> Option<Vec<usize>> {
+        let TTIRItemKind::Fn(f) = &self.p.items[item].kind else { return None };
+        let mut reach = Vec::new();
+        self.regions_in(f.ret, &mut reach);
+        if reach.is_empty() {
+            return None;
+        }
+        // Everything that outlives something already reached, until nothing
+        // more is. A `(longer, shorter)` pair says the caller has to make
+        // `longer` last at least as long, so `longer` is one more region the
+        // result stands or falls with.
+        loop {
+            let grown: Vec<RegionId> = f
+                .outlives
+                .iter()
+                .filter(|(longer, shorter)| reach.contains(shorter) && !reach.contains(longer))
+                .map(|&(longer, _)| longer)
+                .collect();
+            if grown.is_empty() {
+                break;
+            }
+            reach.extend(grown);
+        }
+        let Ty::Fn { params, .. } = &self.p.types[f.ty] else { return None };
+        Some(
+            params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    let mut held = Vec::new();
+                    self.regions_in(**p, &mut held);
+                    held.iter().any(|r| reach.contains(r))
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        )
+    }
+
+    // The item a callee expression names, where it names one. A call through a
+    // closure or a fn held in a variable names none, and then nothing is known
+    // about what its result is tied to.
+    fn callee(&self, id: TTIRExprId) -> Option<TTIRItemId> {
+        match &self.p.exprs[id].kind {
+            TTIRExprKind::Item(item) => Some(*item),
+            _ => None,
         }
     }
 
@@ -537,20 +647,48 @@ impl<'a> Checker<'a> {
             | TTIRExprKind::Index { base, .. } => self.walk_roots(*base, out),
             TTIRExprKind::Cast(inner) => self.walk_roots(*inner, out),
             // "a reference in the return type gets the shortest-lived of the
-            // ones the parameters brought in" -- which is the callee's rule
-            // read from this side: whatever a call gives back may point into
-            // anything that was handed to it.
-            TTIRExprKind::Call { args, .. } => {
-                for &arg in args {
-                    self.walk_roots(arg, out);
+            // ones the parameters brought in" -- the callee's rule read from
+            // this side. What its result may point into is what was handed to
+            // the parameters its result is tied to, and no more: a `'a` written
+            // in the signature is what shortens that list, and this is where
+            // the caller gets the precision it paid for.
+            TTIRExprKind::Call { callee, args } => {
+                let ties = self.callee(*callee).map(|item| self.tied(item));
+                match ties {
+                    // A fn whose result gives back no reference. Nothing that
+                    // was handed in can be reached through what comes out.
+                    Some(None) => {}
+                    Some(Some(ties)) => {
+                        for (i, &arg) in args.iter().enumerate() {
+                            if ties.contains(&i) {
+                                self.walk_roots(arg, out);
+                            }
+                        }
+                    }
+                    // A callee this cannot read -- a closure, or a fn in a
+                    // slot. Every argument, which is the answer that is never
+                    // wrong.
+                    None => {
+                        for &arg in args {
+                            self.walk_roots(arg, out);
+                        }
+                    }
                 }
             }
-            TTIRExprKind::Method { recv, args, .. } => {
-                self.walk_roots(*recv, out);
-                for &arg in args {
-                    self.walk_roots(arg, out);
+            // The same, with the receiver standing where parameter 0 does.
+            TTIRExprKind::Method { recv, item, args } => match self.tied(*item) {
+                None => {}
+                Some(ties) => {
+                    if ties.contains(&0) {
+                        self.walk_roots(*recv, out);
+                    }
+                    for (i, &arg) in args.iter().enumerate() {
+                        if ties.contains(&(i + 1)) {
+                            self.walk_roots(arg, out);
+                        }
+                    }
                 }
-            }
+            },
             // What is built out of references points where they did.
             TTIRExprKind::ArrayLit(parts) | TTIRExprKind::TupleLit(parts) => {
                 for &part in parts {
@@ -579,46 +717,68 @@ impl<'a> Checker<'a> {
     }
 
     // What a body gives back, held to what its signature promised.
+    // How long a slot is good for. An unrecorded one is treated as coming from
+    // outside: a binding this pass never walked past is not a thing to refuse a
+    // program over.
+    fn lives(&self, root: TTIRLocalId) -> usize {
+        self.depth.get(&root).copied().unwrap_or(0)
+    }
+
+    // A block is where a value stands, not what it is: what comes out of one is
+    // its tail, and the tail is the line a refusal points at.
+    fn leaving(&self, id: TTIRExprId) -> TTIRExprId {
+        let mut held = id;
+        while let TTIRExprKind::Block { tail: Some(tail), .. } = &self.p.exprs[held].kind {
+            held = *tail;
+        }
+        held
+    }
+
+    // A value put somewhere that outlives it. `held` is how long the place that
+    // takes it is good for -- 0 for what a signature gives back, since every
+    // region of a signature was brought in from outside and outlives the body.
+    fn outstays(&mut self, value: TTIRExprId, held: usize, what: &str, at: Span) {
+        let leaves = self.leaving(value);
+        let at = if leaves == value {
+            at
+        } else {
+            Span::at(self.p.exprs[leaves].line, self.p.exprs[leaves].col)
+        };
+        for (root, took) in self.roots(value) {
+            if self.lives(root) <= held || self.said_of.contains(&root) {
+                continue;
+            }
+            if !self.quiet {
+                self.said_of.push(root);
+            }
+            let local = &self.p.bodies[self.body].locals[root];
+            let name = self.name(&Place::of(root));
+            let mut said =
+                Diagnostic::error(format!("`{}` does not live long enough", name), at)
+                    .with_label(what);
+            // Where the `&` was written, when that is not the line already
+            // shown: a reference handed through a name leaves in one place and
+            // was taken in another.
+            let took = Span::at(self.p.exprs[took].line, self.p.exprs[took].col);
+            if (took.line, took.col) != (at.line, at.col) {
+                said = said.with_secondary(took, "the reference was taken");
+            }
+            said = said.with_secondary(Span::at(local.line, local.col), "it was bound");
+            self.say(if held == 0 {
+                said.with_note("what a signature gives back is good for as long as what its parameters brought in, and this was not one of them")
+                    .with_help("give back the value itself, or a reference to something the caller handed in")
+            } else {
+                said.with_note("a reference is good until the end of the block that holds what it refers to")
+                    .with_help("move what it refers to out to where it has to last, or keep the reference where it was taken")
+            });
+        }
+    }
+
     fn escaping(&mut self, value: TTIRExprId, line: usize, col: usize) {
         if !self.leaves {
             return;
         }
-        // A block is where the value stands, not what it is: what leaves is the
-        // tail, and the tail is the line to point at.
-        let mut leaves = value;
-        while let TTIRExprKind::Block { tail: Some(tail), .. } = &self.p.exprs[leaves].kind {
-            leaves = *tail;
-        }
-        let (line, col) = if leaves == value {
-            (line, col)
-        } else {
-            (self.p.exprs[leaves].line, self.p.exprs[leaves].col)
-        };
-
-        for (root, took) in self.roots(value) {
-            if self.args.contains(&root) {
-                continue;
-            }
-            let local = &self.p.bodies[self.body].locals[root];
-            let name = self.name(&Place::of(root));
-            let mut said = Diagnostic::error(
-                format!("`{}` does not live long enough", name),
-                Span::at(line, col),
-            )
-            .with_label("this gives back a reference to it");
-            // Where the `&` was written, when that is not the line already
-            // shown -- a reference handed through a name leaves in one place
-            // and was taken in another.
-            let at = Span::at(self.p.exprs[took].line, self.p.exprs[took].col);
-            if (at.line, at.col) != (line, col) {
-                said = said.with_secondary(at, "the reference was taken");
-            }
-            self.say(
-                said.with_secondary(Span::at(local.line, local.col), "it was bound")
-                    .with_note("what a signature gives back is good for as long as what its parameters brought in, and this was not one of them")
-                    .with_help("give back the value itself, or a reference to something the caller handed in"),
-            );
-        }
+        self.outstays(value, 0, "this gives back a reference to it", Span::at(line, col));
     }
 
     // ---- Places ----------------------------------------------------------
@@ -749,6 +909,21 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if let Some(held) = self.place(place) {
+                    // What the place is good for is what its root is good for,
+                    // and it may not be given something shorter-lived. This is
+                    // the refusal §3 promises lands "at the call rather than at
+                    // the declaration", in the shape it takes when nothing is
+                    // being returned: `r = pick(&outer, &inner)` where `r`
+                    // outlives the block `inner` was declared in.
+                    let lives = self.lives(held.root);
+                    let (at_line, at_col) =
+                        (self.p.exprs[value].line, self.p.exprs[value].col);
+                    self.outstays(
+                        value,
+                        lives,
+                        "this puts a reference to it somewhere longer-lived",
+                        Span::at(at_line, at_col),
+                    );
                     self.gone.filled(&held);
                 }
                 Flow::Normal
@@ -1115,12 +1290,27 @@ impl<'a> Checker<'a> {
                 // slot or not -- which is the conservative half and costs a
                 // reachability walk to sharpen.
                 TTIRStmt::Let { local, init, .. } => {
+                    // How long the slot is good for: the block it stands in,
+                    // which is however many blocks deep the walk is now.
+                    let held = self.marks.len();
+                    self.depth.insert(*local, held);
                     if let Some(init) = init {
                         if self.expr(*init, Use::Pass).left() {
                             flow = Flow::Left;
                             break;
                         }
                         self.moving(*init);
+                        // A slot that outlives what it is given is the same
+                        // refusal as a return that does, one block in rather
+                        // than all the way out.
+                        let (line, col) =
+                            (self.p.exprs[*init].line, self.p.exprs[*init].col);
+                        self.outstays(
+                            *init,
+                            held,
+                            "this puts a reference to it somewhere longer-lived",
+                            Span::at(line, col),
+                        );
                         // And where it points, so a reference handed through a
                         // name is followed to what it was taken from.
                         let roots = self.roots(*init);
@@ -1237,6 +1427,9 @@ impl<'a> Checker<'a> {
         match &self.p.pats[pat].kind {
             TTIRPatKind::Bind(local) => {
                 let place = Place::of(*local);
+                // A name a pattern binds stands in the arm and nowhere else, so
+                // it is one block shorter-lived than where the `match` is.
+                self.depth.insert(*local, self.marks.len() + 1);
                 self.gone.filled(&place);
             }
             TTIRPatKind::Variant { elems, .. } => {
@@ -1283,6 +1476,9 @@ impl<'a> Checker<'a> {
                 return Flow::Left;
             }
             self.moving(iter);
+            // The loop variable stands in the body and nowhere else, so it is
+            // one block shorter-lived than where the `for` is.
+            self.depth.insert(local, self.marks.len() + 1);
             self.gone.filled(&Place::of(local));
         }
 

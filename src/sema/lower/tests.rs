@@ -1245,3 +1245,132 @@ fn a_returned_reference_to_a_local_is_refused_where_it_returns() {
 fn a_body_that_gives_back_no_reference_is_asked_nothing() {
     clean("fn f(): i32 {\n    let x = 1;\n    let r = &x;\n    1\n}\n");
 }
+
+// ---- Regions at the call ---------------------------------------------------
+
+// "What the rule costs is precision, and it spends it at the call rather than
+// at the declaration. A `pick` that only ever gives back x is held to y as
+// well, so a caller whose y dies first is refused" (§3). This is that, and it
+// is the whole bargain in one pair of fns.
+#[test]
+fn a_caller_is_held_to_every_parameter_the_result_is_tied_to() {
+    let with = "fn pick(a: &i32, b: &i32): &i32 {\n    a\n}\n";
+    let out = refused(&format!(
+        "{}fn f(p: &i32): &i32 {{\n    let x = 1;\n    pick(p, &x)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`x` does not live long enough"), "{}", out);
+}
+
+// "Writing a lifetime is how the precision comes back ... `fn first<'a>(x: &'a
+// str, y: &str): &'a str` says the result outlives y, which the rule alone
+// would not have said, and every caller is held to that instead of to the
+// shorter of the two" (§3). The same caller, and now it stands.
+#[test]
+fn a_written_lifetime_is_what_the_caller_gets_the_precision_from() {
+    clean(
+        "fn first<'a>(a: &'a i32, b: &i32): &'a i32 {\n    a\n}\n\
+         fn f(p: &i32): &i32 {\n    let x = 1;\n    first(p, &x)\n}\n",
+    );
+}
+
+// A fn whose result is no reference ties its caller to nothing, whatever it was
+// handed. Otherwise every `len(&x)` would pin `x` to wherever the answer went.
+#[test]
+fn a_result_that_is_no_reference_ties_nothing() {
+    clean(
+        "fn len(s: &i32): i32 {\n    1\n}\n\
+         fn f(p: &i32): &i32 {\n    let x = 1;\n    let n = len(&x);\n    p\n}\n",
+    );
+}
+
+// The refusal with nothing being returned: a slot may not be given a reference
+// to something that goes before it does. Depth is the ordering -- a block
+// inside a block is shorter-lived, which is what "a local at the end of its
+// block" (§2) comes to.
+#[test]
+fn a_slot_may_not_be_given_a_reference_that_goes_before_it() {
+    let out = refused(
+        "fn f(p: &i32) {\n    var r = p;\n    {\n        let inner = 2;\n\
+         \x20       r = &inner;\n    }\n}\n",
+    );
+    assert!(out.contains("`inner` does not live long enough"), "{}", out);
+    assert!(out.contains("this puts a reference to it somewhere longer-lived"), "{}", out);
+    assert!(out.contains("5 |         r = &inner;"), "{}", out);
+}
+
+// And through a call, which is where the two halves meet: `pick` ties its
+// result to both, so `inner` reaches `r` and `r` outlives the block.
+#[test]
+fn a_call_in_an_assignment_is_held_to_what_its_result_is_tied_to() {
+    let with = "fn pick(a: &i32, b: &i32): &i32 {\n    a\n}\n";
+    let out = refused(&format!(
+        "{}fn f(p: &i32) {{\n    var r = p;\n    {{\n        let inner = 2;\n\
+         \x20       r = pick(p, &inner);\n    }}\n}}\n",
+        with
+    ));
+    assert!(out.contains("`inner` does not live long enough"), "{}", out);
+    // Two arguments and one of them is fine: the same call with nothing
+    // short-lived in it stands.
+    clean(&format!(
+        "{}fn f(p: &i32, q: &i32) {{\n    var r = p;\n    {{\n\
+         \x20       r = pick(p, q);\n    }}\n}}\n",
+        with
+    ));
+}
+
+// A block gives back its tail, so a reference taken inside one does not get out
+// by being the value of a `let`.
+#[test]
+fn a_reference_does_not_leave_a_block_by_being_its_value() {
+    let out = refused(
+        "fn f() {\n    let r = {\n        let inner = 2;\n        &inner\n    };\n}\n",
+    );
+    assert!(out.contains("`inner` does not live long enough"), "{}", out);
+    // Pointing at the `&`, which is the line that did it.
+    assert!(out.contains("4 |         &inner"), "{}", out);
+}
+
+// One mistake is one message. A reference put in a slot that outlives it and
+// then given back out of the body is one thing gone wrong said twice, and the
+// first place is the one worth reading.
+#[test]
+fn a_reference_that_outstays_twice_is_refused_once() {
+    let out = refused(
+        "fn f(): &i32 {\n    let r = {\n        let inner = 2;\n        &inner\n    };\n    r\n}\n",
+    );
+    assert_eq!(out.matches("does not live long enough").count(), 1, "{}", out);
+}
+
+// A method's receiver stands where parameter 0 does, and the prose names this
+// case: "`fn name(&self, sep: &str): &str` ties its result to sep as well as to
+// the receiver, though what a method gives back is almost always the
+// receiver's. Rust spends a whole elision rule on that one case; this spends
+// none, and the method that wants it says so" (§3).
+#[test]
+fn a_method_ties_its_result_to_its_arguments_as_well_as_its_receiver() {
+    let with = "struct S {\n    pub x: i32,\n}\n\
+                impl S {\n    pub fn name(&self, sep: &i32): &i32 {\n        &self.x\n    }\n}\n";
+    let out = refused(&format!(
+        "{}fn f(s: &S): &i32 {{\n    let sep = 1;\n    s.name(&sep)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`sep` does not live long enough"), "{}", out);
+}
+
+// The prose finishes that thought with "this spends none, and the method that
+// wants it says so" (§3) -- and there is no way to say it. `<receiver>` is
+// `"self" | "&" "self" | "*" "self"` and takes no lifetime, so the one region a
+// method would want to name is the one region it cannot. Written down as the
+// gap it is: a `'a` on a receiver is a grammar change, and this test is what
+// breaks when somebody makes it.
+#[test]
+fn a_receiver_cannot_name_its_own_region() {
+    let prepped = crate::prep::preprocess(
+        "struct S {\n    pub x: i32,\n}\n\
+         impl S {\n    pub fn name<'a>(&'a self, sep: &i32): &'a i32 {\n        &self.x\n    }\n}\n",
+    );
+    let mut p = Parser::new(Lexer::new(&prepped));
+    p.parse();
+    assert!(!p.errors().is_empty(), "a receiver takes a lifetime now");
+}
