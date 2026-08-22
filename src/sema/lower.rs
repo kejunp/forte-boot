@@ -28,14 +28,6 @@
 // it, which is the difference between a pass that is unfinished and one that
 // lies.
 //
-// One thing that is not this pass's and is worth knowing about here, since this
-// is where it shows: a type argument list with a comma in it cannot be written
-// as the trailing expression of a body. `fn f(): i32 { id<i32, str>(1) }` does
-// not parse, while `let n = id<i32, str>(1)` does -- the lexer tells a block's
-// `{` from a collection literal's by whether a comma stands at the top level of
-// it (§7), and it does not step over a `<..>` to decide. That is the lexer's to
-// fix and not this one's.
-//
 // Regions are not worked out either: every `Ty::Ref` gets region 0. Comparing
 // them is a pass of its own (§3), and `types::unify` already leaves them alone.
 //

@@ -797,13 +797,8 @@ fn type_arguments_may_be_written_at_the_call() {
     // Written, they are held to: `id<str>(1)` is an i32 where a str was asked.
     let out = refused("fn id<T>(x: T): T { x }\nfn f(): str { id<str>(1) }\n");
     assert!(out.contains("argument 1 is"), "{}", out);
-    // The wrong number of them. Written with a `let` and not as the body's
-    // tail: a comma at the top level of a `{` is what tells the lexer a
-    // collection literal from a block, and it does not step over a type
-    // argument list to find out -- see the note in `lower.rs`.
-    let out = refused(
-        "fn id<T>(x: T): T { x }\nfn f(): i32 {\n    let n = id<i32, str>(1)\n    n\n}\n",
-    );
+    // The wrong number of them.
+    let out = refused("fn id<T>(x: T): T { x }\nfn f(): i32 { id<i32, str>(1) }\n");
     assert!(out.contains("takes 1 type arguments and was given 2"), "{}", out);
     // And on something that has none.
     let out = refused("fn plain(x: i32): i32 { x }\nfn f(): i32 { plain<i32>(1) }\n");

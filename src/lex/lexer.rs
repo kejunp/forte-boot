@@ -922,6 +922,11 @@ impl Lexer {
     fn scan_brace_body(&mut self) -> BraceScan {
         let saved = self.save();
         let mut depth = 0usize;
+        // How many type argument lists are open. Kept apart from `depth`
+        // because a `>` is a comparison as readily as a closer, and a `>`
+        // inside a `(` must not be taken for one: `{ f(a > b, c) }` has its
+        // comma inside the call and is no collection.
+        let mut angles = 0usize;
         let mut prev_can_end = false;
         let verdict = loop {
             // `scan_token` reads from where it stands; only `next_token` skips
@@ -931,12 +936,27 @@ impl Lexer {
                 break BraceScan::Block;
             }
             let tok = self.scan_token();
+            // Whether a name stood in front of this token, which is what makes
+            // a `<` a type argument list rather than a comparison. Read before
+            // the flags below move on to this token.
+            let after_name = self.last_was_name && !self.last_was_decl_name;
             prev_can_end = can_end_statement(&tok.toktype);
             // Kept up to date through the look so a `&&` inside the body reads
             // the same here as it will when the body is really scanned, and a
             // `.0` the same. The rewind below puts them back.
             self.last_ends_operand = ends_an_operand(&tok.toktype);
             self.prev_was_dot = tok.toktype == TokType::Dot;
+            // And these three, or a `<` inside the body is a comparison here
+            // and a type argument list when the body is really scanned -- and
+            // the two disagree about whether the comma after it separates
+            // entries. `opens_type_args` is asked only after a name.
+            self.last_was_decl_name =
+                self.last_was_decl_kw && matches!(tok.toktype, TokType::Identifier(_));
+            self.last_was_decl_kw = matches!(
+                tok.toktype,
+                TokType::Fn | TokType::Struct | TokType::Enum | TokType::Trait | TokType::Macro
+            );
+            self.last_was_name = matches!(tok.toktype, TokType::Identifier(_));
             match tok.toktype {
                 TokType::LParen | TokType::LBracket | TokType::LCurlyBracket => depth += 1,
                 TokType::RParen | TokType::RBracket => depth = depth.saturating_sub(1),
@@ -947,7 +967,23 @@ impl Lexer {
                     }
                     depth -= 1;
                 }
-                TokType::Comma | TokType::Colon if depth == 0 => break BraceScan::Collection,
+                // A call's type arguments, which hold commas of their own:
+                // `id<i32, str>(1)` is one thing and not two, so its comma
+                // separates no entries.
+                //
+                // The look is taken here rather than read off the token,
+                // because this scan takes its tokens from `scan_token` and it
+                // is `next_token` that turns a `<` into a `LessGeneric`. Inside
+                // a list everything is a type, so a `<` there opens a nested
+                // one without being asked again.
+                TokType::LessThan if angles > 0 => angles += 1,
+                TokType::LessThan if after_name && self.opens_type_args() => angles += 1,
+                TokType::GreaterThan if angles > 0 => angles -= 1,
+                // `Vec<Map<K, V>>` closes two at once.
+                TokType::RShift if angles > 0 => angles = angles.saturating_sub(2),
+                TokType::Comma | TokType::Colon if depth == 0 && angles == 0 => {
+                    break BraceScan::Collection
+                }
                 TokType::Semicolon if depth == 0 => break BraceScan::Block,
                 ref t if depth == 0 && starts_statement(t) => break BraceScan::Block,
                 // Unterminated, or malformed past the point of guessing.

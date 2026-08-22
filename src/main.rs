@@ -836,6 +836,47 @@ fn lexes_float_types() {
     );
 }
 
+// A call's type arguments hold commas of their own, and a comma is also what
+// tells a collection literal's `{` from a block's (section 7). The one must not
+// be read as the other: `fn f(): i32 { id<i32, str>(1) }` is a block holding a
+// call, and nothing about it is a map.
+#[test]
+fn a_type_argument_list_holds_its_own_commas() {
+    assert_eq!(
+        lex_types("fn f(): i32 { id<i32, str>(1) }\n"),
+        vec![
+            TokType::Fn,
+            TokType::Identifier("f".to_string()),
+            TokType::LParen,
+            TokType::RParen,
+            TokType::Colon,
+            TokType::I32,
+            // A block, and not the value `{` a top-level comma would make it.
+            TokType::LCurlyBracket,
+            TokType::Identifier("id".to_string()),
+            TokType::LessGeneric,
+            TokType::I32,
+            TokType::Comma,
+            TokType::Str,
+            TokType::GreaterThan,
+            TokType::LParen,
+            TokType::IntLiteral(1, None),
+            TokType::RParen,
+            TokType::RCurlyBracket,
+            TokType::Semicolon,
+        ]
+    );
+    // A comma that really is between entries still says so, and a comparison
+    // still opens nothing: `a < b` and `c > d` are two of them.
+    assert_eq!(lex_types("let m = {1: 2, 3: 4}\n")[3], TokType::LCurlyValue);
+    assert_eq!(lex_types("let s = {a < b, c > d}\n")[3], TokType::LCurlyValue);
+    // And a nested list closes on a `>>` without leaving one open.
+    assert_eq!(
+        lex_types("fn f(): i32 { m<Map<i32, str>, u8>(1) }\n")[6],
+        TokType::LCurlyBracket
+    );
+}
+
 // The `>>` closing nested generics must split, while a real shift must not.
 #[test]
 fn splits_nested_generic_close() {
