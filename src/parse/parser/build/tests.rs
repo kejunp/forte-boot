@@ -143,10 +143,14 @@ fn an_import_takes_a_visibility() {
 
 #[test]
 fn a_receiver_says_how_it_was_taken() {
-    for (source, held) in [
-        ("impl P {\n    fn f(self);\n}\n", ASTSelf::Value),
-        ("impl P {\n    fn f(&self);\n}\n", ASTSelf::Ref),
-        ("impl P {\n    fn f(*self);\n}\n", ASTSelf::Mut),
+    for (source, held, life) in [
+        ("impl P {\n    fn f(self);\n}\n", ASTSelf::Value, None),
+        ("impl P {\n    fn f(&self);\n}\n", ASTSelf::Ref, None),
+        ("impl P {\n    fn f(*self);\n}\n", ASTSelf::Mut, None),
+        // And with a region named, which is a <ref_op> and a <lifetime_opt> in
+        // front of the word exactly as they stand in front of a type.
+        ("impl P {\n    fn f<'a>(&'a self);\n}\n", ASTSelf::Ref, Some("a")),
+        ("impl P {\n    fn f<'a>(*'a self);\n}\n", ASTSelf::Mut, Some("a")),
     ] {
         let (p, item) = only_item(source);
         let ASTNodeKind::Impl { members, .. } = &item.kind else { panic!("{:?}", item.kind) };
@@ -155,7 +159,10 @@ fn a_receiver_says_how_it_was_taken() {
         };
         match &p.get_node(params[0]).kind {
             ASTNodeKind::Param { name, ty } => {
-                assert_eq!(*name, ASTBinding::SelfRecv(held));
+                assert_eq!(
+                    *name,
+                    ASTBinding::SelfRecv(held, life.map(|l: &str| l.to_string())),
+                );
                 // A receiver is written and not annotated.
                 assert!(ty.is_none());
             }
@@ -810,7 +817,7 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         | ASTNodeKind::MacroVar(_)
         | ASTNodeKind::MacroParam { .. }
         | ASTNodeKind::SelfExpr
-        | ASTNodeKind::SelfRecv(_)
+        | ASTNodeKind::SelfRecv(..)
         | ASTNodeKind::Name(_)
         | ASTNodeKind::Continue
         | ASTNodeKind::Wildcard

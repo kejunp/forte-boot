@@ -819,7 +819,7 @@ impl<'a> Checker<'a> {
         let mut out = match &local.name {
             TIRBinding::Name(name) => name.clone(),
             TIRBinding::Discard => "_".to_string(),
-            TIRBinding::SelfRecv(_) => "self".to_string(),
+            TIRBinding::SelfRecv(..) => "self".to_string(),
         };
         for step in &place.path {
             match step {
@@ -1269,7 +1269,7 @@ impl<'a> Checker<'a> {
     fn receiver(&self, item: TTIRItemId) -> Option<TIRSelf> {
         let TTIRItemKind::Fn(f) = &self.p.items[item].kind else { return None };
         match f.params.first().map(|param| &param.name) {
-            Some(TIRBinding::SelfRecv(mode)) => Some(*mode),
+            Some(TIRBinding::SelfRecv(mode, _)) => Some(*mode),
             _ => None,
         }
     }

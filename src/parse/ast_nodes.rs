@@ -290,8 +290,9 @@ pub enum ASTNodeKind {
     // `self`: the receiver where a value is wanted, and the module a path
     // starts in where a path is. Which one is the resolver's to say.
     SelfExpr,
-    // A receiver, as a parameter list holds it: `self`, `&self`, `*self`.
-    SelfRecv(ASTSelf),
+    // A receiver, as a parameter list holds it: `self`, `&self`, `*self`, and
+    // the same two with a lifetime in front -- `&'a self`.
+    SelfRecv(ASTSelf, Option<String>),
 
     // A `::`-separated name, in a type, an import or a pattern.
     Name(Vec<String>),
@@ -549,7 +550,8 @@ pub enum ASTBinding {
     Name(String),
     // `_`: bound to nothing on purpose. `_foo` is an ordinary name.
     Discard,
-    SelfRecv(ASTSelf),
+    // How it was taken, and the region it named where it named one.
+    SelfRecv(ASTSelf, Option<String>),
 }
 
 // `&` and `*`, which decide only whether writing through is allowed.

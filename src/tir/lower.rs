@@ -958,7 +958,9 @@ fn binding(b: &ASTBinding) -> TIRBinding {
     match b {
         ASTBinding::Name(name) => TIRBinding::Name(name.clone()),
         ASTBinding::Discard => TIRBinding::Discard,
-        ASTBinding::SelfRecv(held) => TIRBinding::SelfRecv(self_of(*held)),
+        ASTBinding::SelfRecv(held, life) => {
+            TIRBinding::SelfRecv(self_of(*held), life.clone())
+        }
     }
 }
 

@@ -1358,19 +1358,33 @@ fn a_method_ties_its_result_to_its_arguments_as_well_as_its_receiver() {
     assert!(out.contains("`sep` does not live long enough"), "{}", out);
 }
 
-// The prose finishes that thought with "this spends none, and the method that
-// wants it says so" (§3) -- and there is no way to say it. `<receiver>` is
-// `"self" | "&" "self" | "*" "self"` and takes no lifetime, so the one region a
-// method would want to name is the one region it cannot. Written down as the
-// gap it is: a `'a` on a receiver is a grammar change, and this test is what
-// breaks when somebody makes it.
+// And the method that wants the precision says so: "Rust spends a whole elision
+// rule on that one case; this spends none, and the method that wants it says
+// so" (§3). One written `'a` on the receiver and the caller is held to the
+// receiver alone.
 #[test]
-fn a_receiver_cannot_name_its_own_region() {
-    let prepped = crate::prep::preprocess(
+fn a_receiver_may_name_its_own_region() {
+    clean(
         "struct S {\n    pub x: i32,\n}\n\
-         impl S {\n    pub fn name<'a>(&'a self, sep: &i32): &'a i32 {\n        &self.x\n    }\n}\n",
+         impl S {\n    pub fn name<'a>(&'a self, sep: &i32): &'a i32 {\n        &self.x\n    }\n}\n\
+         fn f(s: &S): &i32 {\n    let sep = 1;\n    s.name(&sep)\n}\n",
     );
-    let mut p = Parser::new(Lexer::new(&prepped));
-    p.parse();
-    assert!(!p.errors().is_empty(), "a receiver takes a lifetime now");
+}
+
+// A receiver with no lifetime of its own gets one all the same -- it is a
+// reference in a signature like any other -- so a method's result is tied to it
+// and returning `&self.x` is what a method almost always does.
+#[test]
+fn a_receiver_with_nothing_written_is_still_a_region() {
+    let ttir = clean(
+        "struct S {\n    pub x: i32,\n}\n\
+         impl S {\n    pub fn get(&self): &i32 {\n        &self.x\n    }\n}\n",
+    );
+    let f = ttir.items.iter().find_map(|i| match &i.kind {
+        TTIRItemKind::Fn(f) if f.name == "get" => Some(f),
+        _ => None,
+    }).expect("get");
+    // Region 1 is the receiver's, 2 is the result's, and the first outlives the
+    // second -- which is the elision rule with one parameter to work from.
+    assert_eq!(f.outlives, vec![(1, 2)]);
 }

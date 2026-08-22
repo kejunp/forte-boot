@@ -144,14 +144,19 @@
 # "self" takes it whole. There is no "self: T" — the type is the one the impl
 # names, and saying it again is the one thing a receiver cannot do.
 #
+# What it may say is how long it is good for. "&'a self" is a <ref_op> and a
+# <lifetime_opt> in front of the word, exactly as <ref_type> is in front of a
+# type, and it is what section 3 means by "the method that wants it says so":
+# the elision rule ties a method's result to its arguments as well as to its
+# receiver, and naming the receiver's region is the only way to untie it.
+#
 # Nothing here says a receiver comes first, or that it comes only in a method.
 # Both are true and neither is the tables' to know: a parameter list is a list.
 <param>                 ::= <binding_name> <type_annotation_opt>
                           | <receiver>
 
 <receiver>              ::= "self"
-                          | "&" "self"
-                          | "*" "self"
+                          | <ref_op> <lifetime_opt> "self"
 
 <type_annotation_opt>   ::= <empty>
                           | ":" <type>

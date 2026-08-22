@@ -29,27 +29,27 @@ impl Parser {
 
             // ---- Types, continued ----------------------------------------
             // <type> -> <ref_type>
-            367 => self.pass(c[0]),
+            366 => self.pass(c[0]),
             // <type> -> <ptr_type>
-            368 => self.pass(c[0]),
+            367 => self.pass(c[0]),
             // <type> -> <base_type> <array_suffix_list>
-            369 => self.fold_suffixes(c[0], c[1]),
+            368 => self.fold_suffixes(c[0], c[1]),
             // <type_annotation_opt> -> ε
-            370 => self.here(ASTNodeKind::Empty),
+            369 => self.here(ASTNodeKind::Empty),
             // <type_annotation_opt> -> : <type>
-            371 => self.pass(c[1]),
+            370 => self.pass(c[1]),
             // <type_bound> -> <named_type>
-            373 => self.pass(c[0]),
+            372 => self.pass(c[0]),
             // <type_bound> -> <lifetime>
-            374 => self.pass(c[0]),
+            373 => self.pass(c[0]),
             // <type_bounds> -> <type_bound>
-            375 => self.one(c[0]),
+            374 => self.one(c[0]),
             // <type_bounds> -> <type_bounds> + <type_bound>
-            376 => self.grew(c[0], c[2]),
+            375 => self.grew(c[0], c[2]),
             // <type_list> -> <type>
-            379 => self.one(c[0]),
+            378 => self.one(c[0]),
             // <type_list> -> <type_list> , <type>
-            380 => self.grew(c[0], c[2]),
+            379 => self.grew(c[0], c[2]),
 
             // ---- Primitive types -----------------------------------------
             // The leaf is already a `Prim`, except for `null`, whose token is
@@ -61,11 +61,11 @@ impl Parser {
 
             // ---- References ----------------------------------------------
             // <ref_op> -> &
-            334 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
+            333 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
             // <ref_op> -> *
-            335 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
+            334 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
             // <ref_type> -> <ref_op> <lifetime_opt> <type>
-            336 => {
+            335 => {
                 let op = ref_of(self.mark(c[0]));
                 let life = self.opt(c[1]);
                 self.at(ASTNodeKind::RefType { op, life, inner: c[2] }, c[0])
@@ -86,9 +86,9 @@ impl Parser {
             // <lifetime_opt> -> <lifetime>
             207 => self.pass(c[0]),
             // <return_type_opt> -> ε
-            337 => self.here(ASTNodeKind::Empty),
+            336 => self.here(ASTNodeKind::Empty),
             // <return_type_opt> -> : <type>
-            338 => self.pass(c[1]),
+            337 => self.pass(c[1]),
 
             // ---- Array and run suffixes ----------------------------------
             // Both are built around a HOLE: what they are a suffix of is not
@@ -109,11 +109,11 @@ impl Parser {
             // in a list that could be of one.
             // <tuple_expr> -> ( <expression> , <expression_seq> )
             // <tuple_expr> -> ( <expression> , <expression_seq> , )
-            363 | 364 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
+            362 | 363 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
             // <tuple_pattern> -> ( <pattern> , <pattern_list> )
-            365 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
+            364 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
             // <tuple_type> -> ( <type> , <type_list> )
-            366 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
+            365 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
 
             _ => return None,
         })

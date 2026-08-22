@@ -15,7 +15,7 @@ impl Parser {
             // Built around a HOLE: what these are the arguments of reduces
             // after them, and `with_base` fills it in.
             // <type_args> -> GENERIC_LT <generic_arg_list> >
-            372 => self.at(
+            371 => self.at(
                 ASTNodeKind::TypeArgs { base: HOLE, args: self.list(c[1]) },
                 c[0],
             ),
@@ -183,16 +183,16 @@ impl Parser {
 
             // ---- Shifts --------------------------------------------------
             // <shift> -> <additive>
-            346 => self.pass(c[0]),
+            345 => self.pass(c[0]),
             // <shift> -> <shift> <shift_op> <additive>
-            347 => {
+            346 => {
                 let op = bin_of(self.mark(c[1]));
                 self.at(ASTNodeKind::Binary { op, lhs: c[0], rhs: c[2] }, c[0])
             }
             // <shift_op> -> <<
-            348 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shl)), c[0]),
+            347 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shl)), c[0]),
             // <shift_op> -> >>
-            349 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shr)), c[0]),
+            348 => self.at(ASTNodeKind::Mark(ASTMark::Bin(ASTBinOp::Shr)), c[0]),
 
             // ---- Arithmetic ----------------------------------------------
             // <additive> -> <multiplicative>
@@ -253,25 +253,25 @@ impl Parser {
 
             // ---- Unary ---------------------------------------------------
             // <unary> -> <unary_op> <unary>
-            381 => {
+            380 => {
                 let op = unary_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Unary { op, operand: c[1] }, c[0])
             }
             // <unary> -> <postfix>
-            382 => self.pass(c[0]),
+            381 => self.pass(c[0]),
             // <unary_op> -> !
-            383 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Not)), c[0]),
+            382 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Not)), c[0]),
             // <unary_op> -> -
-            384 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Neg)), c[0]),
+            383 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Neg)), c[0]),
             // <unary_op> -> <ref_op>
             // `&x` and `*x` take a reference; neither dereferences, so the
             // same two spellings mean here what they mean in a type.
-            385 => {
+            384 => {
                 let op = ref_of(self.mark(c[0]));
                 self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Ref(op))), c[0])
             }
             // <unary_op> -> addr
-            386 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Addr)), c[0]),
+            385 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Addr)), c[0]),
 
             // ---- Postfix -------------------------------------------------
             // Each suffix was built around a HOLE; this is where it is given
@@ -399,7 +399,7 @@ impl Parser {
 
             // ---- Values --------------------------------------------------
             // <value_expr> -> <assignment> | <closure_expr> | <block_expr>
-            399 | 400 | 401 => self.pass(c[0]),
+            398 | 399 | 400 => self.pass(c[0]),
 
             // ---- Names ---------------------------------------------------
             // A segment is a name whatever spelled it, so a path stays a list of

@@ -259,7 +259,7 @@ fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
         | ASTNodeKind::MacroVar(_)
         | ASTNodeKind::MacroParam { .. }
         | ASTNodeKind::SelfExpr
-        | ASTNodeKind::SelfRecv(_)
+        | ASTNodeKind::SelfRecv(..)
         | ASTNodeKind::Name(_)
         | ASTNodeKind::Continue
         | ASTNodeKind::Wildcard

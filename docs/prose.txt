@@ -817,8 +817,14 @@ bargain as a type annotation on a "let" whose type was never in doubt.
 A method is where the loss shows most. "fn name(&self, sep: &str): &str"
 ties its result to sep as well as to the receiver, though what a method gives
 back is almost always the receiver's. Rust spends a whole elision rule on
-that one case; this spends none, and the method that wants it says so. One
-rule that always answers, and a way to say better, is the trade — against
+that one case; this spends none, and the method that wants it says so:
+
+    fn name<'a>(&'a self, sep: &str): &'a str
+
+A receiver takes a lifetime where any other reference does — a <ref_op> and a
+<lifetime_opt> in front of the word, "&'a self" and "*'a self" — since the
+alternative is a method that can be held to too much with nothing to write.
+One rule that always answers, and a way to say better, is the trade — against
 three rules that answer more often than not and a refusal when they do not.
 
 <array_suffix>. Two suffixes, and what separates them is ownership.
@@ -1810,14 +1816,13 @@ answer is not obvious from the rules alone.
     two.
   - A lifetime is written "'a", the elision rule never fails, and writing one
     "is only ever a sharpening" (section 3). Settled, and the checker holds a
-    caller to every parameter the callee's result is tied to. What is not
-    settled is one case section 3 names and the grammar does not admit: "the
-    method that wants it says so", said of a method whose result is the
-    receiver's and not its arguments' — and <receiver> is "self", "&" "self"
-    or "*" "self" and takes no lifetime, so the one region a method would
-    want to name is the one region it cannot. Either <receiver> grows a
-    lifetime, or methods get an elision rule of their own after all, or the
-    sentence goes. Nothing else in section 3 depends on which.
+    caller to every parameter the callee's result is tied to. A receiver takes
+    one where any other reference does — <receiver> is "self" or a <ref_op>
+    and a <lifetime_opt> in front of the word — so "the method that wants it
+    says so" is a thing that can be said. What is left open is the other
+    direction: nothing says whether a lifetime declared among the type
+    parameters but named nowhere in the signature should be warned about, the
+    way an unused type parameter would be.
   - An array of references is "(&i32)[8]", a <grouped_type> being what says
     which of the two a reference and a suffix make (section 3). Settled. The
     same parentheses make a tuple when a comma is inside them and group when

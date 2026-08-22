@@ -80,7 +80,7 @@ impl Suite {
             is_const: false, is_unsafe: false, name: name.to_string(),
             symbol: String::new(), generics: Vec::new(), wheres: Vec::new(),
             ty,
-            params: vec![TTIRParam { name: TIRBinding::SelfRecv(mode), slot: None }],
+            params: vec![TTIRParam { name: TIRBinding::SelfRecv(mode, None), slot: None }],
             ret: Self::NULL, outlives: Vec::new(), body: None,
         }))
     }

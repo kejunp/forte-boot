@@ -371,7 +371,7 @@ impl<'a> Lowerer<'a> {
                             // "there is no `self: T`: the type is the one the
                             // impl names, so the annotation only ever repeated
                             // it" (§3). So the impl is asked instead.
-                            None => self.receiver_ty(&p.name),
+                            None => self.receiver_ty(&p.name, self.here),
                         })
                         .collect();
                     let ret = match f.ret {
@@ -617,8 +617,8 @@ impl<'a> Lowerer<'a> {
     // exactly as a `T` is settled by whoever calls -- so it is written as one,
     // named `Self` and placed after the method's own. A `Ty::SelfTy` would say
     // it more plainly and is what to add if this starts costing anything.
-    fn receiver_ty(&mut self, name: &TIRBinding) -> TyId {
-        let TIRBinding::SelfRecv(how) = name else { return self.types.fresh() };
+    fn receiver_ty(&mut self, name: &TIRBinding, at: Span) -> TyId {
+        let TIRBinding::SelfRecv(how, life) = name else { return self.types.fresh() };
         let subject = match self.subject {
             Some(subject) => subject,
             None => {
@@ -626,16 +626,24 @@ impl<'a> Lowerer<'a> {
                 self.types.intern(Ty::Param { name: "Self".to_string(), index })
             }
         };
-        match how {
-            // "A bare `self` takes the value whole and so moves it."
-            crate::tir::tir_nodes::TIRSelf::Value => subject,
-            crate::tir::tir_nodes::TIRSelf::Ref => {
-                self.types.intern(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: subject })
+        let op = match how {
+            // "A bare `self` takes the value whole and so moves it." Nothing is
+            // taken, so there is no region to give it.
+            crate::tir::tir_nodes::TIRSelf::Value => return subject,
+            crate::tir::tir_nodes::TIRSelf::Ref => TIRRefOp::Imm,
+            crate::tir::tir_nodes::TIRSelf::Mut => TIRRefOp::Mut,
+        };
+        // A receiver is a reference in a signature like any other, so it gets a
+        // region like any other -- and `&'a self` names one, which is the whole
+        // point of letting it be written.
+        let life = match life {
+            Some(name) => {
+                let name = name.clone();
+                self.life(&name, at)
             }
-            crate::tir::tir_nodes::TIRSelf::Mut => {
-                self.types.intern(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: subject })
-            }
-        }
+            None => self.region(),
+        };
+        self.types.intern(Ty::Ref { op, life, inner: subject })
     }
 
     // The parameters a declaration was written with, and what each is held to.
@@ -987,7 +995,7 @@ impl<'a> Lowerer<'a> {
             let ty = arg_tys.get(i).copied().unwrap_or_else(|| self.types.fresh());
             // A receiver binds under the word it was written with.
             let held = match p.name {
-                TIRBinding::SelfRecv(_) => TIRBinding::Name("self".to_string()),
+                TIRBinding::SelfRecv(..) => TIRBinding::Name("self".to_string()),
                 _ => p.name.clone(),
             };
             let slot = self.bind(held, ty, crate::tir::tir_nodes::TIRIntro::Let, self.here);
@@ -2249,7 +2257,7 @@ impl<'a> Lowerer<'a> {
         let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return None };
         let (fn_ty, takes_self) = (
             f.ty,
-            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(_))),
+            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..))),
         );
         let Ty::Fn { params, ret, .. } = self.types.get(fn_ty).clone() else { return None };
 

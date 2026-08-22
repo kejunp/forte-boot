@@ -13,11 +13,11 @@ impl Parser {
         Some(match rule_id {
             // ---- Statements ----------------------------------------------
             // <statement> -> <declaration> | <unsafe_stmt> | <expr_stmt>
-            350 | 351 | 352 => self.pass(c[0]),
+            349 | 350 | 351 => self.pass(c[0]),
             // <statement_list> -> ε
-            353 => self.here(ASTNodeKind::List(Vec::new())),
+            352 => self.here(ASTNodeKind::List(Vec::new())),
             // <statement_list> -> <statement_list> <statement>
-            354 => self.grew(c[0], c[1]),
+            353 => self.grew(c[0], c[1]),
 
             // ---- Blocks --------------------------------------------------
             // <block> -> { <statement_list> <block_tail_opt> }
@@ -56,13 +56,13 @@ impl Parser {
 
             // ---- Loops, continued ----------------------------------------
             // <while_expr> -> while <header_expr> <block>
-            423 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
+            422 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
 
             // ---- unsafe --------------------------------------------------
             // <unsafe_stmt> -> unsafe <expr_stmt>
-            387 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            386 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
             // <unsafe_stmt> -> unsafe <var_decl>
-            388 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            387 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

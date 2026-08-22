@@ -132,7 +132,9 @@ impl Parser {
         match self.kind(id) {
             ASTNodeKind::Ident(name) => ASTBinding::Name(name.clone()),
             ASTNodeKind::Wildcard => ASTBinding::Discard,
-            ASTNodeKind::SelfRecv(held) => ASTBinding::SelfRecv(*held),
+            ASTNodeKind::SelfRecv(held, life) => {
+                ASTBinding::SelfRecv(*held, life.clone())
+            }
             other => panic!("a rule wanted a binding and was given {:?}", other),
         }
     }

@@ -638,7 +638,10 @@ pub enum TIRBinding {
     Name(String),
     // `_`, which binds nothing and so cannot be referred to.
     Discard,
-    SelfRecv(TIRSelf),
+    // How the receiver is held, and the region it named where it named one.
+    // "the method that wants it says so" (§3): a `&'a self` is the only way to
+    // tie a method's result to its receiver and not to its arguments.
+    SelfRecv(TIRSelf, Option<String>),
 }
 
 // `&` reads and `*` writes; neither is a pointer.
