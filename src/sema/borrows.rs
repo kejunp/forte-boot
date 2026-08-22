@@ -44,16 +44,18 @@
 //     `Some(v) => v` bind a name this cannot tell points into `items`, so a
 //     reference reaching a body that way is followed no further. Permissive,
 //     and the one place these rules are.
-//   - A closure that leaves the body it was written in. "A closure that
-//     captures by reference cannot outlive what it captured, and `move` is the
-//     only thing that lets one be returned" (§8) -- and a closure's type says
-//     nothing here about what it captured, so `holds_ref` cannot see it and the
-//     escape check below never fires on one.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
 //     borrow it takes lasts as long as the name the closure was bound to, and
 //     what the body does with its own slot for it is the body's own business.
+//   - Returning a closure, for want of anywhere to return it to. "A closure
+//     that captures by reference cannot outlive what it captured, and `move`
+//     is the only thing that lets one be returned" (§8) is checked, and what
+//     it is checked against is a slot that outlives it -- since `<base_type>`
+//     has no spelling for a fn type, a closure cannot be a return type, a
+//     parameter, or a field. The rule is here and the half of it the grammar
+//     admits is what runs.
 //   - Where a `Drop` runs. Settled in §2 and codegen's, not the checker's.
 
 #![allow(dead_code)]
@@ -517,6 +519,17 @@ impl<'a> Checker<'a> {
     fn holds_ref(&self, ty: TyId) -> bool {
         match &self.p.types[ty] {
             Ty::Ref { life, inner, .. } => *life != 0 || self.holds_ref(*inner),
+            // A fn type says nothing about what a closure behind it captured,
+            // so the question cannot be answered here and is left to the value:
+            // `roots` returns nothing for a `move` closure or a plain fn, and
+            // what it returns for one that captured by reference is what this
+            // would have wanted to know.
+            //
+            // Unreachable today -- `<base_type>` has no spelling for a fn type,
+            // so nothing can be written as a return type that gets here. It is
+            // the answer for when one is added, and it is here so that adding
+            // one does not quietly reopen the hole.
+            Ty::Fn { .. } => true,
             Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref(m)),
             Ty::Array { elem, .. } => self.holds_ref(*elem),
             _ => false,
@@ -689,6 +702,35 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
+            // "a closure that captures by reference cannot outlive what it
+            // captured, and `move` is the only thing that lets one be
+            // returned" (§8). A closure is the one value here whose type says
+            // nothing about what is inside it, so the captures are asked
+            // instead: what it took by reference it points at, and what it took
+            // by value it points at only as far as that value did.
+            TTIRExprKind::Closure { captures, .. } => {
+                for held in captures {
+                    match held.mode {
+                        TTIRCaptureMode::Ref(_) => {
+                            // The slot itself, since the closure holds a
+                            // reference to it -- and wherever that slot points,
+                            // since reading through the one reaches the other.
+                            add(held.outer, out);
+                            for &(root, _) in self.from.get(&held.outer).into_iter().flatten() {
+                                add(root, out);
+                            }
+                        }
+                        // "By value is a copy where the name's type copies and
+                        // a move where it does not": the slot is not pointed at
+                        // either way, and what the value points at goes with it.
+                        TTIRCaptureMode::Value => {
+                            for &(root, _) in self.from.get(&held.outer).into_iter().flatten() {
+                                add(root, out);
+                            }
+                        }
+                    }
+                }
+            }
             // What is built out of references points where they did.
             TTIRExprKind::ArrayLit(parts) | TTIRExprKind::TupleLit(parts) => {
                 for &part in parts {

@@ -1866,12 +1866,15 @@ answer is not obvious from the rules alone.
     the same name, which is where the surprise would show up.
   - A closure captures a name by "&" where it reads one and by "*" where it
     assigns to one, worked out per name, and a "move" closure captures every
-    name by value instead (section 5). Settled. What follows from it is the
-    lifetime question above, sharpened: a closure that captures by reference
-    cannot outlive what it captured, and "move" is the only thing that lets
-    one be returned. The keyword predates values that move and keeps its
-    meaning beside them: it says how a name is captured, where a move says
-    what happens to the value once it is.
+    name by value instead (section 5). Settled, and so is what follows from
+    it: a closure that captures by reference cannot outlive what it captured,
+    and "move" is the only thing that lets one be returned. The keyword
+    predates values that move and keeps its meaning beside them: it says how
+    a name is captured, where a move says what happens to the value once it
+    is. What is not settled is where a closure may be put. <base_type> has no
+    spelling for a fn type, so a closure is a thing a "let" may hold and
+    nothing else — not a return type, not a parameter, not a field — and the
+    half of the rule about returning one has nowhere yet to apply.
   - A value moves unless its type says "impl Copy", and a type says what
     releasing it comes to with "impl Drop" (section 2). Settled. Neither
     needs a rule of its own -- an empty impl and a one-method impl are both

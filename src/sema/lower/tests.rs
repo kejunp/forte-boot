@@ -1388,3 +1388,71 @@ fn a_receiver_with_nothing_written_is_still_a_region() {
     // second -- which is the elision rule with one parameter to work from.
     assert_eq!(f.outlives, vec![(1, 2)]);
 }
+
+// ---- Closure captures ------------------------------------------------------
+
+// "a closure that captures by reference cannot outlive what it captured, and
+// `move` is the only thing that lets one be returned" (§8). A closure is the
+// one value here whose type says nothing about what is inside it, so what it
+// points into is read off its captures and not off `fn(): i32`.
+#[test]
+fn a_closure_that_captured_by_reference_may_not_outlive_what_it_captured() {
+    let out = refused(
+        "fn f() {\n    var c = || 1;\n    {\n        let n = 2;\n\
+         \x20       c = || n;\n    }\n}\n",
+    );
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    assert!(out.contains("5 |         c = || n;"), "{}", out);
+}
+
+// And `move` is what lets it out: by value the slot is not pointed at, so there
+// is nothing left in the block for the closure to outlive.
+#[test]
+fn a_move_closure_is_what_lets_one_out() {
+    clean(
+        "fn f() {\n    var c = || 1;\n    {\n        let n = 2;\n\
+         \x20       c = move || n;\n    }\n}\n",
+    );
+}
+
+// A closure is a value like any other, so a block does not let one out by being
+// the value of a `let` either.
+#[test]
+fn a_closure_does_not_leave_a_block_by_being_its_value() {
+    let out = refused("fn f() {\n    let c = {\n        let n = 2;\n        || n\n    };\n}\n");
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    assert!(out.contains("4 |         || n"), "{}", out);
+}
+
+// What was taken by value is followed only as far as that value went: a `move`
+// closure holding a reference points where the reference pointed, and not at
+// the slot the reference sat in.
+#[test]
+fn a_captured_value_is_followed_as_far_as_it_points() {
+    let out = refused(
+        "fn f(p: &i32) {\n    var c = move || p;\n    {\n        let n = 2;\n\
+         \x20       let r = &n;\n        c = move || r;\n    }\n}\n",
+    );
+    // `n`, which `r` points at -- and not `r`, which was copied into the closure.
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    assert!(!out.contains("`r` does not live long enough"), "{}", out);
+}
+
+// And what was taken by reference is followed one step further: the closure
+// holds a reference to the slot, so the slot has to last, and so does whatever
+// reading through it reaches.
+#[test]
+fn a_captured_reference_holds_the_slot_as_well_as_what_it_points_at() {
+    let out = refused(
+        "fn f(p: &i32) {\n    var c = move || p;\n    {\n        let n = 2;\n\
+         \x20       let r = &n;\n        c = || r;\n    }\n}\n",
+    );
+    assert!(out.contains("`r` does not live long enough"), "{}", out);
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+}
+
+// A closure that captured nothing points at nothing, whatever it is put in.
+#[test]
+fn a_closure_that_captured_nothing_may_go_anywhere() {
+    clean("fn f() {\n    var c = || 1;\n    {\n        c = || 2;\n    }\n}\n");
+}
