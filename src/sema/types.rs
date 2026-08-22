@@ -358,6 +358,14 @@ impl Types {
                 }
                 Ty::Prim(prim) if takes(wants, prim) => {}
                 Ty::Error => {}
+                // "`null` belongs to every type", this one among them -- so it
+                // neither says what the number is nor argues with it, and the
+                // hole is left as open as it was. That is what lets a loop with
+                // a `break 1` be worth an i32: the loop may end by itself and
+                // be `null`, and `null` fits an i32 without being one.
+                Ty::Prim(TIRPrim::Null) if NULL_BELONGS => {
+                    return Ok(self.intern(Ty::Var(var)))
+                }
                 _ => {
                     let found = self.intern(Ty::Var(var));
                     return Err(Mismatch { found, wanted: with });
