@@ -763,10 +763,34 @@ fn a_temporary_borrow_ends_with_its_statement() {
     assert_eq!(s.errors(body), "");
 }
 
-// A `let` is the exception: what its initialiser borrowed may have reached the
-// slot, so the borrow keeps the block's extent.
+// What a `let`'s initialiser borrowed may have reached the slot, so the borrow
+// keeps the slot's extent -- which ends where the slot is last read.
 #[test]
-fn a_borrow_bound_to_a_name_keeps_the_blocks_extent() {
+fn a_borrow_bound_to_a_name_lasts_as_long_as_the_name_is_read() {
+    // Read after the `*` is taken, so the two are in hand at once.
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    let p = s.slot("p", buf, TIRIntro::Var);
+    let to_buf = s.ty(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: buf });
+    let r = s.slot("r", to_buf, TIRIntro::Let);
+
+    let one = s.local(p);
+    let read = s.borrow(one, TIRRefOp::Imm);
+    let bound = TTIRStmt::Let { is_unsafe: false, local: r, init: Some(read) };
+    let two = s.local(p);
+    let write = s.borrow(two, TIRRefOp::Mut);
+    let after = s.call(vec![write]);
+    let held = s.local(r);
+    let later = s.call(vec![held]);
+    let stmts = vec![bound, s.eval(after), s.eval(later)];
+    let body = s.block(stmts, None);
+    assert!(s.errors(body).contains("is borrowed already"), "{}", s.errors(body));
+}
+
+// And read nowhere after, the borrow is done with before the `*` is taken --
+// which is the sharpening, and what the block-long extent used to turn down.
+#[test]
+fn a_borrow_nothing_reads_again_is_done_with() {
     let mut s = Suite::new();
     let buf = s.strukt("Buf");
     let p = s.slot("p", buf, TIRIntro::Var);
@@ -781,7 +805,7 @@ fn a_borrow_bound_to_a_name_keeps_the_blocks_extent() {
     let after = s.call(vec![write]);
     let stmts = vec![bound, s.eval(after)];
     let body = s.block(stmts, None);
-    assert!(s.errors(body).contains("is borrowed already"));
+    assert_eq!(s.errors(body), "");
 }
 
 // "A value that moves has one owner at a time" -- and what a reference refers

@@ -1819,10 +1819,13 @@ answer is not obvious from the rules alone.
     all — a "'a" says which references are the same one, and the language has
     no way to say which are not. The two are otherwise one question asked
     twice, since a reference that outlives its referent and one that aliases
-    a "*" are both a place reached two ways at once. What is left is how
-    finely a place is tracked: whether two fields of one struct, or two
-    mutable views of one array whose ranges do not meet, are one place or
-    two.
+    a "*" are both a place reached two ways at once. How long a borrow is in
+    hand is settled with them: it lasts from where it is taken to the last
+    place anything can reach through it, which is where the name holding it
+    is last read, and a name read inside a loop is read for all of the loop.
+    What is left is how finely a place is tracked: whether two fields of one
+    struct, or two mutable views of one array whose ranges do not meet, are
+    one place or two.
   - A lifetime is written "'a", the elision rule never fails, and writing one
     "is only ever a sharpening" (section 3). Settled, and the checker holds a
     caller to every parameter the callee's result is tied to, and to every

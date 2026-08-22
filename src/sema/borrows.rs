@@ -20,6 +20,13 @@
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
+// A borrow lasts from where it is taken to the last place anything can reach
+// through it, which is where the slot holding it is last read -- the rule Rust
+// reached with NLL, and sharper than the block-long extent this used to have.
+// Everything is numbered in the order it was written; a loop is the one place
+// that is not enough, since what stands above a use runs below it on the next
+// turn, and a slot last read inside one is held to all of it.
+//
 // Regions are checked too, and so are the bounds on them -- a `'a: 'b` and a
 // `T: 'a` are promises a *caller* keeps, so they are held to at the call. The
 // shape all of it takes here is worth saying:
@@ -38,23 +45,17 @@
 //
 // What it does not do:
 //
-//   - Sharpen a borrow's extent. A borrow lasts to the end of the block that
-//     holds it, which is the rule before Rust's NLL: it turns down some
-//     programs that are fine, and the prose allows for that, its own lifetime
-//     rule being "only ever answered too conservatively".
-//   - Tell one region of a named type from another where the declaration
-//     names none. `struct Held { it: &i32 }` parses -- the field's reference
-//     gets a region of the struct's own numbering, which is a region nothing
-//     can instantiate -- so `Ty::Named` has no slot to carry it and there is
-//     nothing to compare. A fn whose result is such a type is tied to every
-//     one of its parameters instead, which is the elision rule's own answer
-//     and never wrong. A declaration that takes a lifetime does not go this
-//     way: `Held<'a>` carries its region and is compared like any other.
-//   - Tell two regions of one parameter apart. What a callee's region stands
-//     for on this side is worked out per parameter, so a `(&'a i32, &'b i32)`
-//     handed in one argument gives `'a` and `'b` the same answer. Sound and
-//     blunt; sharpening it means walking the argument's type beside the
-//     parameter's rather than taking the argument whole.
+//   - Tell which borrow taken working out a `let`'s value reached the slot.
+//     All of them are held to the slot's extent, whether they reached it or
+//     not. Blunt in which and sharp in how long, and sharpening the first
+//     costs a reachability walk over the initialiser.
+//   - Reach through a declaration for its regions. `struct Outer { inner:
+//     Inner }` written bare takes no region of its own, though `Inner` does,
+//     so what `Outer` carries cannot be told apart. A fn whose result is such
+//     a type is tied to every one of its parameters instead, which is the
+//     elision rule's own answer and never wrong. A declaration whose own
+//     references are elided does not go this way: they are counted and it
+//     carries a region for each.
 //   - Nothing about a closure's *body* reaching what it captured. The capture
 //     itself is checked -- §5 makes it the one place a reference is taken
 //     without being written, and `TTIRCapture` is what says so -- but the
@@ -350,6 +351,14 @@ struct Held {
     op:    TIRRefOp,
     line:  usize,
     col:   usize,
+    // The last moment anything can reach through it. A borrow bound to a slot
+    // dies where that slot is last used, which is what makes this sharper than
+    // "the end of the block": `let r = &x; let n = r; let m = *x` is three
+    // lines of which only the first two are about `r`.
+    //
+    // `usize::MAX` for one that reached no slot: nothing can read it, so
+    // nothing says when it stops being read, and the block is the answer.
+    until: usize,
 }
 
 // ---- Where the walk got to ------------------------------------------------
@@ -433,6 +442,15 @@ pub struct Checker<'a> {
     // names out of something, and this is that something's roots, held while
     // `binds` walks -- a pattern has no expression of its own to ask.
     from_of: Vec<(TTIRLocalId, TTIRExprId)>,
+    // When each expression of this body stands, in the order they were
+    // written, and the last moment each slot is read. Worked out before the
+    // walk: a borrow's extent is a fact about the whole body and the walk is
+    // where it is used, not where it is found out.
+    when:    HashMap<TTIRExprId, usize>,
+    last:    HashMap<TTIRLocalId, usize>,
+    // Where the walk is now, so a borrow whose slot is done with can be told
+    // from one still in hand.
+    now:     usize,
     // What each slot's value points into, where it points into this body at
     // all. `let r = &x` makes r point into x, and `let s = r` makes s point
     // where r did -- so a reference is followed however many names it is
@@ -457,6 +475,9 @@ impl<'a> Checker<'a> {
             depth: HashMap::new(),
             said_of: Vec::new(),
             from_of: Vec::new(),
+            when: HashMap::new(),
+            last: HashMap::new(),
+            now: 0,
             from: HashMap::new(),
         }
     }
@@ -493,13 +514,8 @@ impl<'a> Checker<'a> {
     fn walk_fn(&mut self, f: &TTIRFn) {
         let Some(body) = f.body else { return };
         self.leaves = self.holds_ref(f.ret);
-        self.depth.clear();
-        self.said_of.clear();
-        for slot in f.params.iter().filter_map(|p| p.slot) {
-            self.depth.insert(slot, 0);
-        }
-        self.from.clear();
-        self.walk_body(body, f.generics.clone());
+        let args: Vec<TTIRLocalId> = f.params.iter().filter_map(|p| p.slot).collect();
+        self.walk_body_of(body, f.generics.clone(), &args);
         // The tail. A `return` is checked where it stands, since what follows
         // it is not walked; what a body falls off the end of is checked here.
         let value = self.p.bodies[body].value;
@@ -507,9 +523,159 @@ impl<'a> Checker<'a> {
         self.escaping(value, line, col);
     }
 
+    // ---- How long a borrow is in hand ------------------------------------
+    //
+    // A borrow lasts from where it is taken to the last place anything can
+    // reach through it, which is where the slot holding it is last read. That
+    // is sharper than the end of the block and is the rule Rust reached with
+    // NLL; the prose allows either, its own lifetime rule being "only ever
+    // answered too conservatively", and the sharper one turns down less.
+    //
+    // Everything is numbered in the order it was written, so "later" is a
+    // bigger number. A loop is the one place that is not enough: what is
+    // written above a use runs below it on the next turn, so every slot last
+    // read inside a loop is held to the loop's own end.
+
+    fn measure(&mut self, body: TTIRBodyId) {
+        self.when.clear();
+        self.last.clear();
+        let value = self.p.bodies[body].value;
+        let mut clock = 0;
+        self.number(value, &mut clock);
+    }
+
+    fn number(&mut self, id: TTIRExprId, clock: &mut usize) {
+        *clock += 1;
+        let at = *clock;
+        self.when.insert(id, at);
+        let inner = |held: &mut Self, kids: Vec<TTIRExprId>, clock: &mut usize| {
+            for kid in kids {
+                held.number(kid, clock);
+            }
+        };
+        match self.p.exprs[id].kind.clone() {
+            TTIRExprKind::Local(local) => {
+                let held = self.last.entry(local).or_insert(at);
+                *held = (*held).max(at);
+            }
+            TTIRExprKind::Literal(_) | TTIRExprKind::Item(_) | TTIRExprKind::SelfExpr => {}
+            TTIRExprKind::Field { base, .. } | TTIRExprKind::TupleIndex { base, .. } => {
+                inner(self, vec![base], clock)
+            }
+            TTIRExprKind::Index { base, index } => inner(self, vec![base, index], clock),
+            TTIRExprKind::Call { callee, args } => {
+                inner(self, std::iter::once(callee).chain(args).collect(), clock)
+            }
+            TTIRExprKind::Method { recv, args, .. } => {
+                inner(self, std::iter::once(recv).chain(args).collect(), clock)
+            }
+            TTIRExprKind::StructLit { fields, .. }
+            | TTIRExprKind::VariantLit { fields, .. }
+            | TTIRExprKind::ArrayLit(fields)
+            | TTIRExprKind::TupleLit(fields)
+            | TTIRExprKind::Set { elems: fields, .. } => inner(self, fields, clock),
+            TTIRExprKind::Map { entries, .. } => {
+                inner(self, entries.iter().flat_map(|&(k, v)| [k, v]).collect(), clock)
+            }
+            TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => {
+                inner(self, vec![operand], clock)
+            }
+            TTIRExprKind::Binary { lhs, rhs, .. } => inner(self, vec![lhs, rhs], clock),
+            TTIRExprKind::Assign { place, value, .. } => inner(self, vec![value, place], clock),
+            TTIRExprKind::Range { start, end, .. } => {
+                inner(self, [start, end].into_iter().flatten().collect(), clock)
+            }
+            // A closure's body is a body of its own and is numbered with its
+            // own fn. What belongs here is that it read every name it captured,
+            // and it reads them for as long as the closure is in hand -- which
+            // is the slot the closure went into, and that slot's last use is
+            // what this numbering finds.
+            TTIRExprKind::Closure { captures, .. } => {
+                for held in captures {
+                    let held = self.last.entry(held.outer).or_insert(at);
+                    *held = (*held).max(at);
+                }
+            }
+            TTIRExprKind::Block { stmts, tail } => {
+                for stmt in &stmts {
+                    match stmt {
+                        TTIRStmt::Let { local, init, .. } => {
+                            if let Some(init) = init {
+                                self.number(*init, clock);
+                            }
+                            // Bound here and read nowhere: it still stands
+                            // until something reads it, and nothing does.
+                            self.last.entry(*local).or_insert(*clock);
+                        }
+                        TTIRStmt::Expr { expr, .. } => self.number(*expr, clock),
+                        TTIRStmt::Item(_) => {}
+                    }
+                }
+                if let Some(tail) = tail {
+                    self.number(tail, clock);
+                }
+            }
+            TTIRExprKind::If { cond, then, els } => {
+                inner(self, [Some(cond), Some(then), els].into_iter().flatten().collect(), clock)
+            }
+            TTIRExprKind::Match { scrutinee, arms } => {
+                self.number(scrutinee, clock);
+                for arm in &arms {
+                    self.number(arm.body, clock);
+                }
+            }
+            // The two that come round again.
+            TTIRExprKind::While { cond, body } => {
+                let from = *clock;
+                self.number(cond, clock);
+                self.number(body, clock);
+                self.round(from, *clock);
+            }
+            TTIRExprKind::For { local, iter, body } => {
+                let from = *clock;
+                self.number(iter, clock);
+                self.number(body, clock);
+                self.last.entry(local).or_insert(*clock);
+                self.round(from, *clock);
+            }
+            TTIRExprKind::Return(value) | TTIRExprKind::Break(value) => {
+                inner(self, value.into_iter().collect(), clock)
+            }
+            TTIRExprKind::Continue => {}
+        }
+    }
+
+    // What is written above a use runs below it on the next turn, so a slot
+    // last read anywhere inside a loop is in hand for all of it.
+    fn round(&mut self, from: usize, to: usize) {
+        for held in self.last.values_mut() {
+            if *held > from && *held <= to {
+                *held = to;
+            }
+        }
+    }
+
     fn walk_body(&mut self, body: TTIRBodyId, generic: Vec<TTIRGeneric>) {
+        self.walk_body_of(body, generic, &[]);
+    }
+
+    // `args` is the slots the parameters were put in. They came from outside,
+    // so they outlive everything the body declares, which is depth 0.
+    fn walk_body_of(
+        &mut self,
+        body: TTIRBodyId,
+        generic: Vec<TTIRGeneric>,
+        args: &[TTIRLocalId],
+    ) {
         self.body = body;
         self.generic = generic;
+        self.measure(body);
+        self.depth.clear();
+        self.from.clear();
+        self.said_of.clear();
+        for &slot in args {
+            self.depth.insert(slot, 0);
+        }
         self.gone = Gone::default();
         self.held.clear();
         self.marks.clear();
@@ -750,6 +916,42 @@ impl<'a> Checker<'a> {
         }
     }
 
+    // What a parameter's regions were handed, worked out against the argument
+    // as it was written. A `(&'a i32, &'b i32)` given a tuple written on the
+    // spot answers for each half on its own; anything this cannot take apart
+    // answers for the argument whole, which is the blunt end of the same rule.
+    fn supplied_from(
+        &self,
+        declared: TyId,
+        arg: TTIRExprId,
+        regions: &mut HashMap<RegionId, (usize, Option<TTIRLocalId>)>,
+        params: &mut HashMap<usize, (usize, Option<TTIRLocalId>)>,
+    ) {
+        // A block stands for its tail and a cast for what it casts.
+        let arg = match &self.p.exprs[arg].kind {
+            TTIRExprKind::Cast(inner) => *inner,
+            TTIRExprKind::Block { tail: Some(tail), .. } => *tail,
+            _ => arg,
+        };
+        match (&self.p.types[declared], &self.p.exprs[arg].kind) {
+            (Ty::Tuple(members), TTIRExprKind::TupleLit(parts))
+                if members.len() == parts.len() =>
+            {
+                let (members, parts) = (members.clone(), parts.clone());
+                for (want, part) in members.iter().zip(parts.iter()) {
+                    self.supplied_from(*want, *part, regions, params);
+                }
+            }
+            (Ty::Array { elem, .. }, TTIRExprKind::ArrayLit(parts)) => {
+                let (elem, parts) = (*elem, parts.clone());
+                for part in parts {
+                    self.supplied_from(elem, part, regions, params);
+                }
+            }
+            _ => self.supplied(declared, self.handed(arg), regions, params),
+        }
+    }
+
     // How long an argument's value is good for, and the slot that says so.
     fn handed(&self, arg: TTIRExprId) -> (usize, Option<TTIRLocalId>) {
         let mut worst = (0, None);
@@ -780,7 +982,7 @@ impl<'a> Checker<'a> {
     fn bounds_at_call(
         &mut self,
         item: TTIRItemId,
-        given: &[(usize, Option<TTIRLocalId>)],
+        given: &[Handed],
         at: Span,
     ) {
         let TTIRItemKind::Fn(f) = &self.p.items[item].kind else { return };
@@ -793,9 +995,16 @@ impl<'a> Checker<'a> {
 
         let mut regions = HashMap::new();
         let mut params = HashMap::new();
-        for (i, &held) in given.iter().enumerate() {
+        for (i, held) in given.iter().enumerate() {
             let Some(&want) = declared.get(i) else { continue };
-            self.supplied(want, held, &mut regions, &mut params);
+            match held {
+                // Taken apart where it was written as one thing built out of
+                // several, so each region answers for its own half.
+                Handed::Written(arg) => {
+                    self.supplied_from(want, *arg, &mut regions, &mut params)
+                }
+                Handed::Whole(held) => self.supplied(want, *held, &mut regions, &mut params),
+            }
         }
 
         // A region nothing was handed is one the caller may pick freely, and
@@ -1213,6 +1422,7 @@ impl<'a> Checker<'a> {
     // expression names is being used for, where it names one.
     fn expr(&mut self, id: TTIRExprId, how: Use) -> Flow {
         let (line, col) = (self.p.exprs[id].line, self.p.exprs[id].col);
+        self.now = self.when.get(&id).copied().unwrap_or(self.now);
         match self.p.exprs[id].kind.clone() {
             TTIRExprKind::Literal(_) | TTIRExprKind::Item(_) | TTIRExprKind::SelfExpr => {
                 Flow::Normal
@@ -1302,7 +1512,7 @@ impl<'a> Checker<'a> {
                 let flow = self.handing(&args);
                 // After the arguments, so that what each was handed is known.
                 if let Some(item) = self.callee(callee) {
-                    let given: Vec<_> = args.iter().map(|&a| self.handed(a)).collect();
+                    let given: Vec<_> = args.iter().map(|&a| Handed::Written(a)).collect();
                     self.bounds_at_call(item, &given, Span::at(line, col));
                 }
                 flow
@@ -1319,11 +1529,13 @@ impl<'a> Checker<'a> {
                 // borrowed rather than handed over, which is a different
                 // question about how long it is good for.
                 let first = match mode {
-                    Some(TIRSelf::Ref) | Some(TIRSelf::Mut) => self.handed_borrowed(recv),
-                    _ => self.handed(recv),
+                    Some(TIRSelf::Ref) | Some(TIRSelf::Mut) => {
+                        Handed::Whole(self.handed_borrowed(recv))
+                    }
+                    _ => Handed::Written(recv),
                 };
                 let given: Vec<_> = std::iter::once(first)
-                    .chain(args.iter().map(|&a| self.handed(a)))
+                    .chain(args.iter().map(|&a| Handed::Written(a)))
                     .collect();
                 let flow = match mode {
                     Some(TIRSelf::Value) => {
@@ -1447,22 +1659,42 @@ impl<'a> Checker<'a> {
     // are its own, the ones it captured among them, and a capture arrives whole
     // however the name outside it stood.
     fn closure(&mut self, body: TTIRBodyId) -> Flow {
-        let (outer, gone, held, marks, breaks) = (
-            self.body,
-            std::mem::take(&mut self.gone),
-            std::mem::take(&mut self.held),
-            std::mem::take(&mut self.marks),
-            std::mem::take(&mut self.breaks),
-        );
+        // Everything keyed by a slot or an expression has to be put aside and
+        // put back: "a `TTIRLocalId` is a slot of the body that holds it, not
+        // of the program", so a closure's slot 0 and the enclosing frame's are
+        // two different things with one number, and the same for an expression.
+        let outer = self.body;
+        let gone = std::mem::take(&mut self.gone);
+        let held = std::mem::take(&mut self.held);
+        let marks = std::mem::take(&mut self.marks);
+        let breaks = std::mem::take(&mut self.breaks);
+        let depth = std::mem::take(&mut self.depth);
+        let from = std::mem::take(&mut self.from);
+        let said_of = std::mem::take(&mut self.said_of);
+        let when = std::mem::take(&mut self.when);
+        let last = std::mem::take(&mut self.last);
+        let now = self.now;
+        // A closure's body is not a signature, so nothing it gives back stands
+        // in a region of one and there is no escape to check.
+        let leaves = std::mem::replace(&mut self.leaves, false);
+
         // A closure declares no parameters of its own, so the generics it is
         // checked under are the ones it was written inside.
         let generic = self.generic.clone();
         self.walk_body(body, generic);
+
         self.body = outer;
         self.gone = gone;
         self.held = held;
         self.marks = marks;
         self.breaks = breaks;
+        self.depth = depth;
+        self.from = from;
+        self.said_of = said_of;
+        self.when = when;
+        self.last = last;
+        self.now = now;
+        self.leaves = leaves;
         Flow::Normal
     }
 
@@ -1470,11 +1702,14 @@ impl<'a> Checker<'a> {
     // other -- what changes is only what the secondary says, a reader who did
     // not write a `&` needing to be told one is there.
     fn captured(&mut self, place: &Place, op: TIRRefOp, line: usize, col: usize) {
+        let now = self.now;
         if let Some(other) = self
             .held
             .iter()
             .find(|held| {
-                held.place.conflicts(place) && (held.op == TIRRefOp::Mut || op == TIRRefOp::Mut)
+                held.until >= now
+                    && held.place.conflicts(place)
+                    && (held.op == TIRRefOp::Mut || op == TIRRefOp::Mut)
             })
             .cloned()
         {
@@ -1491,7 +1726,7 @@ impl<'a> Checker<'a> {
                     ),
             );
         }
-        self.held.push(Held { place: place.clone(), op, line, col });
+        self.held.push(Held { place: place.clone(), op, line, col, until: usize::MAX });
     }
 
     // A run of things each of which is handed over: an argument list, the
@@ -1505,6 +1740,15 @@ impl<'a> Checker<'a> {
         }
         Flow::Normal
     }
+}
+
+// What a call handed one parameter: the expression, where there is one to take
+// apart, and how long it lasts where there is not -- a method's receiver being
+// borrowed rather than handed over, and the borrow lasting as long as the
+// receiver itself.
+enum Handed {
+    Written(TTIRExprId),
+    Whole((usize, Option<TTIRLocalId>)),
 }
 
 // A parameter holding no region bound: `T: Show` is a trait's business and
@@ -1618,11 +1862,14 @@ impl<'a> Checker<'a> {
         // "A place is reached either through one `*` and nothing else, or
         // through any number of `&` and no `*` -- one mutable reference or many
         // immutable ones, and never both" (§3).
+        let now = self.now;
         if let Some(other) = self
             .held
             .iter()
             .find(|held| {
-                held.place.conflicts(&place) && (held.op == TIRRefOp::Mut || op == TIRRefOp::Mut)
+                held.until >= now
+                    && held.place.conflicts(&place)
+                    && (held.op == TIRRefOp::Mut || op == TIRRefOp::Mut)
             })
             .cloned()
         {
@@ -1640,7 +1887,7 @@ impl<'a> Checker<'a> {
             );
         }
 
-        self.held.push(Held { place, op, line, col });
+        self.held.push(Held { place, op, line, col, until: usize::MAX });
         Flow::Normal
     }
 
@@ -1689,6 +1936,7 @@ impl<'a> Checker<'a> {
                     // which is however many blocks deep the walk is now.
                     let held = self.marks.len();
                     self.depth.insert(*local, held);
+                    let taken = self.held.len();
                     if let Some(init) = init {
                         if self.expr(*init, Use::Pass).left() {
                             flow = Flow::Left;
@@ -1714,6 +1962,17 @@ impl<'a> Checker<'a> {
                         } else {
                             self.from.insert(*local, roots);
                         }
+                    }
+                    // Every borrow taken working the value out may have
+                    // reached the slot, so all of them keep the slot's extent
+                    // -- which ends where the slot is last read and not where
+                    // the block does. Blunt in which borrows are held and
+                    // sharp in how long: sharpening the first costs a
+                    // reachability walk, and the second is what turns down
+                    // programs that are fine.
+                    let until = self.last.get(local).copied().unwrap_or(usize::MAX);
+                    for held in &mut self.held[taken..] {
+                        held.until = until;
                     }
                     // The slot is filled, whatever was in it before.
                     self.gone.filled(&Place::of(*local));

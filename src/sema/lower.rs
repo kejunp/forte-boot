@@ -51,7 +51,7 @@ use crate::sema::types::Types;
 use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinOp, TIRBinding, TIRExprId, TIRExprKind, TIRFn, TIRGeneric, TIRItemId,
     TIRBound, TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRRefOp,
-    TIRStmt, TIRTypeId, TIRTypeKind, TIRVis, TIRWherePred,
+    TIRGenericArg, TIRPayload, TIRStmt, TIRTypeId, TIRTypeKind, TIRVis, TIRWherePred,
 };
 use crate::tir::ttir_nodes::{
     TTIRBody, TTIRBodyId, TTIRCapture, TTIRCaptureMode, TTIRExpr, TTIRExprId, TTIRExprKind,
@@ -304,11 +304,36 @@ impl<'a> Lowerer<'a> {
 
             let made = self.push(kind, id);
             self.made[id] = Some(made);
+            // How many regions the declaration ends up with: one per lifetime
+            // it declares, and one more per reference in it that named none --
+            // "every reference in a signature with no lifetime of its own gets
+            // one" (§3), which a declaration carrying references answers to as
+            // much as a signature does. Numbered in that order, which is the
+            // order `open_regions` and the field walk hand them out in.
             let takes = match &self.tir.items[id].kind {
-                TIRItemKind::Struct { generics, .. }
-                | TIRItemKind::Enum { generics, .. }
-                | TIRItemKind::TypeAlias { generics, .. } => {
-                    generics.iter().filter(|g| matches!(g, TIRGeneric::Life { .. })).count()
+                TIRItemKind::Struct { generics, fields, .. } => {
+                    lifetimes_of(generics)
+                        + fields.iter().map(|f| self.elided_in(f.ty)).sum::<usize>()
+                }
+                TIRItemKind::Enum { generics, variants, .. } => {
+                    lifetimes_of(generics)
+                        + variants
+                            .iter()
+                            .map(|v| match &v.payload {
+                                // A discriminant is a constant and holds no
+                                // type, so it carries no reference either.
+                                TIRPayload::None | TIRPayload::Discriminant(_) => 0,
+                                TIRPayload::Tuple(tys) => {
+                                    tys.iter().map(|&t| self.elided_in(t)).sum()
+                                }
+                                TIRPayload::Named(fields) => {
+                                    fields.iter().map(|f| self.elided_in(f.ty)).sum()
+                                }
+                            })
+                            .sum::<usize>()
+                }
+                TIRItemKind::TypeAlias { generics, ty, .. } => {
+                    lifetimes_of(generics) + self.elided_in(*ty)
                 }
                 _ => 0,
             };
@@ -745,6 +770,32 @@ impl<'a> Lowerer<'a> {
     // was written, "every reference in a signature with no lifetime of its own
     // gets one" (§3) reaches here too, and a fresh one is made -- so a `Held`
     // and a `Held<'a>` carry the same promise and only one of them says which.
+    // References in a written type that named no lifetime, which is how many
+    // regions of its own it will take. Through the type and not through the
+    // declarations it names: what a `Held` inside another declaration carries
+    // is that declaration's business, and it is why `holds_ref` looks through
+    // one and this does not.
+    fn elided_in(&self, ty: TIRTypeId) -> usize {
+        match &self.tir.types[ty].kind {
+            TIRTypeKind::Ref { life, inner, .. } => {
+                usize::from(life.is_none()) + self.elided_in(*inner)
+            }
+            TIRTypeKind::Ptr(inner) => self.elided_in(*inner),
+            TIRTypeKind::Array { elem, .. } | TIRTypeKind::Run(elem) => self.elided_in(*elem),
+            TIRTypeKind::Tuple(members) => {
+                members.iter().map(|&m| self.elided_in(m)).sum()
+            }
+            TIRTypeKind::Named { args, .. } => args
+                .iter()
+                .map(|a| match a {
+                    TIRGenericArg::Type(ty) => self.elided_in(*ty),
+                    TIRGenericArg::Life(_) => 0,
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+
     fn named_regions(&mut self, item: TTIRItemId, written: &[String], at: Span) -> Vec<RegionId> {
         let takes = self.lifes.get(item).copied().unwrap_or(0);
         let mut out = Vec::with_capacity(takes.max(written.len()));
@@ -879,15 +930,15 @@ impl<'a> Lowerer<'a> {
                 let written: Vec<String> = args
                     .iter()
                     .filter_map(|a| match a {
-                        crate::tir::tir_nodes::TIRGenericArg::Life(name) => Some(name.clone()),
-                        crate::tir::tir_nodes::TIRGenericArg::Type(_) => None,
+                        TIRGenericArg::Life(name) => Some(name.clone()),
+                        TIRGenericArg::Type(_) => None,
                     })
                     .collect();
                 let args: Vec<TyId> = args
                     .iter()
                     .filter_map(|a| match a {
-                        crate::tir::tir_nodes::TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
-                        crate::tir::tir_nodes::TIRGenericArg::Life(_) => None,
+                        TIRGenericArg::Type(ty) => Some(self.ty(*ty)),
+                        TIRGenericArg::Life(_) => None,
                     })
                     .collect();
                 match self.names.get(&path.join("::")).copied() {
@@ -981,6 +1032,10 @@ fn names_of(generics: &[TIRGeneric]) -> Vec<String> {
 // The type parameters alone, which is the index space a `Ty::Param` counts in.
 // A lifetime is not a type: it takes no slot among them and gets no hole at a
 // call, since nothing a call could work out would ever fill one.
+fn lifetimes_of(generics: &[TIRGeneric]) -> usize {
+    generics.iter().filter(|g| matches!(g, TIRGeneric::Life { .. })).count()
+}
+
 fn type_names_of(generics: &[TIRGeneric]) -> Vec<String> {
     generics
         .iter()

@@ -388,19 +388,13 @@ fn a_struct_shaped_variant_is_reached_by_name() {
 #[test]
 fn a_capture_takes_the_least_the_body_asks() {
     let ttir = clean(
-        // Three fns and not one block: a capture is a borrow that lasts as long
-        // as the closure, so a `&` and a `*` of one name in one block is the
-        // aliasing rule being broken and not the capture rule being shown.
+        // One block, and the three stand together: a capture is a borrow that
+        // lasts until nothing reads the closure again, and nothing reads any
+        // of these -- so no two of them are in hand at once.
         "fn f() {\n\
          \x20   var n = 0\n\
          \x20   let show = || n\n\
-         }\n\
-         fn g() {\n\
-         \x20   var n = 0\n\
          \x20   let bump = || n = n + 1\n\
-         }\n\
-         fn h() {\n\
-         \x20   var n = 0\n\
          \x20   let own = move || n\n\
          }\n",
     );
@@ -1714,4 +1708,76 @@ fn a_where_about_a_built_type_is_held_to_as_well() {
          fn built<'a, T>(x: &'a i32, b: Box<T>): i32 where Box<T>: 'a {\n    1\n}\n\
          fn f(p: &i32, b: Box<i32>) {\n    built(p, b);\n}\n",
     );
+}
+
+// ---- How long a borrow is in hand ------------------------------------------
+
+// A borrow lasts to the last place anything can reach through it, which is
+// where the slot holding it is last read -- not to the end of the block.
+#[test]
+fn a_borrow_is_done_with_when_nothing_reads_it_again() {
+    clean("fn f() {\n    var x = 1;\n    let r = &x;\n    let n = r;\n    let m = *x;\n}\n");
+    let out = refused(
+        "fn f() {\n    var x = 1;\n    let r = &x;\n    let m = *x;\n    let n = r;\n}\n",
+    );
+    assert!(out.contains("`x` is borrowed already"), "{}", out);
+}
+
+// A loop is where being written above is not being run above: the second turn
+// reaches through the borrow again, so a slot last read inside one is in hand
+// for all of it.
+#[test]
+fn a_borrow_read_inside_a_loop_is_in_hand_for_all_of_it() {
+    let out = refused(
+        "fn f() {\n    var x = 1;\n    let r = &x;\n    while true {\n\
+         \x20       let m = *x;\n        let n = r;\n    }\n}\n",
+    );
+    assert!(out.contains("`x` is borrowed already"), "{}", out);
+}
+
+// A capture is a borrow like any other and ends like any other: what the
+// closure holds is let go when nothing reads the closure again.
+#[test]
+fn a_capture_is_done_with_when_nothing_reads_the_closure_again() {
+    clean(
+        "fn f() {\n    var n = 0;\n    let show = || n;\n    let k = show;\n\
+         \x20   let bump = || n = n + 1;\n}\n",
+    );
+    let out = refused(
+        "fn f() {\n    var n = 0;\n    let show = || n;\n    let bump = || n = n + 1;\n\
+         \x20   let k = show;\n}\n",
+    );
+    assert!(out.contains("`n` is borrowed already"), "{}", out);
+}
+
+// A declaration whose references name no lifetime carries a region for each of
+// them all the same, so a written `'a` sharpens what it gives back the same way
+// it does anywhere else.
+#[test]
+fn a_declaration_that_elides_its_references_still_carries_regions() {
+    let with = "struct Held {\n    pub it: &i32,\n}\n";
+    let out = refused(&format!(
+        "{}fn loose(p: &i32, q: &i32): Held {{\n    Held {{ it: p }}\n}}\n\
+         fn f(p: &i32): Held {{\n    let n = 1;\n    loose(p, &n)\n}}\n",
+        with
+    ));
+    assert!(out.contains("`n` does not live long enough"), "{}", out);
+    clean(&format!(
+        "{}fn tight<'a>(p: &'a i32, q: &i32): Held<'a> {{\n    Held {{ it: p }}\n}}\n\
+         fn f(p: &i32): Held {{\n    let n = 1;\n    tight(p, &n)\n}}\n",
+        with
+    ));
+}
+
+// Two regions handed in one argument answer for their own halves, where the
+// argument was written as the thing it is built out of.
+#[test]
+fn two_regions_of_one_argument_are_told_apart() {
+    let with = "fn takes<'x, 'y>(p: (&'x i32, &'y i32)): i32 where 'x: 'y {\n    1\n}\n";
+    clean(&format!("{}fn f(q: &i32) {{\n    let n = 1;\n    takes((q, &n));\n}}\n", with));
+    let out = refused(&format!(
+        "{}fn f(q: &i32) {{\n    let n = 1;\n    takes((&n, q));\n}}\n",
+        with
+    ));
+    assert!(out.contains("`'x` does not outlive `'y`"), "{}", out);
 }
