@@ -1,5 +1,5 @@
 // What the checker turns down. The TTIR is built by hand, `sema` being the pass
-// that would produce one from source and not written.
+// that produces one from source, which these do not go through.
 
 use super::*;
 use crate::error::Source;

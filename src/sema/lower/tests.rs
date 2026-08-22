@@ -1907,3 +1907,39 @@ fn an_array_suffix_binds_inside_a_fn_types_return() {
     // `b` takes an array of fns.
     assert!(matches!(&ttir.types[of("b")], Ty::Array { .. }));
 }
+
+// ---- What a closure's body may do with what it captured ---------------------
+
+// A name captured by reference is the enclosing frame's, and handing it away
+// from inside the closure would hand away what somebody else still owns. §5
+// works the mode out from what the body asks -- reading takes a `&` and
+// assigning takes a `*` -- and taking the value is more than either.
+#[test]
+fn a_name_captured_by_reference_may_not_be_handed_away() {
+    let with = "struct Buf {\n    pub n: i32,\n}\nfn eat(b: Buf): i32 {\n    1\n}\n";
+    let out = refused(&format!(
+        "{}fn f(): i32 {{\n    let b = Buf {{ n: 1 }};\n    let c = || eat(b);\n    1\n}}\n",
+        with
+    ));
+    assert!(out.contains("`b` cannot be moved out of a closure"), "{}", out);
+    assert!(out.contains("captured it by `&`"), "{}", out);
+    // "a `move` closure takes what it captures, and may give it away".
+    clean(&format!(
+        "{}fn f(): i32 {{\n    let b = Buf {{ n: 1 }};\n    let c = move || eat(b);\n    1\n}}\n",
+        with
+    ));
+}
+
+// What a closure gives back may point at what it captured -- which outlives the
+// closure -- but not at anything its body declared, which does not.
+#[test]
+fn a_closure_may_not_give_back_a_reference_to_its_own_body() {
+    let out = refused(
+        "fn f(): fn(): &i32 {\n    move || {\n        let m = 1;\n        &m\n    }\n}\n",
+    );
+    assert!(out.contains("`m` does not live long enough"), "{}", out);
+    assert!(out.contains("4 |         &m"), "{}", out);
+    // A capture is the other way: it came from outside and goes on living
+    // there, so giving it back is what a closure is for.
+    clean("fn f(p: &i32): fn(): &i32 {\n    move || p\n}\n");
+}

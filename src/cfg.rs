@@ -3,7 +3,7 @@
 //
 //     prep -> lex -> parse -> AST -> expand -> lower -> TIR
 //                                                       |
-//                                                    [ sema ]        not written
+//                                                    [ sema ]
 //                                                       |
 //                                                      TTIR
 //                                                       |
@@ -27,9 +27,9 @@
 // lowering puts the statement; the third is a dataflow, which is what a graph
 // is for.
 //
-// Most of this is constructed and never called from the driver, which stops at
-// the TIR -- the warning about that would be on every build rather than about
-// anything.
+// Parts of this are constructed and never called -- a graph has no consumer
+// past `opt` yet -- and the warning about that would be on every build rather
+// than about anything.
 #![allow(dead_code)]
 
 #[cfg(test)]

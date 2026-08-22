@@ -13,8 +13,8 @@
 // branches are edges, so it gets a temporary written on both sides. Those are
 // named with a `$`, which no source can collide with.
 //
-// Nothing calls this yet: `sema` is what would hand it a TTIR, and `sema` is
-// not written. The tests build one by hand.
+// `sema` is what hands this a TTIR. The tests build one by hand instead, so
+// that what is under test is this pass and not the one before it.
 
 use crate::tir::tir_nodes::{TIRBinOp, TIRBinding, TIRIntro, TIRLit, TIRUnaryOp};
 use crate::tir::ttir_nodes::*;

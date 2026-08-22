@@ -20,6 +20,12 @@
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
+// A closure's body is walked like any other, with two things said about the
+// names it did not declare: one captured by reference is somebody else's and
+// may not be handed away from inside, and what the body gives back may point at
+// a capture -- which outlives the closure -- but not at anything the body
+// declared, which does not.
+//
 // A borrow lasts from where it is taken to the last place anything can reach
 // through it, which is where the slot holding it is last read -- the rule Rust
 // reached with NLL, and sharper than the block-long extent this used to have.
@@ -55,11 +61,10 @@
 //     given. `holds_ref` still sees the reference, so what comes of one is
 //     held to every parameter -- the elision rule's own answer, and never
 //     wrong.
-//   - Nothing about a closure's *body* reaching what it captured. The capture
-//     itself is checked -- §5 makes it the one place a reference is taken
-//     without being written, and `TTIRCapture` is what says so -- but the
-//     borrow it takes lasts as long as the name the closure was bound to, and
-//     what the body does with its own slot for it is the body's own business.
+//   - Tell one call of a closure from the next. A body is walked once, so a
+//     `move` closure that hands away what it captured is one move here and
+//     would be one per call at run time. Saying so wants the `FnOnce` and
+//     `FnMut` a fn type does not draw, and drawing it is a language change.
 //   - Where a `Drop` runs. Settled in §2 and placed by `cfg::drops`, which is
 //     where the graph is: "nothing at all where the value was moved away
 //     first" is a question about a program point, and a graph is what answers
@@ -73,7 +78,7 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::{TIRBinding, TIRRefOp, TIRSelf, TIRUnaryOp};
 use crate::tir::ttir_nodes::{
-    RegionId, TTIRBound, TTIRSubject, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
+    RegionId, TTIRBound, TTIRCapture, TTIRSubject, TTIRBodyId, TTIRCaptureMode, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItemId,
     TTIRItemKind, TTIRLocalId, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, Ty,
     TyId,
 };
@@ -515,6 +520,11 @@ pub struct Checker<'a> {
     // Where the walk is now, so a borrow whose slot is done with can be told
     // from one still in hand.
     now:     usize,
+    // The slots of *this* body that hold a name the closure it belongs to
+    // captured by reference. Inside the body such a slot has the captured
+    // type and not a reference type -- `catch` gives it the type it found --
+    // so nothing about the slot itself says the value is somebody else's.
+    caught:  HashMap<TTIRLocalId, TIRRefOp>,
     // What each slot's value points into, where it points into this body at
     // all. `let r = &x` makes r point into x, and `let s = r` makes s point
     // where r did -- so a reference is followed however many names it is
@@ -542,6 +552,7 @@ impl<'a> Checker<'a> {
             when: HashMap::new(),
             last: HashMap::new(),
             now: 0,
+            caught: HashMap::new(),
             from: HashMap::new(),
         }
     }
@@ -579,12 +590,7 @@ impl<'a> Checker<'a> {
         let Some(body) = f.body else { return };
         self.leaves = self.holds_ref(f.ret);
         let args: Vec<TTIRLocalId> = f.params.iter().filter_map(|p| p.slot).collect();
-        self.walk_body_of(body, f.generics.clone(), &args);
-        // The tail. A `return` is checked where it stands, since what follows
-        // it is not walked; what a body falls off the end of is checked here.
-        let value = self.p.bodies[body].value;
-        let (line, col) = (self.p.exprs[value].line, self.p.exprs[value].col);
-        self.escaping(value, line, col);
+        self.walk_body_of(body, f.generics.clone(), &args, &[]);
     }
 
     // ---- How long a borrow is in hand ------------------------------------
@@ -720,7 +726,7 @@ impl<'a> Checker<'a> {
     }
 
     fn walk_body(&mut self, body: TTIRBodyId, generic: Vec<TTIRGeneric>) {
-        self.walk_body_of(body, generic, &[]);
+        self.walk_body_of(body, generic, &[], &[]);
     }
 
     // `args` is the slots the parameters were put in. They came from outside,
@@ -730,6 +736,7 @@ impl<'a> Checker<'a> {
         body: TTIRBodyId,
         generic: Vec<TTIRGeneric>,
         args: &[TTIRLocalId],
+        caught: &[TTIRLocalId],
     ) {
         self.body = body;
         self.generic = generic;
@@ -740,12 +747,23 @@ impl<'a> Checker<'a> {
         for &slot in args {
             self.depth.insert(slot, 0);
         }
+        // A captured name came from outside and goes on living there -- by
+        // reference it is the enclosing frame's, and by value it is the
+        // closure's, and either way it outlives the body's own blocks.
+        for &slot in caught {
+            self.depth.insert(slot, 0);
+        }
         self.gone = Gone::default();
         self.held.clear();
         self.marks.clear();
         self.breaks.clear();
         let value = self.p.bodies[body].value;
         self.expr(value, Use::Read);
+        // The tail. A `return` is checked where it stands, since what follows
+        // it is not walked; what a body falls off the end of is checked here,
+        // and a closure's body falls off the end of itself as much as a fn's.
+        let (line, col) = (self.p.exprs[value].line, self.p.exprs[value].col);
+        self.escaping(value, line, col);
     }
 
     // ---- Escapes ---------------------------------------------------------
@@ -764,22 +782,32 @@ impl<'a> Checker<'a> {
     // Region 0 is what a reference in a body gets, where how long it is good
     // for was nobody's question -- so it does not count.
     fn holds_ref(&self, ty: TyId) -> bool {
-        self.holds_ref_past(ty, &mut Vec::new())
+        self.holds_ref_past(ty, true, &mut Vec::new())
+    }
+
+    // The same question asked of a closure's result rather than a signature's.
+    // Every reference a body takes stands in region 0 -- how long one held in a
+    // local is good for is not what a signature promises -- so `holds_ref` can
+    // see none of them, and what a closure gives back is worked out in a body.
+    fn holds_any_ref(&self, ty: TyId) -> bool {
+        self.holds_ref_past(ty, false, &mut Vec::new())
     }
 
     // `seen` is the declarations already being looked through. A struct cannot
     // hold itself by value, so a cycle is not reachable today -- but this walks
     // declarations rather than types, and a walk over declarations that cannot
     // be stopped is a hang waiting for a language change.
-    fn holds_ref_past(&self, ty: TyId, seen: &mut Vec<TTIRItemId>) -> bool {
+    fn holds_ref_past(&self, ty: TyId, signature: bool, seen: &mut Vec<TTIRItemId>) -> bool {
         match &self.p.types[ty] {
-            Ty::Ref { life, inner, .. } => *life != 0 || self.holds_ref_past(*inner, seen),
+            Ty::Ref { life, inner, .. } => {
+                (!signature || *life != 0) || self.holds_ref_past(*inner, signature, seen)
+            }
             // A named type holds a reference where what it was declared to hold
             // does. The regions are the declaration's and not the use's -- a
             // `Held` written bare carries the same reference a `Held<'a>` does,
             // and it is the declaration that says so.
             Ty::Named { item, args, .. } => {
-                if args.iter().any(|&a| self.holds_ref_past(a, seen)) {
+                if args.iter().any(|&a| self.holds_ref_past(a, signature, seen)) {
                     return true;
                 }
                 if seen.contains(item) {
@@ -788,16 +816,16 @@ impl<'a> Checker<'a> {
                 seen.push(*item);
                 let held = match &self.p.items[*item].kind {
                     TTIRItemKind::Struct { fields, .. } => {
-                        fields.iter().any(|f| self.holds_ref_past(f.ty, seen))
+                        fields.iter().any(|f| self.holds_ref_past(f.ty, signature, seen))
                     }
                     TTIRItemKind::Enum { variants, .. } => {
                         variants.iter().any(|v| match &v.payload {
                             TTIRPayload::None => false,
                             TTIRPayload::Tuple(tys) => {
-                                tys.iter().any(|&t| self.holds_ref_past(t, seen))
+                                tys.iter().any(|&t| self.holds_ref_past(t, signature, seen))
                             }
                             TTIRPayload::Named(fields) => {
-                                fields.iter().any(|f| self.holds_ref_past(f.ty, seen))
+                                fields.iter().any(|f| self.holds_ref_past(f.ty, signature, seen))
                             }
                         })
                     }
@@ -812,9 +840,9 @@ impl<'a> Checker<'a> {
             // what it returns for one that captured by reference is what this
             // would have wanted to know.
             Ty::Fn { .. } => true,
-            Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref_past(m, seen)),
-            Ty::Array { elem, .. } | Ty::Run(elem) => self.holds_ref_past(*elem, seen),
-            Ty::GC(inner) => self.holds_ref_past(*inner, seen),
+            Ty::Tuple(members) => members.iter().any(|&m| self.holds_ref_past(m, signature, seen)),
+            Ty::Array { elem, .. } | Ty::Run(elem) => self.holds_ref_past(*elem, signature, seen),
+            Ty::GC(inner) => self.holds_ref_past(*inner, signature, seen),
             _ => false,
         }
     }
@@ -1770,7 +1798,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                self.closure(body)
+                self.closure(&captures, body)
             }
 
             TTIRExprKind::Block { stmts, tail } => self.block(&stmts, tail),
@@ -1812,7 +1840,7 @@ impl<'a> Checker<'a> {
     // A closure's body, walked with nothing of the frame around it: its slots
     // are its own, the ones it captured among them, and a capture arrives whole
     // however the name outside it stood.
-    fn closure(&mut self, body: TTIRBodyId) -> Flow {
+    fn closure(&mut self, captures: &[TTIRCapture], body: TTIRBodyId) -> Flow {
         // Everything keyed by a slot or an expression has to be put aside and
         // put back: "a `TTIRLocalId` is a slot of the body that holds it, not
         // of the program", so a closure's slot 0 and the enclosing frame's are
@@ -1828,14 +1856,28 @@ impl<'a> Checker<'a> {
         let when = std::mem::take(&mut self.when);
         let last = std::mem::take(&mut self.last);
         let now = self.now;
-        // A closure's body is not a signature, so nothing it gives back stands
-        // in a region of one and there is no escape to check.
-        let leaves = std::mem::replace(&mut self.leaves, false);
+        // What the body gives back is the closure's result, and a reference in
+        // it may point at what the closure captured -- which outlives the
+        // closure -- but not at anything the body declared, which does not.
+        let value = self.p.bodies[body].value;
+        let gives = self.holds_any_ref(self.p.exprs[value].ty);
+        let leaves = std::mem::replace(&mut self.leaves, gives);
+        // "the one place a reference is taken without being written" (§5): a
+        // slot holding one is a slot whose value is somebody else's.
+        let borrowed = captures
+            .iter()
+            .filter_map(|c| match c.mode {
+                TTIRCaptureMode::Ref(op) => Some((c.slot, op)),
+                TTIRCaptureMode::Value => None,
+            })
+            .collect();
+        let caught = std::mem::replace(&mut self.caught, borrowed);
 
         // A closure declares no parameters of its own, so the generics it is
         // checked under are the ones it was written inside.
         let generic = self.generic.clone();
-        self.walk_body(body, generic);
+        let slots: Vec<TTIRLocalId> = captures.iter().map(|c| c.slot).collect();
+        self.walk_body_of(body, generic, &[], &slots);
 
         self.body = outer;
         self.gone = gone;
@@ -1849,6 +1891,7 @@ impl<'a> Checker<'a> {
         self.last = last;
         self.now = now;
         self.leaves = leaves;
+        self.caught = caught;
         Flow::Normal
     }
 
@@ -1965,6 +2008,30 @@ impl<'a> Checker<'a> {
         // Neither is written down in the prose. Both follow from one owner at a
         // time, and a reader meets them early enough that saying nothing would
         // be worse than saying this.
+        // A name the closure captured by reference is the enclosing frame's,
+        // and handing it away from here would hand away what somebody else
+        // still owns. §5 works the mode out from what the body asks -- reading
+        // takes a `&` and assigning takes a `*` -- and taking the value is
+        // more than either, with no mode for it short of `move`.
+        if let Some(op) = self.caught.get(&place.root).copied() {
+            if place.path.is_empty() || !place.path.contains(&Step::Deref) {
+                let name = self.name(&place);
+                self.say(
+                    Diagnostic::error(
+                        format!("`{}` cannot be moved out of a closure", name),
+                        Span::at(line, col),
+                    )
+                    .with_label("this takes it")
+                    .with_note(format!(
+                        "the closure captured it by `{}`, which borrows it",
+                        sigil(op)
+                    ))
+                    .with_help("a `move` closure takes what it captures, and may give it away"),
+                );
+                return;
+            }
+        }
+
         let out_of = if place.path.contains(&Step::Deref) {
             Some(("a reference", "`&` it instead, which borrows rather than takes"))
         } else if place.path.contains(&Step::Index) {

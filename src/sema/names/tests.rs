@@ -1,6 +1,6 @@
 // What a fn is compiled to. The TTIR is built by hand here for the reason
 // `cfg::fixture` builds one by hand: `sema` is what would produce a TTIR from
-// source, and it is not written.
+// source, which these do not go through.
 
 use super::*;
 use crate::tir::tir_nodes::{TIRAttrs, TIRFnAttrs, TIRInline};

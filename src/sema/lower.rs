@@ -19,19 +19,18 @@
 //   3. `bodies`   -- what each fn does, with a type worked out for every
 //      expression in it.
 //
-// What it does not do yet, and says so where it meets one: a `match`, a `for`,
-// a closure, a method call, a struct or variant literal, a map or a set, a
-// range, and a call with type arguments written at it. Each of those gets a
-// `Ty::Error` and one message, which is what that type is for -- "so one
-// mistake costs one message and not every message after it". The tree it hands
-// on is honest about what it could not work out rather than quietly wrong about
-// it, which is the difference between a pass that is unfinished and one that
-// lies.
+// Regions are worked out here too, which is the fourth thing and not a pass of
+// its own: "every reference in a signature with no lifetime of its own gets
+// one, and a reference in the return type gets the shortest-lived of the ones
+// the parameters brought in" (§3). What comes of that is `TTIRFn::outlives`,
+// and holding a caller to it is `borrows`.
 //
-// Regions are not worked out either: every `Ty::Ref` gets region 0. Comparing
-// them is a pass of its own (§3), and `types::unify` already leaves them alone.
+// After the three passes it runs `borrows` over what it built -- moves,
+// aliasing and regions -- but only where nothing has been turned down yet: a
+// tree with a `Ty::Error` in it has holes where that pass would look, and one
+// mistake is meant to be one message rather than the head of a list.
 //
-// One more thing it gets wrong, and knowingly. A number with no suffix is a
+// One thing it gets wrong, and knowingly. A number with no suffix is a
 // hole, so that `let x: i64 = 5` puts an i64 there and `let y: u8 = 5` a u8 --
 // which is what a hole is for. The cost is that the hole will take *anything*:
 // `if 5 { }` is accepted, the 5 having become a `bool`. What is wanted is a
@@ -39,9 +38,7 @@
 // Until it has one, a number is too free rather than too fixed, and that is the
 // direction that accepts a wrong program rather than refusing a right one.
 
-// Nothing has called this until now: the driver stops at the TIR, and this is
-// what carries it past. The allow covers the parts of the surface no caller has
-// reached yet.
+// The allow covers the parts of the surface no caller has reached yet.
 #![allow(dead_code)]
 
 use std::collections::HashMap;

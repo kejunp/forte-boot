@@ -87,9 +87,9 @@ fn dump_parse(path: &str, source: &str) {
     // The tree the rest of the compiler would read. Lowering is the last pass
     // that cares how any of it was written.
     //
-    // It stops here. What comes next is `sema`, which turns this into the
-    // typed tree the CFG is built from -- and neither of those is written, so
-    // there is nothing yet to hand `cfg::lower` a TTIR to work on.
+    // What comes next is `sema`, which turns this into the typed tree the CFG
+    // is built from. `run` is the path that takes it there; this one is the
+    // demo walk, which shows what one file lowers to and stops.
     let mut lowerer = Lowerer::new(&parser);
     lowerer.lower(&root);
     if !lowerer.errors().is_empty() {
@@ -160,13 +160,30 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         // read: the symbols it compiles to, and the names it holds.
         let symbols = names::SymbolTable::of(&ttir);
         let scopes = Scopes::of(&ttir);
+
+        // And the graph, which is what the tree was for: the control flow drawn
+        // as edges, every release placed, and the blocks nothing reaches gone.
+        let mut lowerer = cfg::lower::Lowerer::new(&ttir);
+        lowerer.lower();
+        let mut graph = lowerer.finish();
+        let copies = sema::borrows::Copies::of(&ttir);
+        let generics: Vec<Vec<tir::ttir_nodes::TTIRGeneric>> = (0..graph.bodies.len())
+            .map(|body| generics_of(&ttir, body))
+            .collect();
+        cfg::drops::Drops::new(&ttir, &copies).place(&mut graph, &generics);
+        let blocks: usize = graph.bodies.iter().map(|b| b.blocks.len()).sum();
+        cfg::opt::optimize(&mut graph);
+        let left: usize = graph.bodies.iter().map(|b| b.blocks.len()).sum();
+
         println!(
-            "{}: {} items, {} symbols, {} types, {} bodies",
+            "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt)",
             name.display(),
             ttir.items.len(),
             symbols.len(),
             ttir.types.len(),
-            ttir.bodies.len()
+            ttir.bodies.len(),
+            blocks,
+            left
         );
         for (symbol, _) in symbols.sorted() {
             println!("    {}", symbol);
@@ -179,6 +196,20 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
 // `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a
 // module whose path starts at no root; the file's own directory is looked in
 // first either way, and is what `suite` names.
+// The declaration a body belongs to, for the parts of `cfg` that answer a
+// `Ty::Param` -- what a type parameter comes to is the declaration's and not
+// the body's.
+fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_nodes::TTIRGeneric> {
+    for item in &p.items {
+        if let tir::ttir_nodes::TTIRItemKind::Fn(f) = &item.kind {
+            if f.body == Some(body) {
+                return f.generics.clone();
+            }
+        }
+    }
+    Vec::new()
+}
+
 fn run(args: &[String]) -> bool {
     let mut root: Option<PathBuf> = None;
     let mut search_paths = Vec::new();

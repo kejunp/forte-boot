@@ -4,12 +4,11 @@
 // expression says what type it is.
 //
 //     AST -> lower -> TIR -> [ sema ] -> TTIR -> lower -> CFG
-//                              ^ not written
 //
-// Nothing builds one of these yet. `sema` is the pass that would, and it is not
-// written -- so what is here is the shape the checker has to produce and the
-// shape `cfg::lower` reads, agreed on in advance so that neither has to guess
-// at the other. A test builds one by hand; nothing else does.
+// `sema::lower` builds one and `cfg::lower` reads one, so this is the shape the
+// two agreed on: what the checker has to produce and what the graph is drawn
+// from. A test builds one by hand where going through the checker would put
+// that pass under test as well.
 //
 // The vocabulary is the TIR's. An operator means the same thing in both trees
 // and a second spelling of `+` would only be a second thing to keep in step, so

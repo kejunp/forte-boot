@@ -1,5 +1,5 @@
 // What a program's scopes hold. The TTIR is built by hand, `sema` being the
-// pass that would build one from source and not written.
+// pass that builds one from source, which these do not go through.
 
 use super::*;
 use crate::sema::names::{Access, Payload};
