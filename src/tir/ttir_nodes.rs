@@ -224,7 +224,10 @@ pub enum TTIRItemKind {
         attrs:    TIRAttrs,
         name:     String,
         generics: Vec<TTIRGeneric>,
-        wheres:   Vec<TTIRWherePred>,
+        // No `wheres`: `<struct_decl>` takes a `<generic_params_opt>` and no
+        // `<where_clause_opt>`, so a struct's parameters are held to what is
+        // written between the angles and to nothing else. The same for an
+        // enum. A fn and an impl are the two that take one.
         fields:   Vec<TTIRFieldDecl>,
     },
     Enum {
@@ -232,7 +235,6 @@ pub enum TTIRItemKind {
         attrs:    TIRAttrs,
         name:     String,
         generics: Vec<TTIRGeneric>,
-        wheres:   Vec<TTIRWherePred>,
         variants: Vec<TTIRVariant>,
     },
     Trait {

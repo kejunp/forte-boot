@@ -47,7 +47,7 @@ impl Suite {
     fn strukt(&mut self, name: &str) -> TyId {
         let item = self.item(TTIRItemKind::Struct {
             vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: name.to_string(),
-            generics: Vec::new(), wheres: Vec::new(), fields: Vec::new(),
+            generics: Vec::new(), fields: Vec::new(),
         });
         self.ty(Ty::Named { item, args: Vec::new() })
     }

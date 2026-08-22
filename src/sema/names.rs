@@ -74,13 +74,11 @@ pub enum Info {
     // A struct, and what it is made of.
     Struct {
         generics: Vec<TTIRGeneric>,
-        wheres:   Vec<TTIRWherePred>,
         fields:   Vec<Field>,
     },
 
     Enum {
         generics: Vec<TTIRGeneric>,
-        wheres:   Vec<TTIRWherePred>,
         variants: Vec<EnumVariant>,
     },
 
@@ -637,14 +635,12 @@ pub fn info_of(at: TTIRItemId, p: &TTIRProgram) -> Option<Info> {
             is_const:  f.is_const,
             is_unsafe: f.is_unsafe,
         },
-        TTIRItemKind::Struct { generics, wheres, fields, .. } => Info::Struct {
+        TTIRItemKind::Struct { generics, fields, .. } => Info::Struct {
             generics: generics.clone(),
-            wheres:   wheres.clone(),
             fields:   fields.iter().map(field_of).collect(),
         },
-        TTIRItemKind::Enum { generics, wheres, variants, .. } => Info::Enum {
+        TTIRItemKind::Enum { generics, variants, .. } => Info::Enum {
             generics: generics.clone(),
-            wheres:   wheres.clone(),
             variants: variants
                 .iter()
                 .map(|v| EnumVariant {

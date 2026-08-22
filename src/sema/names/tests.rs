@@ -60,7 +60,6 @@ impl Suite {
     fn strukt(&mut self, name: &str) -> TTIRItemId {
         self.item(TTIRItemKind::Struct {
             generics: Vec::new(),
-            wheres: Vec::new(),
             vis:    TIRVis::Pub,
             attrs:  TIRAttrs::default(),
             name:   name.to_string(),
@@ -412,7 +411,6 @@ fn each_kind_of_declaration_gets_its_own_letter() {
     let st = s.strukt("thing");
     let en = s.item(TTIRItemKind::Enum {
         generics: Vec::new(),
-        wheres: Vec::new(),
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         name: "thing".to_string(), variants: Vec::new(),
     });

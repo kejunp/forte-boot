@@ -101,7 +101,6 @@ impl Suite {
     fn strukt(&mut self, name: &str) -> TTIRItemId {
         self.item(TTIRItemKind::Struct {
             generics: Vec::new(),
-            wheres: Vec::new(),
             vis: TIRVis::Pub, attrs: TIRAttrs::default(),
             name: name.to_string(), fields: Vec::new(),
         })
@@ -414,7 +413,6 @@ fn a_struct_and_an_enum_hold_their_parameters() {
     let en = s.item(TTIRItemKind::Enum {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
         generics: vec![TTIRGeneric::Type { name: "E".to_string(), bounds: Vec::new() }],
-        wheres: Vec::new(),
         name: "Maybe".to_string(), variants: Vec::new(),
     });
     let module = s.module.clone();
@@ -592,7 +590,7 @@ fn an_enum_holds_its_variants() {
     let mut s = Suite::new();
     let en = s.item(TTIRItemKind::Enum {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(),
-        generics: Vec::new(), wheres: Vec::new(),
+        generics: Vec::new(),
         name: "Color".to_string(),
         variants: vec![
             TTIRVariant {
@@ -680,7 +678,7 @@ fn every_kind_of_info_is_built_by_something() {
     let point = s.strukt("Point");
     let color = s.item(TTIRItemKind::Enum {
         vis: TIRVis::Pub, attrs: TIRAttrs::default(), name: "Color".to_string(),
-        generics: Vec::new(), wheres: Vec::new(),
+        generics: Vec::new(),
         variants: vec![TTIRVariant {
             attrs: TIRAttrs::default(), name: "Red".to_string(),
             payload: TTIRPayload::None, value: 0,

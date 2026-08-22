@@ -50,15 +50,15 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::sema::types::Types;
 use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinOp, TIRBinding, TIRExprId, TIRExprKind, TIRFn, TIRGeneric, TIRItemId,
-    TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRRefOp, TIRStmt,
-    TIRTypeId, TIRTypeKind, TIRVis,
+    TIRBound, TIRItemKind, TIRLit, TIRPatId, TIRPatKind, TIRPrim, TIRProgram, TIRRefOp,
+    TIRStmt, TIRTypeId, TIRTypeKind, TIRVis, TIRWherePred,
 };
 use crate::tir::ttir_nodes::{
     TTIRBody, TTIRBodyId, TTIRCapture, TTIRCaptureMode, TTIRExpr, TTIRExprId, TTIRExprKind,
     TTIRFieldDecl, TTIRFn,
     TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
-    TTIRParam, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt, TTIRVariant, Ty,
-    TyId,
+    TTIRBound, TTIRParam, TTIRPatId, TTIRPatKind, TTIRPayload, TTIRProgram, TTIRStmt,
+    TTIRSubject, TTIRVariant, TTIRWherePred, Ty, TyId,
 };
 
 pub struct Lowerer<'a> {
@@ -80,6 +80,15 @@ pub struct Lowerer<'a> {
     frames: Vec<Frame>,
     // The parameters of the declaration being walked, for a `Ty::Param`.
     params: Vec<String>,
+    // Which types answer each trait: the `impl Trait for T` of the suite, by
+    // the trait they answer. Built once, between resolving and the bodies --
+    // every impl is in by then, and nothing before the bodies asks.
+    answers: HashMap<TTIRItemId, Vec<TyId>>,
+    // Bounds still to be asked. A parameter is a hole at the moment the call
+    // is reached -- what fills it is what the call settles -- so asking there
+    // asks nothing. They are put by until the body is walked and every hole is
+    // as filled as it is going to get.
+    pending: Vec<(TyId, TTIRBound, String, TIRExprId)>,
     // What the `break`s of each loop being walked were worth, innermost last.
     // A loop is worth "the operand of the `break` that leaves it" (§5.1), and
     // there is no telling which one until every one is in.
@@ -131,6 +140,8 @@ impl<'a> Lowerer<'a> {
             made: vec![None; tir.items.len()],
             frames: Vec::new(),
             params: Vec::new(),
+            answers: HashMap::new(),
+            pending: Vec::new(),
             breaks: Vec::new(),
             subject: None,
         }
@@ -148,6 +159,7 @@ impl<'a> Lowerer<'a> {
         let roots: Vec<TIRItemId> = self.tir.roots.clone();
         self.declare(&roots, &[]);
         self.resolve(&roots);
+        self.gather_impls();
         let made: Vec<TTIRItemId> = roots.iter().filter_map(|&r| self.made[r]).collect();
         self.bodies(&roots);
 
@@ -197,14 +209,14 @@ impl<'a> Lowerer<'a> {
                     name.clone(),
                     TTIRItemKind::Struct {
                         vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
-                        generics: Vec::new(), wheres: Vec::new(), fields: Vec::new(),
+                        generics: Vec::new(), fields: Vec::new(),
                     },
                 ),
                 TIRItemKind::Enum { vis, name, .. } => (
                     name.clone(),
                     TTIRItemKind::Enum {
                         vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
-                        generics: Vec::new(), wheres: Vec::new(), variants: Vec::new(),
+                        generics: Vec::new(), variants: Vec::new(),
                     },
                 ),
                 TIRItemKind::Trait { vis, name, .. } => (
@@ -315,7 +327,8 @@ impl<'a> Lowerer<'a> {
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
                     self.params = names_of(&f.generics);
-                    let generics = self.generics(&f.generics);
+                    let generics = self.generics(&f.generics, &f.wheres);
+                    let made_wheres = self.wheres(&f.wheres, &f.generics);
                     let params: Vec<TTIRParam> = f
                         .params
                         .iter()
@@ -346,6 +359,7 @@ impl<'a> Lowerer<'a> {
                         continue;
                     };
                     held.generics = generics;
+                    held.wheres = made_wheres;
                     held.params = params;
                     held.ret = ret;
                     held.ty = ty;
@@ -354,7 +368,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Struct { name: _, generics, fields, .. } => {
                     self.params = names_of(&generics);
-                    let made_generics = self.generics(&generics);
+                    let made_generics = self.generics(&generics, &[]);
                     let made_fields: Vec<TTIRFieldDecl> = fields
                         .iter()
                         .map(|f| TTIRFieldDecl {
@@ -376,7 +390,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Enum { generics, variants, .. } => {
                     self.params = names_of(&generics);
-                    let made_generics = self.generics(&generics);
+                    let made_generics = self.generics(&generics, &[]);
                     let made_variants: Vec<TTIRVariant> = variants
                         .iter()
                         .enumerate()
@@ -415,7 +429,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::TypeAlias { generics, ty, .. } => {
                     self.params = names_of(&generics);
-                    let made_generics = self.generics(&generics);
+                    let made_generics = self.generics(&generics, &[]);
                     let named = self.ty(ty);
                     let TTIRItemKind::TypeAlias { generics, ty, .. } =
                         &mut self.out.items[made].kind
@@ -468,9 +482,10 @@ impl<'a> Lowerer<'a> {
                     *members = inner;
                 }
 
-                TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
+                TIRItemKind::Impl { generics, wheres, ty, for_ty, members, .. } => {
                     self.params = names_of(&generics);
-                    let made_generics = self.generics(&generics);
+                    let made_generics = self.generics(&generics, &wheres);
+                    let made_wheres = self.wheres(&wheres, &generics);
                     // "`for_ty` is `Some` where a `for` was written, and then
                     // `ty` is the trait" -- so the two swap round here.
                     let (subject, of) = match for_ty {
@@ -482,12 +497,13 @@ impl<'a> Lowerer<'a> {
                     let held = self.subject.replace(subject);
                     self.resolve(&members);
                     self.subject = held;
-                    let TTIRItemKind::Impl { generics, ty, of: written, members, .. } =
+                    let TTIRItemKind::Impl { generics, wheres, ty, of: written, members, .. } =
                         &mut self.out.items[made].kind
                     else {
                         continue;
                     };
                     *generics = made_generics;
+                    *wheres = made_wheres;
                     *ty = subject;
                     *written = of;
                     *members = inner;
@@ -503,12 +519,20 @@ impl<'a> Lowerer<'a> {
     // whole of what a receiver's type comes from.
     //
     // A trait's is another matter: the type is whatever answers the trait, and
-    // `Ty` has no way to say "the one this is about". So a trait's receiver is
-    // an `Error` -- said once here rather than left as a hole that would be
-    // reported as one the checker forgot.
+    // `Ty` has no way to say "the one this is about". It is a parameter in all
+    // but name -- what it stands for is settled by whoever answers the trait,
+    // exactly as a `T` is settled by whoever calls -- so it is written as one,
+    // named `Self` and placed after the method's own. A `Ty::SelfTy` would say
+    // it more plainly and is what to add if this starts costing anything.
     fn receiver_ty(&mut self, name: &TIRBinding) -> TyId {
         let TIRBinding::SelfRecv(how) = name else { return self.types.fresh() };
-        let Some(subject) = self.subject else { return self.types.error() };
+        let subject = match self.subject {
+            Some(subject) => subject,
+            None => {
+                let index = self.params.len();
+                self.types.intern(Ty::Param { name: "Self".to_string(), index })
+            }
+        };
         match how {
             // "A bare `self` takes the value whole and so moves it."
             crate::tir::tir_nodes::TIRSelf::Value => subject,
@@ -521,20 +545,73 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn generics(&mut self, held: &[TIRGeneric]) -> Vec<TTIRGeneric> {
-        held.iter()
+    // The parameters a declaration was written with, and what each is held to.
+    // A `where` predicate about one of them is folded into that one's bounds:
+    // "`fn f<T: Ord>` and `fn f<T> where T: Ord` say the same thing", and this
+    // tree is what a declaration is rather than how it was written.
+    fn generics(&mut self, held: &[TIRGeneric], wheres: &[TIRWherePred]) -> Vec<TTIRGeneric> {
+        let names = names_of(held);
+        let mut made: Vec<TTIRGeneric> = held
+            .iter()
             .map(|g| match g {
-                TIRGeneric::Type { name, .. } => TTIRGeneric::Type {
+                TIRGeneric::Type { name, bounds } => TTIRGeneric::Type {
                     name:   name.clone(),
-                    // A bound is a trait, and holding one to it wants the pass
-                    // that checks traits. Kept empty rather than guessed at.
-                    bounds: Vec::new(),
+                    bounds: self.bounds(bounds),
                 },
                 TIRGeneric::Life { name, .. } => TTIRGeneric::Life {
                     name:   name.clone(),
                     region: 0,
+                    // A lifetime outlives regions, and regions are another
+                    // pass's -- so there is nothing here to hold it to yet.
                     bounds: Vec::new(),
                 },
+            })
+            .collect();
+
+        for pred in wheres {
+            let TIRBound::Trait(ty) = &pred.subject else { continue };
+            let TIRTypeKind::Named { path, .. } = &self.tir.types[*ty].kind else { continue };
+            if path.len() != 1 {
+                continue;
+            }
+            let Some(index) = names.iter().position(|n| *n == path[0]) else { continue };
+            let held = self.bounds(&pred.bounds);
+            if let TTIRGeneric::Type { bounds, .. } = &mut made[index] {
+                bounds.extend(held);
+            }
+        }
+        made
+    }
+
+    // What stands on the right of a bound's colon, resolved. A trait is the
+    // type it names; a lifetime is a region, and regions are another pass's.
+    fn bounds(&mut self, held: &[TIRBound]) -> Vec<TTIRBound> {
+        held.iter()
+            .map(|bound| match bound {
+                TIRBound::Trait(ty) => TTIRBound::Trait(self.ty(*ty)),
+                TIRBound::Life(_) => TTIRBound::Life(0),
+            })
+            .collect()
+    }
+
+    // Every predicate with no parameter to fold into: "`where Vec<T>: Show` is
+    // about a type that was built rather than declared".
+    fn wheres(&mut self, held: &[TIRWherePred], generics: &[TIRGeneric]) -> Vec<TTIRWherePred> {
+        let names = names_of(generics);
+        held.iter()
+            .filter(|pred| {
+                let TIRBound::Trait(ty) = &pred.subject else { return true };
+                let TIRTypeKind::Named { path, .. } = &self.tir.types[*ty].kind else {
+                    return true;
+                };
+                !(path.len() == 1 && names.iter().any(|n| *n == path[0]))
+            })
+            .map(|pred| {
+                let subject = match &pred.subject {
+                    TIRBound::Trait(ty) => TTIRSubject::Type(self.ty(*ty)),
+                    TIRBound::Life(_) => TTIRSubject::Region(0),
+                };
+                TTIRWherePred { subject, bounds: self.bounds(&pred.bounds) }
             })
             .collect()
     }
@@ -752,6 +829,12 @@ impl<'a> Lowerer<'a> {
                 )
                 .with_label("this is what it comes to"),
             );
+        }
+        // Now that every hole in this body is as filled as it is going to
+        // get, the parameters are held to what they were declared with.
+        let held = std::mem::take(&mut self.pending);
+        for (arg, bound, name, at) in held {
+            self.holds(arg, &bound, &name, at);
         }
         self.finish_body(out)
     }
@@ -2389,6 +2472,112 @@ impl<'a> Lowerer<'a> {
             // Nothing written, so every one is worked out.
             None => (0..wanted).map(|_| self.types.fresh()).collect(),
         };
+
+        // Every parameter is held to what it was declared with. A hole cannot
+        // be held to anything yet -- what fills it is settled by the call, and
+        // the call is not over -- so only what is known is asked.
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return held };
+        let bounds: Vec<(String, Vec<TTIRBound>)> = f
+            .generics
+            .iter()
+            .map(|g| match g {
+                TTIRGeneric::Type { name, bounds } => (name.clone(), bounds.clone()),
+                TTIRGeneric::Life { name, .. } => (name.clone(), Vec::new()),
+            })
+            .collect();
+        for (arg, (name, held)) in args.iter().zip(bounds.iter()) {
+            for bound in held {
+                self.pending.push((*arg, bound.clone(), name.clone(), at));
+            }
+        }
+
         self.types.substitute(held, &args)
+    }
+}
+
+// ---- Bounds ---------------------------------------------------------------
+
+impl<'a> Lowerer<'a> {
+    // Which types answer each trait. "an impl makes methods for its type" and
+    // an `impl Show for Buf` is Buf saying it answers Show -- so the impls are
+    // the whole of what a bound can be held against.
+    fn gather_impls(&mut self) {
+        for id in 0..self.out.items.len() {
+            let TTIRItemKind::Impl { ty, of: Some(held), .. } = &self.out.items[id].kind else {
+                continue;
+            };
+            let (ty, held) = (*ty, *held);
+            self.answers.entry(held).or_default().push(ty);
+        }
+    }
+
+    // Whether one type is held to one bound, said where it is not.
+    fn holds(&mut self, arg: TyId, bound: &TTIRBound, name: &str, at: TIRExprId) {
+        // A region is another pass's, and a type nobody worked out has been
+        // reported once already.
+        let TTIRBound::Trait(want) = bound else { return };
+        // Followed first: a hole that was filled still reads as one in the
+        // arena, and what filled it is what is being held to the bound.
+        let arg = self.types.shallow(arg);
+        if matches!(self.types.get(arg), Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        let Ty::Named { item: held, .. } = self.types.get(*want).clone() else { return };
+        if self.answers_to(arg, held) {
+            return;
+        }
+        let (arg, held) = (self.spell(arg), self.spell(*want));
+        self.errors.push(
+            Diagnostic::error(format!("`{}` does not answer `{}`", arg, held), self.at(at))
+                .with_label(format!("`{}` is held to it here", name))
+                .with_help(format!("`impl {} for {}` is how a type says it does", held, arg)),
+        );
+    }
+
+    // Whether a type answers a trait: an impl of it written for that type, or
+    // -- where the type is a parameter of the declaration being walked -- a
+    // bound saying it will be. A generic holding another generic to a trait is
+    // answered by the caller and not here.
+    fn answers_to(&mut self, arg: TyId, want: TTIRItemId) -> bool {
+        let arg = self.types.shallow(arg);
+        if let Ty::Param { index, .. } = self.types.get(arg).clone() {
+            return self.param_bounds(index).iter().any(|bound| {
+                matches!(bound, TTIRBound::Trait(held)
+                    if matches!(self.types.get(*held), Ty::Named { item, .. } if *item == want))
+            });
+        }
+        let Some(written) = self.answers.get(&want) else { return false };
+        let held = head_of(self.types.get(arg));
+        written.clone().iter().any(|&subject| head_of(self.types.get(subject)) == held)
+    }
+
+    // What the declaration being walked holds its own parameter at `index` to.
+    fn param_bounds(&self, index: usize) -> Vec<TTIRBound> {
+        let Some(name) = self.params.get(index) else { return Vec::new() };
+        for item in &self.out.items {
+            let TTIRItemKind::Fn(f) = &item.kind else { continue };
+            if let Some(TTIRGeneric::Type { name: held, bounds }) = f.generics.get(index) {
+                if held == name {
+                    return bounds.clone();
+                }
+            }
+        }
+        Vec::new()
+    }
+}
+
+// What a type is, for asking whether an impl was written for it. A declaration
+// by the one it is, and anything else by itself: `impl Copy for i32` is written
+// for the primitive and not for a name.
+#[derive(PartialEq, Eq)]
+enum Head {
+    Named(TTIRItemId),
+    Exact(String),
+}
+
+fn head_of(ty: &Ty) -> Head {
+    match ty {
+        Ty::Named { item, .. } => Head::Named(*item),
+        other => Head::Exact(format!("{:?}", other)),
     }
 }
