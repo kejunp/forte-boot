@@ -452,7 +452,23 @@ impl<'a> Lowerer<'a> {
             }
 
             TTIRExprKind::Return(value) => {
-                let value = value.map(|v| self.value(v));
+                // Into a slot first, where the unwinding below has anything to
+                // release. An expression built here is not evaluated here: it
+                // is built into the terminator, and a terminator runs after
+                // every statement of its block -- which those releases are. So
+                // `return b.n` would read a slot they had already released and
+                // `return take(b)` would hand over one they release again. The
+                // slot stands in no scope, so nothing here releases it, and the
+                // move into it is written where `drops` can see it comes first.
+                let value = value.map(|v| {
+                    if self.releases_below(0) {
+                        let slot = self.temp(self.ty(v));
+                        self.into(v, slot);
+                        self.local(slot, v)
+                    } else {
+                        self.value(v)
+                    }
+                });
                 // Everything still open goes, innermost first. The value has
                 // already been worked out, so what it was made of is not among
                 // what these release.
@@ -501,6 +517,17 @@ impl<'a> Lowerer<'a> {
     fn close_scope(&mut self, at: TTIRExprId) {
         let held = self.b().scopes.pop().unwrap_or_default();
         self.release(&held, at);
+    }
+
+    // Whether leaving every scope down to `depth` would release anything. A
+    // value that has to outlive those releases is put in a slot first, and
+    // where there is nothing to outlive the expression stands as it was
+    // written -- a slot per `return` in a body that releases nothing would be
+    // a node the graph has no use for.
+    fn releases_below(&mut self, depth: usize) -> bool {
+        let b = self.b();
+        let (scopes, locals) = (&b.scopes, &b.locals);
+        scopes[depth..].iter().flatten().any(|&local| locals[local].drops)
     }
 
     // Leaving by a jump rather than by falling off the end: every scope down to

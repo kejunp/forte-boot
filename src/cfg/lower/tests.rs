@@ -237,3 +237,71 @@ fn the_graph_keeps_the_types_it_was_handed() {
     assert!(body.locals.iter().any(|l| l.synthetic && l.ty == int_ty));
     assert_ne!(int_ty, bool_ty);
 }
+
+// A `return` leaves every scope it stands in, and the releases that leaving
+// them comes to are statements of the block the terminator ends -- so they run
+// ahead of it. A value built into the terminator is therefore worked out after
+// them, which for `return b.n` is a read of what was just released. It goes in
+// a slot first, and the statement that fills it stands ahead of the releases.
+#[test]
+fn a_returned_value_is_in_a_slot_before_the_releases() {
+    let mut f = Fixture::new();
+    let buf = f.dropper("Buf");
+    let held = f.slot("held", buf);
+    let made = f.call();
+    let read = f.local(held);
+    let away = f.hands(read);
+    let ty = f.null;
+    let ret = f.expr(TTIRExprKind::Return(Some(away)), ty);
+    let block = f.block(
+        vec![f.let_(held, Some(made)), TTIRStmt::Expr { is_unsafe: false, expr: ret }],
+        None,
+    );
+    f.body(block);
+    let (cfg, body) = graph(f);
+
+    let at = body
+        .blocks
+        .iter()
+        .position(|b| matches!(b.term, CFGTerm::Return(Some(_))))
+        .expect("a block the `return` ended");
+    let CFGTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
+    let CFGExprKind::Local(slot) = cfg.exprs[value].kind else {
+        panic!("worked out in the terminator: {:?}", cfg.exprs[value].kind)
+    };
+
+    let filled = body.blocks[at]
+        .stmts
+        .iter()
+        .position(|s| matches!(s.kind, CFGStmtKind::Set { local, .. } if local == slot))
+        .expect("the statement that filled it");
+    let released = body.blocks[at]
+        .stmts
+        .iter()
+        .position(|s| matches!(s.kind, CFGStmtKind::Drop { .. }))
+        .expect("the release the `return` left the scope by");
+    assert!(filled < released, "filled at {}, released at {}", filled, released);
+}
+
+// And where the scopes being left release nothing, there is nothing for the
+// value to outlive: it stands in the terminator as it was written, rather than
+// costing a slot every `return` in the program.
+#[test]
+fn a_return_with_nothing_to_release_needs_no_slot() {
+    let mut f = Fixture::new();
+    let value = f.int(1);
+    let ty = f.int;
+    let ret = f.expr(TTIRExprKind::Return(Some(value)), ty);
+    let block = f.block(vec![TTIRStmt::Expr { is_unsafe: false, expr: ret }], None);
+    f.body(block);
+    let (cfg, body) = graph(f);
+
+    let at = body
+        .blocks
+        .iter()
+        .position(|b| matches!(b.term, CFGTerm::Return(Some(_))))
+        .expect("a block the `return` ended");
+    let CFGTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
+    assert!(matches!(cfg.exprs[value].kind, CFGExprKind::Literal(_)));
+    assert!(body.blocks[at].stmts.is_empty());
+}

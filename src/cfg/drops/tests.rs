@@ -3,6 +3,7 @@
 use super::*;
 use crate::cfg::fixture::Fixture;
 use crate::cfg::lower::Lowerer;
+use crate::tir::ttir_nodes::{TTIRExprKind, TTIRStmt};
 
 // A fixture through both passes, and the body they made of it.
 fn placed(f: Fixture) -> CFGBody {
@@ -27,6 +28,35 @@ fn releases(body: &CFGBody) -> Vec<CFGLocalId> {
             _ => None,
         })
         .collect()
+}
+
+// The releases the entry can get to. What stands in a block nothing reaches is
+// not a release that runs, and is `opt`'s to take away rather than this pass's.
+fn reached(body: &CFGBody) -> Vec<CFGLocalId> {
+    let mut seen = vec![false; body.blocks.len()];
+    let mut out = Vec::new();
+    let mut stack = vec![body.entry];
+    while let Some(id) = stack.pop() {
+        if seen[id] {
+            continue;
+        }
+        seen[id] = true;
+        out.extend(body.blocks[id].stmts.iter().filter_map(|s| match s.kind {
+            CFGStmtKind::Drop { local } => Some(local),
+            _ => None,
+        }));
+        match &body.blocks[id].term {
+            CFGTerm::Goto(to) => stack.push(*to),
+            CFGTerm::Branch { then, els, .. } => stack.extend([*then, *els]),
+            CFGTerm::Match { arms, otherwise, .. } => {
+                stack.extend(arms.iter().map(|a| a.block));
+                stack.extend(otherwise.iter());
+            }
+            CFGTerm::ForEach { body: b, exit, .. } => stack.extend([*b, *exit]),
+            _ => {}
+        }
+    }
+    out
 }
 
 // Every branch the body ends a block on, which is how a flag shows.
@@ -168,4 +198,29 @@ fn a_parameter_handed_on_is_not_released() {
 
     let body = placed(f);
     assert!(releases(&body).is_empty(), "{:?}", releases(&body));
+}
+
+// And a slot the `return` hands on is one moved away, for the same reason a
+// parameter handed on is: the value goes in a slot before the scope is left,
+// so the move stands ahead of where the release was placed and the release is
+// what this pass takes away.
+#[test]
+fn a_slot_the_return_hands_on_is_not_released() {
+    let mut f = Fixture::new();
+    let buf = f.dropper("Buf");
+    let held = f.slot("held", buf);
+    let made = f.call();
+    let read = f.local(held);
+    let away = f.hands(read);
+    let ty = f.null;
+    let ret = f.expr(TTIRExprKind::Return(Some(away)), ty);
+    let block = f.block(
+        vec![f.let_(held, Some(made)), TTIRStmt::Expr { is_unsafe: false, expr: ret }],
+        None,
+    );
+    let body = f.body(block);
+    f.owns(body, Vec::new());
+
+    let body = placed(f);
+    assert!(reached(&body).is_empty(), "{:?}", reached(&body));
 }
