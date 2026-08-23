@@ -481,8 +481,13 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Break(value) => {
                 let ctx = self.b().loops.last().copied();
                 if let Some(LoopCtx { brk, value: slot, depth, .. }) = ctx {
-                    if let (Some(v), Some(slot)) = (value, slot) {
-                        self.into(v, slot);
+                    match (value, slot) {
+                        (Some(v), Some(slot)) => self.into(v, slot),
+                        // Nobody wants the answer, which is not the same as
+                        // nothing happening: a loop written as a statement is
+                        // worth nothing and its `break f()` still calls `f`.
+                        (Some(v), None) => self.discard(v),
+                        (None, _) => {}
                     }
                     // Every scope inside the loop goes; the loop's own and
                     // everything outside it are still open after the `break`.
@@ -578,6 +583,89 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    // The operands of one expression, in the order they were written, with
+    // every one that stands to the left of something with effects put in a slot
+    // as it is reached.
+    //
+    // Without that it is *built* here and *worked out* where the expression
+    // holding it is -- which is after the statements and the blocks that what
+    // stands to its right left behind. `f() + (n = 9)` would store 9 and then
+    // call `f`, and `f() + if c { g() } else { 0 }` would run the branch first.
+    fn operands(&mut self, ids: &[TTIRExprId]) -> Vec<CFGExprId> {
+        let mut out = Vec::with_capacity(ids.len());
+        for (at, &id) in ids.iter().enumerate() {
+            if ids[at + 1..].iter().any(|&rest| self.effects(rest)) {
+                let value = self.pinned(id);
+                out.push(value);
+            } else {
+                let value = self.value(id);
+                out.push(value);
+            }
+        }
+        out
+    }
+
+    // One operand worked out where it stands rather than where the expression
+    // holding it is: a slot, filled here, read there.
+    fn pinned(&mut self, id: TTIRExprId) -> CFGExprId {
+        // Unless there is nothing to pin. A literal is the same whenever it is
+        // read and so is the name of an item, and a slot for one would be a
+        // node the graph has no use for.
+        if matches!(
+            self.ttir.exprs[id].kind,
+            TTIRExprKind::Literal(_) | TTIRExprKind::Item(_) | TTIRExprKind::SelfExpr
+        ) {
+            return self.value(id);
+        }
+        let slot = self.temp(self.ty(id));
+        self.into(id, slot);
+        self.local(slot, id)
+    }
+
+    // Whether working an expression out leaves anything behind in the graph
+    // before the expression around it is worked out: an assignment, which is a
+    // statement wherever it is written, or anything that branches, which is
+    // blocks. Both are why `operands` exists.
+    //
+    // A closure is not one: what its body does happens where it is called, and
+    // that is a graph of its own.
+    fn effects(&self, id: TTIRExprId) -> bool {
+        let kind = &self.ttir.exprs[id].kind;
+        if branches(kind) {
+            return true;
+        }
+        match kind {
+            TTIRExprKind::Assign { .. } => true,
+            TTIRExprKind::Field { base, .. } | TTIRExprKind::TupleIndex { base, .. } => {
+                self.effects(*base)
+            }
+            TTIRExprKind::Unary { operand, .. } => self.effects(*operand),
+            TTIRExprKind::Cast(operand) => self.effects(*operand),
+            TTIRExprKind::Call { callee, args } => {
+                self.effects(*callee) || args.iter().any(|&a| self.effects(a))
+            }
+            TTIRExprKind::Method { recv, args, .. } => {
+                self.effects(*recv) || args.iter().any(|&a| self.effects(a))
+            }
+            TTIRExprKind::Index { base, index } => self.effects(*base) || self.effects(*index),
+            TTIRExprKind::Binary { lhs, rhs, .. } => self.effects(*lhs) || self.effects(*rhs),
+            TTIRExprKind::StructLit { fields, .. }
+            | TTIRExprKind::VariantLit { fields, .. }
+            | TTIRExprKind::ArrayLit(fields)
+            | TTIRExprKind::TupleLit(fields)
+            | TTIRExprKind::Set { elems: fields, .. } => {
+                fields.iter().any(|&f| self.effects(f))
+            }
+            TTIRExprKind::Map { entries, .. } => {
+                entries.iter().any(|(k, v)| self.effects(*k) || self.effects(*v))
+            }
+            TTIRExprKind::Range { start, end, .. } => {
+                start.iter().chain(end.iter()).any(|&e| self.effects(e))
+            }
+            _ => false,
+        }
+    }
+
     // An expression with no control flow in it. Anything that branches is put
     // through a slot first, so what comes back is always straight-line.
     fn value(&mut self, id: TTIRExprId) -> CFGExprId {
@@ -599,57 +687,66 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::TupleIndex { base, index } => {
                 CFGExprKind::TupleIndex { base: self.value(base), index }
             }
-            TTIRExprKind::Call { callee, args } => CFGExprKind::Call {
-                callee: self.value(callee),
-                args: args.iter().map(|&a| self.value(a)).collect(),
-            },
+            TTIRExprKind::Call { callee, args } => {
+                let mut all = vec![callee];
+                all.extend(args.iter().copied());
+                let mut built = self.operands(&all).into_iter();
+                CFGExprKind::Call {
+                    callee: built.next().expect("the callee"),
+                    args:   built.collect(),
+                }
+            }
             TTIRExprKind::Method { recv, item, args } => CFGExprKind::Method {
+                // The receiver stays where it is: a method may be written for
+                // `&self` or `*self`, and a receiver put in a slot is a copy
+                // of the thing that was to be reached through.
                 recv: self.value(recv),
                 item,
-                args: args.iter().map(|&a| self.value(a)).collect(),
+                args: self.operands(&args),
             },
             TTIRExprKind::Index { base, index } => {
                 CFGExprKind::Index { base: self.value(base), index: self.value(index) }
             }
-            TTIRExprKind::StructLit { item, fields } => CFGExprKind::StructLit {
-                item,
-                fields: fields.iter().map(|&f| self.value(f)).collect(),
-            },
-            TTIRExprKind::VariantLit { item, variant, fields } => CFGExprKind::VariantLit {
-                item,
-                variant,
-                fields: fields.iter().map(|&f| self.value(f)).collect(),
-            },
+            TTIRExprKind::StructLit { item, fields } => {
+                CFGExprKind::StructLit { item, fields: self.operands(&fields) }
+            }
+            TTIRExprKind::VariantLit { item, variant, fields } => {
+                CFGExprKind::VariantLit { item, variant, fields: self.operands(&fields) }
+            }
 
-            TTIRExprKind::ArrayLit(elems) => {
-                CFGExprKind::ArrayLit(elems.iter().map(|&e| self.value(e)).collect())
+            TTIRExprKind::ArrayLit(elems) => CFGExprKind::ArrayLit(self.operands(&elems)),
+            TTIRExprKind::TupleLit(elems) => CFGExprKind::TupleLit(self.operands(&elems)),
+            TTIRExprKind::Map { hashed, entries } => {
+                // A key and its value are two operands like any other, and the
+                // pairs are undone and done up again around that.
+                let flat: Vec<TTIRExprId> =
+                    entries.iter().flat_map(|&(k, v)| [k, v]).collect();
+                let built = self.operands(&flat);
+                CFGExprKind::Map {
+                    hashed,
+                    entries: built.chunks(2).map(|pair| (pair[0], pair[1])).collect(),
+                }
             }
-            TTIRExprKind::TupleLit(elems) => {
-                CFGExprKind::TupleLit(elems.iter().map(|&e| self.value(e)).collect())
+            TTIRExprKind::Set { hashed, elems } => {
+                CFGExprKind::Set { hashed, elems: self.operands(&elems) }
             }
-            TTIRExprKind::Map { hashed, entries } => CFGExprKind::Map {
-                hashed,
-                entries: entries
-                    .iter()
-                    .map(|&(k, v)| (self.value(k), self.value(v)))
-                    .collect(),
-            },
-            TTIRExprKind::Set { hashed, elems } => CFGExprKind::Set {
-                hashed,
-                elems: elems.iter().map(|&e| self.value(e)).collect(),
-            },
 
             TTIRExprKind::Unary { op, operand } => {
                 CFGExprKind::Unary { op, operand: self.value(operand) }
             }
             TTIRExprKind::Binary { op, lhs, rhs } => {
-                CFGExprKind::Binary { op, lhs: self.value(lhs), rhs: self.value(rhs) }
+                let built = self.operands(&[lhs, rhs]);
+                CFGExprKind::Binary { op, lhs: built[0], rhs: built[1] }
             }
-            TTIRExprKind::Range { op, start, end } => CFGExprKind::Range {
-                op,
-                start: start.map(|s| self.value(s)),
-                end: end.map(|e| self.value(e)),
-            },
+            TTIRExprKind::Range { op, start, end } => {
+                let written: Vec<TTIRExprId> = start.iter().chain(end.iter()).copied().collect();
+                let mut built = self.operands(&written).into_iter();
+                CFGExprKind::Range {
+                    op,
+                    start: start.map(|_| built.next().expect("a start")),
+                    end: end.map(|_| built.next().expect("an end")),
+                }
+            }
             TTIRExprKind::Cast(value) => CFGExprKind::Cast(self.value(value)),
             // The body is lowered with every other one; the handles agree
             // because the two arenas are filled in the same order.

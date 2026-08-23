@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::cfg::fixture::Fixture;
+use crate::tir::tir_nodes::TIRAssignOp;
 use crate::tir::ttir_nodes::{TTIRExprKind, TTIRStmt};
 
 // Lowers a fixture and hands back the one body it built.
@@ -304,4 +305,96 @@ fn a_return_with_nothing_to_release_needs_no_slot() {
     let CFGTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
     assert!(matches!(cfg.exprs[value].kind, CFGExprKind::Literal(_)));
     assert!(body.blocks[at].stmts.is_empty());
+}
+
+// "a loop written as a statement is worth nothing and its `break f()` still
+// calls `f`": the operand has nowhere to go, which is not a reason not to work
+// it out.
+#[test]
+fn a_break_whose_value_is_wanted_by_nobody_still_works_it_out() {
+    let mut f = Fixture::new();
+    let ty = f.null;
+    let cond = f.boolean(true);
+    let away = f.call();
+    let brk = f.expr(TTIRExprKind::Break(Some(away)), ty);
+    let inner = f.block(vec![f.eval(brk)], None);
+    let loop_ = f.expr(TTIRExprKind::While { cond, body: inner }, ty);
+    // A statement, so nothing wants what the loop is worth.
+    let block = f.block(vec![f.eval(loop_)], None);
+    f.body(block);
+    let (cfg, body) = graph(f);
+
+    let called = body.blocks.iter().flat_map(|b| &b.stmts).any(|s| match s.kind {
+        CFGStmtKind::Eval(value) | CFGStmtKind::Set { value, .. } => {
+            matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+        }
+        _ => false,
+    });
+    assert!(called, "the operand of the `break` is nowhere in the graph");
+}
+
+// An operand standing to the left of an assignment is worked out before it. It
+// is built here and read where the expression holding it is, and an assignment
+// is a statement that stands in between -- so without a slot `f() + (n = 9)`
+// would store 9 and then call `f`.
+#[test]
+fn an_operand_left_of_an_assignment_is_worked_out_first() {
+    let mut f = Fixture::new();
+    let int = f.int;
+    let n = f.slot("n", int);
+    let k = f.slot("k", int);
+    let read = f.call();
+    let place = f.local(n);
+    let nine = f.int(9);
+    let assign =
+        f.expr(TTIRExprKind::Assign { op: TIRAssignOp::Set, place, value: nine }, int);
+    let sum = f.add(read, assign);
+    let block = f.block(vec![f.let_(k, Some(sum))], None);
+    f.body(block);
+    let (cfg, body) = graph(f);
+
+    let stmts = &body.blocks[body.entry].stmts;
+    let called = stmts
+        .iter()
+        .position(|s| match s.kind {
+            CFGStmtKind::Set { value, .. } => {
+                matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+            }
+            _ => false,
+        })
+        .expect("the call in a slot of its own");
+    let stored = stmts
+        .iter()
+        .position(|s| matches!(s.kind, CFGStmtKind::Store { .. }))
+        .expect("the store the assignment came to");
+    assert!(called < stored, "called at {}, stored at {}", called, stored);
+}
+
+// And the same where what stands to its right is a branch rather than a
+// statement: the operand is worked out before the blocks, not after them.
+#[test]
+fn an_operand_left_of_a_branch_is_worked_out_first() {
+    let mut f = Fixture::new();
+    let read = f.call();
+    let cond = f.boolean(true);
+    let (then, els) = (f.int(1), f.int(2));
+    let answer = f.if_(cond, then, Some(els));
+    let sum = f.add(read, answer);
+    let int = f.int;
+    let k = f.slot("k", int);
+    let block = f.block(vec![f.let_(k, Some(sum))], None);
+    f.body(block);
+    let (cfg, body) = graph(f);
+
+    let entry = &body.blocks[body.entry];
+    assert!(matches!(entry.term, CFGTerm::Branch { .. }), "{:?}", entry.term);
+    assert!(
+        entry.stmts.iter().any(|s| match s.kind {
+            CFGStmtKind::Set { value, .. } => {
+                matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+            }
+            _ => false,
+        }),
+        "the call is worked out after the branch it was written before"
+    );
 }
