@@ -6,7 +6,7 @@
 //     goes, and nothing at all where the value was moved away first.
 //                                                        (docs/prose.txt, §2)
 //
-// `cfg::lower` places one at the end of every block for every slot the block
+// `gir::lower` places one at the end of every block for every slot the block
 // declared that has something to release. Three of the four clauses are settled
 // there, by where the statement is put. The fourth is this: a slot the source
 // moved away from holds nothing by the time its block ends, and releasing it
@@ -29,7 +29,7 @@ use crate::sema::borrows::Copies;
 use crate::tir::tir_nodes::{TIRBinding, TIRIntro, TIRLit, TIRPrim, TIRUnaryOp};
 use crate::tir::ttir_nodes::{TTIRGeneric, TTIRProgram, Ty, TyId};
 
-use super::cfg_nodes::*;
+use super::gir_nodes::*;
 
 // What is in a slot. `Maybe` is the join of the other two: filled on one path
 // and emptied on another, which is neither "release it" nor "leave it".
@@ -71,16 +71,16 @@ impl<'a> Drops<'a> {
 
     // Every body of the graph, each with the generics of the declaration it
     // stands in -- a `Ty::Param` is answered by those and by nothing here.
-    pub fn place(&mut self, cfg: &mut CFGProgram, generics: &[Vec<TTIRGeneric>]) {
-        for id in 0..cfg.bodies.len() {
+    pub fn place(&mut self, gir: &mut GIRProgram, generics: &[Vec<TTIRGeneric>]) {
+        for id in 0..gir.bodies.len() {
             self.generic = generics.get(id).cloned().unwrap_or_default();
-            self.one(cfg, id);
+            self.one(gir, id);
         }
     }
 
-    fn one(&mut self, cfg: &mut CFGProgram, id: CFGBodyId) {
+    fn one(&mut self, gir: &mut GIRProgram, id: GIRBodyId) {
         let entry = {
-            let body = &cfg.bodies[id];
+            let body = &gir.bodies[id];
             let mut state = vec![Held::Nothing; body.locals.len()];
             // "a caller did": a parameter is filled before the entry block is.
             for &slot in &body.params {
@@ -91,15 +91,15 @@ impl<'a> Drops<'a> {
 
         // Round the graph until nothing changes. The lattice is three high and
         // the graph is finite, so it settles.
-        let mut at: HashMap<CFGBlockId, Vec<Held>> = HashMap::new();
-        at.insert(cfg.bodies[id].entry, entry);
+        let mut at: HashMap<GIRBlockId, Vec<Held>> = HashMap::new();
+        at.insert(gir.bodies[id].entry, entry);
         let mut again = true;
         while again {
             again = false;
-            for block in 0..cfg.bodies[id].blocks.len() {
+            for block in 0..gir.bodies[id].blocks.len() {
                 let Some(before) = at.get(&block).cloned() else { continue };
-                let after = self.through(cfg, id, block, before);
-                for next in self.leaves(&cfg.bodies[id].blocks[block].term) {
+                let after = self.through(gir, id, block, before);
+                for next in self.leaves(&gir.bodies[id].blocks[block].term) {
                     match at.get_mut(&next) {
                         Some(held) => {
                             let joined: Vec<Held> = held
@@ -124,16 +124,16 @@ impl<'a> Drops<'a> {
         // And once more with the answers, to say what each release comes to. A
         // block nothing reaches is left alone: `opt` is what deletes those, and
         // deleting them here would be a second pass's job done in the wrong one.
-        let mut asks: Vec<(CFGBlockId, usize)> = Vec::new();
-        for block in 0..cfg.bodies[id].blocks.len() {
+        let mut asks: Vec<(GIRBlockId, usize)> = Vec::new();
+        for block in 0..gir.bodies[id].blocks.len() {
             let Some(before) = at.get(&block).cloned() else { continue };
-            for held in self.settle(cfg, id, block, before) {
+            for held in self.settle(gir, id, block, before) {
                 asks.push((block, held));
             }
         }
 
         // And the ones that could not be settled get a flag and a branch.
-        self.elaborate(cfg, id, asks);
+        self.elaborate(gir, id, asks);
     }
 
     // ---- Flags -----------------------------------------------------------
@@ -148,21 +148,21 @@ impl<'a> Drops<'a> {
     // This is why `Drop` is unconditional. A statement meaning "release this
     // if" would be the question left in the tree, and the tree is what this
     // whole pass is here to get past.
-    fn elaborate(&mut self, cfg: &mut CFGProgram, id: CFGBodyId, asks: Vec<(CFGBlockId, usize)>) {
+    fn elaborate(&mut self, gir: &mut GIRProgram, id: GIRBodyId, asks: Vec<(GIRBlockId, usize)>) {
         if asks.is_empty() {
             return;
         }
         // One flag per slot, however many releases of it want one.
-        let mut flags: HashMap<CFGLocalId, CFGLocalId> = HashMap::new();
+        let mut flags: HashMap<GIRLocalId, GIRLocalId> = HashMap::new();
         for &(block, at) in &asks {
-            let CFGStmtKind::Drop { local } = cfg.bodies[id].blocks[block].stmts[at].kind else {
+            let GIRStmtKind::Drop { local } = gir.bodies[id].blocks[block].stmts[at].kind else {
                 continue;
             };
             if flags.contains_key(&local) {
                 continue;
             }
-            let name = self.name_of(cfg, id, local);
-            cfg.bodies[id].locals.push(CFGLocal {
+            let name = self.name_of(gir, id, local);
+            gir.bodies[id].locals.push(GIRLocal {
                 name:      TIRBinding::Name(name),
                 ty:        self.bool,
                 intro:     TIRIntro::Var,
@@ -170,60 +170,60 @@ impl<'a> Drops<'a> {
                 // A flag is a `bool`, and a `bool` has nothing to release.
                 drops:     false,
             });
-            flags.insert(local, cfg.bodies[id].locals.len() - 1);
+            flags.insert(local, gir.bodies[id].locals.len() - 1);
         }
 
         // Every flag starts false and is written wherever what it stands for
         // is filled or emptied. Walked over the statements as they are, before
         // any block is split, so that no position moves under the walk.
-        for block in 0..cfg.bodies[id].blocks.len() {
-            let mut out: Vec<CFGStmt> = Vec::new();
-            for stmt in cfg.bodies[id].blocks[block].stmts.clone() {
+        for block in 0..gir.bodies[id].blocks.len() {
+            let mut out: Vec<GIRStmt> = Vec::new();
+            for stmt in gir.bodies[id].blocks[block].stmts.clone() {
                 let (line, col) = (stmt.line, stmt.col);
-                let mut before: Vec<CFGStmt> = Vec::new();
-                let mut after: Vec<CFGStmt> = Vec::new();
+                let mut before: Vec<GIRStmt> = Vec::new();
+                let mut after: Vec<GIRStmt> = Vec::new();
                 match &stmt.kind {
                     // Filled: whatever it held before, it holds this now.
-                    CFGStmtKind::Set { local, .. } => {
+                    GIRStmtKind::Set { local, .. } => {
                         if let Some(&flag) = flags.get(local) {
-                            after.push(self.write(cfg, flag, true, line, col));
+                            after.push(self.write(gir, flag, true, line, col));
                         }
                     }
                     // Released: emptied, and the branch below reads the flag
                     // before this runs.
-                    CFGStmtKind::Drop { local } => {
+                    GIRStmtKind::Drop { local } => {
                         if let Some(&flag) = flags.get(local) {
-                            after.push(self.write(cfg, flag, false, line, col));
+                            after.push(self.write(gir, flag, false, line, col));
                         }
                     }
                     _ => {}
                 }
                 // And emptied wherever the source handed the value away.
-                let mut state = vec![Held::Value; cfg.bodies[id].locals.len()];
-                self.step(cfg, id, &stmt.kind, &mut state);
+                let mut state = vec![Held::Value; gir.bodies[id].locals.len()];
+                self.step(gir, id, &stmt.kind, &mut state);
                 for (&local, &flag) in &flags {
                     if state[local] == Held::Nothing
-                        && !matches!(stmt.kind, CFGStmtKind::Drop { .. })
+                        && !matches!(stmt.kind, GIRStmtKind::Drop { .. })
                     {
-                        after.push(self.write(cfg, flag, false, line, col));
+                        after.push(self.write(gir, flag, false, line, col));
                     }
                 }
                 out.append(&mut before);
                 out.push(stmt);
                 out.append(&mut after);
             }
-            cfg.bodies[id].blocks[block].stmts = out;
+            gir.bodies[id].blocks[block].stmts = out;
         }
 
         // The entry starts them all false: a slot nobody filled holds nothing.
-        let entry = cfg.bodies[id].entry;
-        let (line, col) = (cfg.bodies[id].blocks[entry].line, cfg.bodies[id].blocks[entry].col);
-        let mut opening: Vec<CFGStmt> = flags
+        let entry = gir.bodies[id].entry;
+        let (line, col) = (gir.bodies[id].blocks[entry].line, gir.bodies[id].blocks[entry].col);
+        let mut opening: Vec<GIRStmt> = flags
             .values()
-            .map(|&flag| self.write(cfg, flag, false, line, col))
+            .map(|&flag| self.write(gir, flag, false, line, col))
             .collect();
-        opening.append(&mut cfg.bodies[id].blocks[entry].stmts);
-        cfg.bodies[id].blocks[entry].stmts = opening;
+        opening.append(&mut gir.bodies[id].blocks[entry].stmts);
+        gir.bodies[id].blocks[entry].stmts = opening;
 
         // And then the branches. Every block is walked again, since the flag
         // writes moved every position; a split makes two new blocks and the
@@ -231,26 +231,26 @@ impl<'a> Drops<'a> {
         //
         // `drawn` is the blocks a split made to hold a release, so that the
         // one release in each is not found again and drawn a second time.
-        let mut drawn: Vec<CFGBlockId> = Vec::new();
+        let mut drawn: Vec<GIRBlockId> = Vec::new();
         let mut block = 0;
-        while block < cfg.bodies[id].blocks.len() {
+        while block < gir.bodies[id].blocks.len() {
             if drawn.contains(&block) {
                 block += 1;
                 continue;
             }
-            let found = cfg.bodies[id].blocks[block].stmts.iter().position(|s| {
-                matches!(&s.kind, CFGStmtKind::Drop { local } if flags.contains_key(local))
+            let found = gir.bodies[id].blocks[block].stmts.iter().position(|s| {
+                matches!(&s.kind, GIRStmtKind::Drop { local } if flags.contains_key(local))
             });
             let Some(at) = found else {
                 block += 1;
                 continue;
             };
-            let CFGStmtKind::Drop { local } = cfg.bodies[id].blocks[block].stmts[at].kind else {
+            let GIRStmtKind::Drop { local } = gir.bodies[id].blocks[block].stmts[at].kind else {
                 block += 1;
                 continue;
             };
             let flag = flags[&local];
-            drawn.push(self.split(cfg, id, block, at, flag));
+            drawn.push(self.split(gir, id, block, at, flag));
             block += 1;
         }
     }
@@ -261,60 +261,60 @@ impl<'a> Drops<'a> {
     // release.
     fn split(
         &mut self,
-        cfg: &mut CFGProgram,
-        id: CFGBodyId,
-        block: CFGBlockId,
+        gir: &mut GIRProgram,
+        id: GIRBodyId,
+        block: GIRBlockId,
         at: usize,
-        flag: CFGLocalId,
-    ) -> CFGBlockId {
+        flag: GIRLocalId,
+    ) -> GIRBlockId {
         let (line, col) = (
-            cfg.bodies[id].blocks[block].stmts[at].line,
-            cfg.bodies[id].blocks[block].stmts[at].col,
+            gir.bodies[id].blocks[block].stmts[at].line,
+            gir.bodies[id].blocks[block].stmts[at].col,
         );
-        let mut rest = cfg.bodies[id].blocks[block].stmts.split_off(at);
+        let mut rest = gir.bodies[id].blocks[block].stmts.split_off(at);
         // The release itself, and the flag write that followed it.
-        let mut run: Vec<CFGStmt> = vec![rest.remove(0)];
-        if matches!(rest.first().map(|s| &s.kind), Some(CFGStmtKind::Set { local, .. }) if *local == flag)
+        let mut run: Vec<GIRStmt> = vec![rest.remove(0)];
+        if matches!(rest.first().map(|s| &s.kind), Some(GIRStmtKind::Set { local, .. }) if *local == flag)
         {
             run.push(rest.remove(0));
         }
-        let term = std::mem::replace(&mut cfg.bodies[id].blocks[block].term, CFGTerm::Unreachable);
+        let term = std::mem::replace(&mut gir.bodies[id].blocks[block].term, GIRTerm::Unreachable);
 
-        cfg.bodies[id].blocks.push(CFGBlock { stmts: rest, term, line, col });
-        let join = cfg.bodies[id].blocks.len() - 1;
-        cfg.bodies[id].blocks.push(CFGBlock {
+        gir.bodies[id].blocks.push(GIRBlock { stmts: rest, term, line, col });
+        let join = gir.bodies[id].blocks.len() - 1;
+        gir.bodies[id].blocks.push(GIRBlock {
             stmts: run,
-            term: CFGTerm::Goto(join),
+            term: GIRTerm::Goto(join),
             line,
             col,
         });
-        let held = cfg.bodies[id].blocks.len() - 1;
+        let held = gir.bodies[id].blocks.len() - 1;
 
-        let ty = cfg.bodies[id].locals[flag].ty;
-        cfg.exprs.push(CFGExpr { kind: CFGExprKind::Local(flag), ty, line, col });
-        let cond = cfg.exprs.len() - 1;
-        cfg.bodies[id].blocks[block].term =
-            CFGTerm::Branch { cond, then: held, els: join };
+        let ty = gir.bodies[id].locals[flag].ty;
+        gir.exprs.push(GIRExpr { kind: GIRExprKind::Local(flag), ty, line, col });
+        let cond = gir.exprs.len() - 1;
+        gir.bodies[id].blocks[block].term =
+            GIRTerm::Branch { cond, then: held, els: join };
         held
     }
 
     fn write(
         &self,
-        cfg: &mut CFGProgram,
-        flag: CFGLocalId,
+        gir: &mut GIRProgram,
+        flag: GIRLocalId,
         held: bool,
         line: usize,
         col: usize,
-    ) -> CFGStmt {
-        cfg.exprs.push(CFGExpr {
-            kind: CFGExprKind::Literal(TIRLit::Bool(held)),
+    ) -> GIRStmt {
+        gir.exprs.push(GIRExpr {
+            kind: GIRExprKind::Literal(TIRLit::Bool(held)),
             ty: self.bool,
             line,
             col,
         });
-        let value = cfg.exprs.len() - 1;
-        CFGStmt {
-            kind: CFGStmtKind::Set { local: flag, value },
+        let value = gir.exprs.len() - 1;
+        GIRStmt {
+            kind: GIRStmtKind::Set { local: flag, value },
             is_unsafe: false,
             line,
             col,
@@ -323,8 +323,8 @@ impl<'a> Drops<'a> {
 
     // What to call a flag: the slot it stands for, with the `$` that says no
     // source wrote it.
-    fn name_of(&self, cfg: &CFGProgram, id: CFGBodyId, local: CFGLocalId) -> String {
-        let held = match &cfg.bodies[id].locals[local].name {
+    fn name_of(&self, gir: &GIRProgram, id: GIRBodyId, local: GIRLocalId) -> String {
+        let held = match &gir.bodies[id].locals[local].name {
             TIRBinding::Name(name) => name.clone(),
             TIRBinding::Discard => "_".to_string(),
             TIRBinding::SelfRecv(..) => "self".to_string(),
@@ -332,115 +332,115 @@ impl<'a> Drops<'a> {
         format!("${}$held", held)
     }
 
-    fn leaves(&self, term: &CFGTerm) -> Vec<CFGBlockId> {
+    fn leaves(&self, term: &GIRTerm) -> Vec<GIRBlockId> {
         match term {
-            CFGTerm::Goto(next) => vec![*next],
-            CFGTerm::Branch { then, els, .. } => vec![*then, *els],
-            CFGTerm::Match { arms, otherwise, .. } => arms
+            GIRTerm::Goto(next) => vec![*next],
+            GIRTerm::Branch { then, els, .. } => vec![*then, *els],
+            GIRTerm::Match { arms, otherwise, .. } => arms
                 .iter()
                 .map(|a| a.block)
                 .chain(otherwise.iter().copied())
                 .collect(),
-            CFGTerm::ForEach { body, exit, .. } => vec![*body, *exit],
-            CFGTerm::Return(_) | CFGTerm::Unreachable => Vec::new(),
+            GIRTerm::ForEach { body, exit, .. } => vec![*body, *exit],
+            GIRTerm::Return(_) | GIRTerm::Unreachable => Vec::new(),
         }
     }
 
     // What one block does to the state, without changing anything.
     fn through(
         &self,
-        cfg: &CFGProgram,
-        id: CFGBodyId,
-        block: CFGBlockId,
+        gir: &GIRProgram,
+        id: GIRBodyId,
+        block: GIRBlockId,
         mut state: Vec<Held>,
     ) -> Vec<Held> {
-        for i in 0..cfg.bodies[id].blocks[block].stmts.len() {
-            self.step(cfg, id, &cfg.bodies[id].blocks[block].stmts[i].kind, &mut state);
+        for i in 0..gir.bodies[id].blocks[block].stmts.len() {
+            self.step(gir, id, &gir.bodies[id].blocks[block].stmts[i].kind, &mut state);
         }
-        if let CFGTerm::Return(Some(value)) = cfg.bodies[id].blocks[block].term {
-            self.moves(cfg, id, value, &mut state);
+        if let GIRTerm::Return(Some(value)) = gir.bodies[id].blocks[block].term {
+            self.moves(gir, id, value, &mut state);
         }
-        if let CFGTerm::ForEach { local, iter, .. } = cfg.bodies[id].blocks[block].term {
-            self.moves(cfg, id, iter, &mut state);
+        if let GIRTerm::ForEach { local, iter, .. } = gir.bodies[id].blocks[block].term {
+            self.moves(gir, id, iter, &mut state);
             state[local] = Held::Value;
         }
         state
     }
 
-    fn step(&self, cfg: &CFGProgram, id: CFGBodyId, kind: &CFGStmtKind, state: &mut Vec<Held>) {
+    fn step(&self, gir: &GIRProgram, id: GIRBodyId, kind: &GIRStmtKind, state: &mut Vec<Held>) {
         match kind {
-            CFGStmtKind::Set { local, value } => {
-                self.moves(cfg, id, *value, state);
+            GIRStmtKind::Set { local, value } => {
+                self.moves(gir, id, *value, state);
                 // Filled, whatever was in it before.
                 state[*local] = Held::Value;
             }
-            CFGStmtKind::Store { place, value, .. } => {
-                self.moves(cfg, id, *value, state);
-                self.moves(cfg, id, *place, state);
+            GIRStmtKind::Store { place, value, .. } => {
+                self.moves(gir, id, *value, state);
+                self.moves(gir, id, *place, state);
             }
-            CFGStmtKind::Eval(value) => self.moves(cfg, id, *value, state),
+            GIRStmtKind::Eval(value) => self.moves(gir, id, *value, state),
             // A release empties what it releases, so two of them in a row is
             // one release and a slot holding nothing.
-            CFGStmtKind::Drop { local, .. } => state[*local] = Held::Nothing,
+            GIRStmtKind::Drop { local, .. } => state[*local] = Held::Nothing,
         }
     }
 
     // Every slot an expression takes the value of. A name reached into is not
     // one -- `p.x` reads a field and leaves `p` where it is -- and neither is
     // one a `&` or an `addr` was taken of.
-    fn moves(&self, cfg: &CFGProgram, id: CFGBodyId, expr: CFGExprId, state: &mut Vec<Held>) {
-        match &cfg.exprs[expr].kind {
-            CFGExprKind::Local(local) => {
-                let ty = cfg.bodies[id].locals[*local].ty;
+    fn moves(&self, gir: &GIRProgram, id: GIRBodyId, expr: GIRExprId, state: &mut Vec<Held>) {
+        match &gir.exprs[expr].kind {
+            GIRExprKind::Local(local) => {
+                let ty = gir.bodies[id].locals[*local].ty;
                 if !self.copies.is_copy(ty, self.p, &self.generic) {
                     state[*local] = Held::Nothing;
                 }
             }
             // Reaching into a place, and taking a reference to one, both leave
             // the place where it is.
-            CFGExprKind::Field { base, .. } | CFGExprKind::TupleIndex { base, .. } => {
+            GIRExprKind::Field { base, .. } | GIRExprKind::TupleIndex { base, .. } => {
                 let _ = base;
             }
-            CFGExprKind::Index { index, .. } => self.moves(cfg, id, *index, state),
-            CFGExprKind::Unary { op: TIRUnaryOp::Ref(_), .. }
-            | CFGExprKind::Unary { op: TIRUnaryOp::Addr, .. } => {}
-            CFGExprKind::Unary { operand, .. } | CFGExprKind::Cast(operand) => {
-                self.moves(cfg, id, *operand, state)
+            GIRExprKind::Index { index, .. } => self.moves(gir, id, *index, state),
+            GIRExprKind::Unary { op: TIRUnaryOp::Ref(_), .. }
+            | GIRExprKind::Unary { op: TIRUnaryOp::Addr, .. } => {}
+            GIRExprKind::Unary { operand, .. } | GIRExprKind::Cast(operand) => {
+                self.moves(gir, id, *operand, state)
             }
-            CFGExprKind::Call { callee, args } => {
-                self.moves(cfg, id, *callee, state);
+            GIRExprKind::Call { callee, args } => {
+                self.moves(gir, id, *callee, state);
                 for &arg in args {
-                    self.moves(cfg, id, arg, state);
+                    self.moves(gir, id, arg, state);
                 }
             }
-            CFGExprKind::Method { recv, args, .. } => {
-                self.moves(cfg, id, *recv, state);
+            GIRExprKind::Method { recv, args, .. } => {
+                self.moves(gir, id, *recv, state);
                 for &arg in args {
-                    self.moves(cfg, id, arg, state);
+                    self.moves(gir, id, arg, state);
                 }
             }
-            CFGExprKind::StructLit { fields, .. }
-            | CFGExprKind::VariantLit { fields, .. }
-            | CFGExprKind::ArrayLit(fields)
-            | CFGExprKind::TupleLit(fields)
-            | CFGExprKind::Set { elems: fields, .. } => {
+            GIRExprKind::StructLit { fields, .. }
+            | GIRExprKind::VariantLit { fields, .. }
+            | GIRExprKind::ArrayLit(fields)
+            | GIRExprKind::TupleLit(fields)
+            | GIRExprKind::Set { elems: fields, .. } => {
                 for &field in fields {
-                    self.moves(cfg, id, field, state);
+                    self.moves(gir, id, field, state);
                 }
             }
-            CFGExprKind::Map { entries, .. } => {
+            GIRExprKind::Map { entries, .. } => {
                 for &(key, value) in entries {
-                    self.moves(cfg, id, key, state);
-                    self.moves(cfg, id, value, state);
+                    self.moves(gir, id, key, state);
+                    self.moves(gir, id, value, state);
                 }
             }
-            CFGExprKind::Binary { lhs, rhs, .. } => {
-                self.moves(cfg, id, *lhs, state);
-                self.moves(cfg, id, *rhs, state);
+            GIRExprKind::Binary { lhs, rhs, .. } => {
+                self.moves(gir, id, *lhs, state);
+                self.moves(gir, id, *rhs, state);
             }
-            CFGExprKind::Range { start, end, .. } => {
+            GIRExprKind::Range { start, end, .. } => {
                 for held in [start, end].into_iter().flatten() {
-                    self.moves(cfg, id, *held, state);
+                    self.moves(gir, id, *held, state);
                 }
             }
             _ => {}
@@ -455,16 +455,16 @@ impl<'a> Drops<'a> {
     // comes next can find them.
     fn settle(
         &self,
-        cfg: &mut CFGProgram,
-        id: CFGBodyId,
-        block: CFGBlockId,
+        gir: &mut GIRProgram,
+        id: GIRBodyId,
+        block: GIRBlockId,
         mut state: Vec<Held>,
     ) -> Vec<usize> {
-        let mut kept: Vec<CFGStmt> = Vec::new();
+        let mut kept: Vec<GIRStmt> = Vec::new();
         let mut asks = Vec::new();
-        for i in 0..cfg.bodies[id].blocks[block].stmts.len() {
-            let stmt = cfg.bodies[id].blocks[block].stmts[i].clone();
-            if let CFGStmtKind::Drop { local } = stmt.kind {
+        for i in 0..gir.bodies[id].blocks[block].stmts.len() {
+            let stmt = gir.bodies[id].blocks[block].stmts[i].clone();
+            if let GIRStmtKind::Drop { local } = stmt.kind {
                 let held = state[local];
                 // Released or not, the slot holds nothing after this line.
                 state[local] = Held::Nothing;
@@ -477,10 +477,10 @@ impl<'a> Drops<'a> {
                 kept.push(stmt);
                 continue;
             }
-            self.step(cfg, id, &stmt.kind, &mut state);
+            self.step(gir, id, &stmt.kind, &mut state);
             kept.push(stmt);
         }
-        cfg.bodies[id].blocks[block].stmts = kept;
+        gir.bodies[id].blocks[block].stmts = kept;
         asks
     }
 }

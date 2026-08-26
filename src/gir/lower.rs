@@ -1,6 +1,6 @@
-// Lowering the TTIR to a CFG: the last tree becoming a graph.
+// Lowering the TTIR to a GIR: the last tree becoming a graph.
 //
-//     AST -> lower -> TIR -> [ sema ] -> TTIR -> lower -> CFG
+//     AST -> lower -> TIR -> [ sema ] -> TTIR -> lower -> GIR
 //
 // Everything a declaration answers on its own was settled by the first
 // lowering, and everything needing a second declaration was settled by `sema`.
@@ -21,11 +21,11 @@ use crate::tir::ttir_nodes::*;
 
 use crate::sema::borrows::Copies;
 
-use super::cfg_nodes::*;
+use super::gir_nodes::*;
 
 pub struct Lowerer<'a> {
     ttir: &'a TTIRProgram,
-    cfg:  CFGProgram,
+    gir:  GIRProgram,
     // What each type has to release, and the declaration the body being
     // lowered stands in -- a `Ty::Param` is answered by the second.
     copies:  Copies,
@@ -36,24 +36,24 @@ pub struct Lowerer<'a> {
 }
 
 struct Builder {
-    blocks:  Vec<CFGBlock>,
-    locals:  Vec<CFGLocal>,
-    current: CFGBlockId,
+    blocks:  Vec<GIRBlock>,
+    locals:  Vec<GIRLocal>,
+    current: GIRBlockId,
     loops:   Vec<LoopCtx>,
     temps:   usize,
     // The slots each open block declared, innermost last. Leaving one is where
     // its slots are released, in the reverse of the order they were bound:
     // "locals in the reverse of it, which is the order that lets a later one
     // still refer to an earlier one" (§2).
-    scopes:  Vec<Vec<CFGLocalId>>,
+    scopes:  Vec<Vec<GIRLocalId>>,
 }
 
 // Where a `break` and a `continue` go, and where a `break x` puts its value.
 #[derive(Clone, Copy)]
 struct LoopCtx {
-    brk:   CFGBlockId,
-    cont:  CFGBlockId,
-    value: Option<CFGLocalId>,
+    brk:   GIRBlockId,
+    cont:  GIRBlockId,
+    value: Option<GIRLocalId>,
     // How many scopes were open when the loop began, so a `break` knows how
     // many it is leaving.
     depth: usize,
@@ -65,21 +65,21 @@ impl<'a> Lowerer<'a> {
             ttir,
             copies: Copies::of(ttir),
             generic: Vec::new(),
-            cfg: CFGProgram::default(),
+            gir: GIRProgram::default(),
             stack: Vec::new(),
         }
     }
 
-    pub fn finish(self) -> CFGProgram {
-        self.cfg
+    pub fn finish(self) -> GIRProgram {
+        self.gir
     }
 
     // Every body the program holds, in the order the TTIR keeps them, so a
-    // `TTIRBodyId` and the `CFGBodyId` it became are the same number.
+    // `TTIRBodyId` and the `GIRBodyId` it became are the same number.
     // What each body is a body *of*: the parameters it was handed and the
     // declaration it stands in. A `TTIRBody` holds neither, both being facts
     // about the item that owns it.
-    fn about(&self, body: TTIRBodyId) -> (Vec<CFGLocalId>, Vec<TTIRGeneric>) {
+    fn about(&self, body: TTIRBodyId) -> (Vec<GIRLocalId>, Vec<TTIRGeneric>) {
         for item in &self.ttir.items {
             let TTIRItemKind::Fn(f) = &item.kind else { continue };
             if f.body == Some(body) {
@@ -121,44 +121,44 @@ impl<'a> Lowerer<'a> {
         self.stack.last_mut().expect("a body is being built")
     }
 
-    fn new_block(&mut self, at: TTIRExprId) -> CFGBlockId {
+    fn new_block(&mut self, at: TTIRExprId) -> GIRBlockId {
         let (line, col) = self.at(at);
         let b = self.b();
-        b.blocks.push(CFGBlock { stmts: Vec::new(), term: CFGTerm::Unreachable, line, col });
+        b.blocks.push(GIRBlock { stmts: Vec::new(), term: GIRTerm::Unreachable, line, col });
         b.blocks.len() - 1
     }
 
-    fn switch_to(&mut self, block: CFGBlockId) {
+    fn switch_to(&mut self, block: GIRBlockId) {
         self.b().current = block;
     }
 
     // The first terminator written wins. A second would be a bug here rather
     // than a program's doing, and ignoring it is what makes `return; g()` cost
     // nothing to lower.
-    fn terminate(&mut self, term: CFGTerm) {
+    fn terminate(&mut self, term: GIRTerm) {
         let b = self.b();
         let at = b.current;
-        if b.blocks[at].term == CFGTerm::Unreachable {
+        if b.blocks[at].term == GIRTerm::Unreachable {
             b.blocks[at].term = term;
         }
     }
 
-    fn emit(&mut self, kind: CFGStmtKind, is_unsafe: bool, at: TTIRExprId) {
+    fn emit(&mut self, kind: GIRStmtKind, is_unsafe: bool, at: TTIRExprId) {
         let (line, col) = self.at(at);
         let b = self.b();
         let block = b.current;
-        b.blocks[block].stmts.push(CFGStmt { kind, is_unsafe, line, col });
+        b.blocks[block].stmts.push(GIRStmt { kind, is_unsafe, line, col });
     }
 
-    fn push_expr(&mut self, kind: CFGExprKind, ty: TyId, at: TTIRExprId) -> CFGExprId {
+    fn push_expr(&mut self, kind: GIRExprKind, ty: TyId, at: TTIRExprId) -> GIRExprId {
         let (line, col) = self.at(at);
-        self.cfg.exprs.push(CFGExpr { kind, ty, line, col });
-        self.cfg.exprs.len() - 1
+        self.gir.exprs.push(GIRExpr { kind, ty, line, col });
+        self.gir.exprs.len() - 1
     }
 
     // A slot for a value that has to survive a branch, typed as the expression
     // it will hold.
-    fn temp(&mut self, ty: TyId) -> CFGLocalId {
+    fn temp(&mut self, ty: TyId) -> GIRLocalId {
         let n = {
             let b = self.b();
             let n = b.temps;
@@ -167,7 +167,7 @@ impl<'a> Lowerer<'a> {
         };
         let drops = self.copies.drops(ty, self.ttir, &self.generic);
         let b = self.b();
-        b.locals.push(CFGLocal {
+        b.locals.push(GIRLocal {
             name:      TIRBinding::Name(format!("${}", n)),
             ty,
             intro:     TIRIntro::Var,
@@ -177,13 +177,13 @@ impl<'a> Lowerer<'a> {
         b.locals.len() - 1
     }
 
-    fn local(&mut self, id: CFGLocalId, at: TTIRExprId) -> CFGExprId {
+    fn local(&mut self, id: GIRLocalId, at: TTIRExprId) -> GIRExprId {
         let ty = self.b().locals[id].ty;
-        self.push_expr(CFGExprKind::Local(id), ty, at)
+        self.push_expr(GIRExprKind::Local(id), ty, at)
     }
 
     // The graph of one body.
-    fn body(&mut self, id: TTIRBodyId) -> CFGBodyId {
+    fn body(&mut self, id: TTIRBodyId) -> GIRBodyId {
         let (params, generic) = self.about(id);
         let held = std::mem::replace(&mut self.generic, generic);
         let out = self.body_of(id, params);
@@ -191,12 +191,12 @@ impl<'a> Lowerer<'a> {
         out
     }
 
-    fn body_of(&mut self, id: TTIRBodyId, params: Vec<CFGLocalId>) -> CFGBodyId {
+    fn body_of(&mut self, id: TTIRBodyId, params: Vec<GIRLocalId>) -> GIRBodyId {
         let source = &self.ttir.bodies[id];
-        let locals: Vec<CFGLocal> = source
+        let locals: Vec<GIRLocal> = source
             .locals
             .iter()
-            .map(|l| CFGLocal {
+            .map(|l| GIRLocal {
                 name:      l.name.clone(),
                 ty:        l.ty,
                 intro:     l.intro,
@@ -230,16 +230,16 @@ impl<'a> Lowerer<'a> {
         // here is what the body is worth.
         self.close_scope(value);
         let answer = self.local(out, value);
-        self.terminate(CFGTerm::Return(Some(answer)));
+        self.terminate(GIRTerm::Return(Some(answer)));
 
         let built = self.stack.pop().expect("a body was being built");
-        self.cfg.bodies.push(CFGBody {
+        self.gir.bodies.push(GIRBody {
             entry,
             blocks: built.blocks,
             locals: built.locals,
             params,
         });
-        self.cfg.bodies.len() - 1
+        self.gir.bodies.len() - 1
     }
 
     // ---- Statements ------------------------------------------------------
@@ -256,7 +256,7 @@ impl<'a> Lowerer<'a> {
                     } else {
                         let value = self.value(*init);
                         self.emit(
-                            CFGStmtKind::Set { local: *local, value },
+                            GIRStmtKind::Set { local: *local, value },
                             *is_unsafe,
                             *init,
                         );
@@ -270,10 +270,10 @@ impl<'a> Lowerer<'a> {
                 } else if let TTIRExprKind::Assign { op, place, value } = self.kind(*expr) {
                     let place = self.value(place);
                     let v = self.value(value);
-                    self.emit(CFGStmtKind::Store { place, op, value: v }, *is_unsafe, *expr);
+                    self.emit(GIRStmtKind::Store { place, op, value: v }, *is_unsafe, *expr);
                 } else {
                     let v = self.value(*expr);
-                    self.emit(CFGStmtKind::Eval(v), *is_unsafe, *expr);
+                    self.emit(GIRStmtKind::Eval(v), *is_unsafe, *expr);
                 }
             }
             // A declaration written inside a body is a declaration of the
@@ -285,19 +285,19 @@ impl<'a> Lowerer<'a> {
     // ---- Expressions -----------------------------------------------------
 
     // Puts the value of `id` into `slot`, branching if it has to.
-    fn into(&mut self, id: TTIRExprId, slot: CFGLocalId) {
+    fn into(&mut self, id: TTIRExprId, slot: GIRLocalId) {
         if branches(&self.kind(id)) {
             self.flow(id, Some(slot));
         } else {
             let value = self.value(id);
-            self.emit(CFGStmtKind::Set { local: slot, value }, false, id);
+            self.emit(GIRStmtKind::Set { local: slot, value }, false, id);
         }
     }
 
     // What a condition does to the graph: two edges and no operator. `&&` and
     // `||` are the whole reason this is not just `value` -- writing them as
     // branches is what short-circuiting *is*.
-    fn cond(&mut self, id: TTIRExprId, then: CFGBlockId, els: CFGBlockId) {
+    fn cond(&mut self, id: TTIRExprId, then: GIRBlockId, els: GIRBlockId) {
         match self.kind(id) {
             TTIRExprKind::Binary { op: TIRBinOp::And, lhs, rhs } => {
                 let mid = self.new_block(rhs);
@@ -323,14 +323,14 @@ impl<'a> Lowerer<'a> {
                 } else {
                     self.value(id)
                 };
-                self.terminate(CFGTerm::Branch { cond, then, els });
+                self.terminate(GIRTerm::Branch { cond, then, els });
             }
         }
     }
 
     // An expression that branches, lowered into the graph, with its value put
     // in `dest` where one is wanted.
-    fn flow(&mut self, id: TTIRExprId, dest: Option<CFGLocalId>) {
+    fn flow(&mut self, id: TTIRExprId, dest: Option<GIRLocalId>) {
         match self.kind(id) {
             TTIRExprKind::Block { stmts, tail } => {
                 self.b().scopes.push(Vec::new());
@@ -361,10 +361,10 @@ impl<'a> Lowerer<'a> {
                     self.switch_to(block);
                     if let Some(slot) = dest {
                         let value =
-                            self.push_expr(CFGExprKind::Literal(TIRLit::Bool(answer)), ty, id);
-                        self.emit(CFGStmtKind::Set { local: slot, value }, false, id);
+                            self.push_expr(GIRExprKind::Literal(TIRLit::Bool(answer)), ty, id);
+                        self.emit(GIRStmtKind::Set { local: slot, value }, false, id);
                     }
-                    self.terminate(CFGTerm::Goto(join));
+                    self.terminate(GIRTerm::Goto(join));
                 }
                 self.switch_to(join);
             }
@@ -379,7 +379,7 @@ impl<'a> Lowerer<'a> {
                     Some(slot) => self.into(then, slot),
                     None => self.discard(then),
                 }
-                self.terminate(CFGTerm::Goto(join));
+                self.terminate(GIRTerm::Goto(join));
 
                 self.switch_to(e);
                 match els {
@@ -389,14 +389,14 @@ impl<'a> Lowerer<'a> {
                     },
                     None => self.fill_null(dest, id),
                 }
-                self.terminate(CFGTerm::Goto(join));
+                self.terminate(GIRTerm::Goto(join));
                 self.switch_to(join);
             }
 
             TTIRExprKind::While { cond, body } => {
                 let (head, inner, exit) =
                     (self.new_block(cond), self.new_block(body), self.new_block(id));
-                self.terminate(CFGTerm::Goto(head));
+                self.terminate(GIRTerm::Goto(head));
                 self.switch_to(head);
                 self.cond(cond, inner, exit);
                 self.switch_to(inner);
@@ -404,7 +404,7 @@ impl<'a> Lowerer<'a> {
                 self.b().loops.push(LoopCtx { brk: exit, cont: head, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
-                self.terminate(CFGTerm::Goto(head));
+                self.terminate(GIRTerm::Goto(head));
                 self.switch_to(exit);
                 // A loop nobody broke out of yields `null`; a `break x` will
                 // have written the slot itself.
@@ -414,13 +414,13 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::For { local, iter, body } => {
                 let it = self.value(iter);
                 let (inner, exit) = (self.new_block(body), self.new_block(id));
-                self.terminate(CFGTerm::ForEach { local, iter: it, body: inner, exit });
+                self.terminate(GIRTerm::ForEach { local, iter: it, body: inner, exit });
                 self.switch_to(inner);
                 let depth = self.b().scopes.len();
                 self.b().loops.push(LoopCtx { brk: exit, cont: inner, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
-                self.terminate(CFGTerm::Goto(inner));
+                self.terminate(GIRTerm::Goto(inner));
                 self.switch_to(exit);
                 self.fill_null(dest, id);
             }
@@ -428,7 +428,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Match { scrutinee, arms } => {
                 let s = self.value(scrutinee);
                 let join = self.new_block(id);
-                let mut built: Vec<CFGArm> = Vec::new();
+                let mut built: Vec<GIRArm> = Vec::new();
                 for arm in &arms {
                     let block = self.new_block(arm.body);
                     let saved = self.b().current;
@@ -437,13 +437,13 @@ impl<'a> Lowerer<'a> {
                         Some(slot) => self.into(arm.body, slot),
                         None => self.discard(arm.body),
                     }
-                    self.terminate(CFGTerm::Goto(join));
+                    self.terminate(GIRTerm::Goto(join));
                     self.switch_to(saved);
-                    built.push(CFGArm { pats: arm.pats.clone(), block });
+                    built.push(GIRArm { pats: arm.pats.clone(), block });
                 }
                 // Whether the arms cover everything is settled by now, so the
                 // way out is only for a scrutinee none of them took.
-                self.terminate(CFGTerm::Match {
+                self.terminate(GIRTerm::Match {
                     scrutinee: s,
                     arms: built,
                     otherwise: Some(join),
@@ -473,7 +473,7 @@ impl<'a> Lowerer<'a> {
                 // already been worked out, so what it was made of is not among
                 // what these release.
                 self.unwind_to(0, id);
-                self.terminate(CFGTerm::Return(value));
+                self.terminate(GIRTerm::Return(value));
                 let next = self.new_block(id);
                 self.switch_to(next);
             }
@@ -492,7 +492,7 @@ impl<'a> Lowerer<'a> {
                     // Every scope inside the loop goes; the loop's own and
                     // everything outside it are still open after the `break`.
                     self.unwind_to(depth, id);
-                    self.terminate(CFGTerm::Goto(brk));
+                    self.terminate(GIRTerm::Goto(brk));
                 }
                 let next = self.new_block(id);
                 self.switch_to(next);
@@ -504,7 +504,7 @@ impl<'a> Lowerer<'a> {
                     // The same, and for the same reason: the next turn round
                     // starts with the loop's own scopes and no others.
                     self.unwind_to(depth, id);
-                    self.terminate(CFGTerm::Goto(cont));
+                    self.terminate(GIRTerm::Goto(cont));
                 }
                 let next = self.new_block(id);
                 self.switch_to(next);
@@ -539,7 +539,7 @@ impl<'a> Lowerer<'a> {
     // `depth` goes, innermost first, and the ones below it stay open because
     // the block being jumped out of is still inside them.
     fn unwind_to(&mut self, depth: usize, at: TTIRExprId) {
-        let mut open: Vec<Vec<CFGLocalId>> = Vec::new();
+        let mut open: Vec<Vec<GIRLocalId>> = Vec::new();
         while self.b().scopes.len() > depth {
             open.push(self.b().scopes.pop().unwrap_or_default());
         }
@@ -554,12 +554,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn release(&mut self, held: &[CFGLocalId], at: TTIRExprId) {
+    fn release(&mut self, held: &[GIRLocalId], at: TTIRExprId) {
         for &local in held.iter().rev() {
             if !self.b().locals[local].drops {
                 continue;
             }
-            self.emit(CFGStmtKind::Drop { local }, false, at);
+            self.emit(GIRStmtKind::Drop { local }, false, at);
         }
     }
 
@@ -569,17 +569,17 @@ impl<'a> Lowerer<'a> {
             self.flow(id, None);
         } else {
             let v = self.value(id);
-            self.emit(CFGStmtKind::Eval(v), false, id);
+            self.emit(GIRStmtKind::Eval(v), false, id);
         }
     }
 
     // A slot with nothing to put in it gets `null`, which is what a body with
     // no trailing expression yields.
-    fn fill_null(&mut self, dest: Option<CFGLocalId>, at: TTIRExprId) {
+    fn fill_null(&mut self, dest: Option<GIRLocalId>, at: TTIRExprId) {
         if let Some(slot) = dest {
             let ty = self.b().locals[slot].ty;
-            let value = self.push_expr(CFGExprKind::Literal(TIRLit::Null), ty, at);
-            self.emit(CFGStmtKind::Set { local: slot, value }, false, at);
+            let value = self.push_expr(GIRExprKind::Literal(TIRLit::Null), ty, at);
+            self.emit(GIRStmtKind::Set { local: slot, value }, false, at);
         }
     }
 
@@ -591,7 +591,7 @@ impl<'a> Lowerer<'a> {
     // holding it is -- which is after the statements and the blocks that what
     // stands to its right left behind. `f() + (n = 9)` would store 9 and then
     // call `f`, and `f() + if c { g() } else { 0 }` would run the branch first.
-    fn operands(&mut self, ids: &[TTIRExprId]) -> Vec<CFGExprId> {
+    fn operands(&mut self, ids: &[TTIRExprId]) -> Vec<GIRExprId> {
         let mut out = Vec::with_capacity(ids.len());
         for (at, &id) in ids.iter().enumerate() {
             if ids[at + 1..].iter().any(|&rest| self.effects(rest)) {
@@ -607,7 +607,7 @@ impl<'a> Lowerer<'a> {
 
     // One operand worked out where it stands rather than where the expression
     // holding it is: a slot, filled here, read there.
-    fn pinned(&mut self, id: TTIRExprId) -> CFGExprId {
+    fn pinned(&mut self, id: TTIRExprId) -> GIRExprId {
         // Unless there is nothing to pin. A literal is the same whenever it is
         // read and so is the name of an item, and a slot for one would be a
         // node the graph has no use for.
@@ -668,7 +668,7 @@ impl<'a> Lowerer<'a> {
 
     // An expression with no control flow in it. Anything that branches is put
     // through a slot first, so what comes back is always straight-line.
-    fn value(&mut self, id: TTIRExprId) -> CFGExprId {
+    fn value(&mut self, id: TTIRExprId) -> GIRExprId {
         if branches(&self.kind(id)) {
             let slot = self.temp(self.ty(id));
             self.flow(id, Some(slot));
@@ -676,27 +676,27 @@ impl<'a> Lowerer<'a> {
         }
         let ty = self.ty(id);
         let kind = match self.kind(id) {
-            TTIRExprKind::Literal(value) => CFGExprKind::Literal(value),
-            TTIRExprKind::Local(l) => CFGExprKind::Local(l),
-            TTIRExprKind::Item(i) => CFGExprKind::Item(i),
-            TTIRExprKind::SelfExpr => CFGExprKind::SelfExpr,
+            TTIRExprKind::Literal(value) => GIRExprKind::Literal(value),
+            TTIRExprKind::Local(l) => GIRExprKind::Local(l),
+            TTIRExprKind::Item(i) => GIRExprKind::Item(i),
+            TTIRExprKind::SelfExpr => GIRExprKind::SelfExpr,
 
             TTIRExprKind::Field { base, index } => {
-                CFGExprKind::Field { base: self.value(base), index }
+                GIRExprKind::Field { base: self.value(base), index }
             }
             TTIRExprKind::TupleIndex { base, index } => {
-                CFGExprKind::TupleIndex { base: self.value(base), index }
+                GIRExprKind::TupleIndex { base: self.value(base), index }
             }
             TTIRExprKind::Call { callee, args } => {
                 let mut all = vec![callee];
                 all.extend(args.iter().copied());
                 let mut built = self.operands(&all).into_iter();
-                CFGExprKind::Call {
+                GIRExprKind::Call {
                     callee: built.next().expect("the callee"),
                     args:   built.collect(),
                 }
             }
-            TTIRExprKind::Method { recv, item, args } => CFGExprKind::Method {
+            TTIRExprKind::Method { recv, item, args } => GIRExprKind::Method {
                 // The receiver stays where it is: a method may be written for
                 // `&self` or `*self`, and a receiver put in a slot is a copy
                 // of the thing that was to be reached through.
@@ -705,53 +705,53 @@ impl<'a> Lowerer<'a> {
                 args: self.operands(&args),
             },
             TTIRExprKind::Index { base, index } => {
-                CFGExprKind::Index { base: self.value(base), index: self.value(index) }
+                GIRExprKind::Index { base: self.value(base), index: self.value(index) }
             }
             TTIRExprKind::StructLit { item, fields } => {
-                CFGExprKind::StructLit { item, fields: self.operands(&fields) }
+                GIRExprKind::StructLit { item, fields: self.operands(&fields) }
             }
             TTIRExprKind::VariantLit { item, variant, fields } => {
-                CFGExprKind::VariantLit { item, variant, fields: self.operands(&fields) }
+                GIRExprKind::VariantLit { item, variant, fields: self.operands(&fields) }
             }
 
-            TTIRExprKind::ArrayLit(elems) => CFGExprKind::ArrayLit(self.operands(&elems)),
-            TTIRExprKind::TupleLit(elems) => CFGExprKind::TupleLit(self.operands(&elems)),
+            TTIRExprKind::ArrayLit(elems) => GIRExprKind::ArrayLit(self.operands(&elems)),
+            TTIRExprKind::TupleLit(elems) => GIRExprKind::TupleLit(self.operands(&elems)),
             TTIRExprKind::Map { hashed, entries } => {
                 // A key and its value are two operands like any other, and the
                 // pairs are undone and done up again around that.
                 let flat: Vec<TTIRExprId> =
                     entries.iter().flat_map(|&(k, v)| [k, v]).collect();
                 let built = self.operands(&flat);
-                CFGExprKind::Map {
+                GIRExprKind::Map {
                     hashed,
                     entries: built.chunks(2).map(|pair| (pair[0], pair[1])).collect(),
                 }
             }
             TTIRExprKind::Set { hashed, elems } => {
-                CFGExprKind::Set { hashed, elems: self.operands(&elems) }
+                GIRExprKind::Set { hashed, elems: self.operands(&elems) }
             }
 
             TTIRExprKind::Unary { op, operand } => {
-                CFGExprKind::Unary { op, operand: self.value(operand) }
+                GIRExprKind::Unary { op, operand: self.value(operand) }
             }
             TTIRExprKind::Binary { op, lhs, rhs } => {
                 let built = self.operands(&[lhs, rhs]);
-                CFGExprKind::Binary { op, lhs: built[0], rhs: built[1] }
+                GIRExprKind::Binary { op, lhs: built[0], rhs: built[1] }
             }
             TTIRExprKind::Range { op, start, end } => {
                 let written: Vec<TTIRExprId> = start.iter().chain(end.iter()).copied().collect();
                 let mut built = self.operands(&written).into_iter();
-                CFGExprKind::Range {
+                GIRExprKind::Range {
                     op,
                     start: start.map(|_| built.next().expect("a start")),
                     end: end.map(|_| built.next().expect("an end")),
                 }
             }
-            TTIRExprKind::Cast(value) => CFGExprKind::Cast(self.value(value)),
+            TTIRExprKind::Cast(value) => GIRExprKind::Cast(self.value(value)),
             // The body is lowered with every other one; the handles agree
             // because the two arenas are filled in the same order.
             TTIRExprKind::Closure { captures, body } => {
-                CFGExprKind::Closure { captures, body }
+                GIRExprKind::Closure { captures, body }
             }
 
             // An assignment where a value is wanted: the store happens and the
@@ -759,8 +759,8 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Assign { op, place, value } => {
                 let place = self.value(place);
                 let v = self.value(value);
-                self.emit(CFGStmtKind::Store { place, op, value: v }, false, id);
-                CFGExprKind::Literal(TIRLit::Null)
+                self.emit(GIRStmtKind::Store { place, op, value: v }, false, id);
+                GIRExprKind::Literal(TIRLit::Null)
             }
 
             other => panic!("an expression lowered from {:?}", other),

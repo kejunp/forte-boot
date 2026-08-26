@@ -3,9 +3,9 @@
 // evaluation; what is added is that every name says what it refers to and every
 // expression says what type it is.
 //
-//     AST -> lower -> TIR -> [ sema ] -> TTIR -> lower -> CFG
+//     AST -> lower -> TIR -> [ sema ] -> TTIR -> lower -> GIR
 //
-// `sema::lower` builds one and `cfg::lower` reads one, so this is the shape the
+// `sema::lower` builds one and `gir::lower` reads one, so this is the shape the
 // two agreed on: what the checker has to produce and what the graph is drawn
 // from. A test builds one by hand where going through the checker would put
 // that pass under test as well.
@@ -379,7 +379,7 @@ pub enum TTIRPayload {
 }
 
 // ---- Bodies ---------------------------------------------------------------
-// Still a tree. Turning this into a graph is `cfg::lower`'s, and it is the one
+// Still a tree. Turning this into a graph is `gir::lower`'s, and it is the one
 // thing left to do to it.
 
 #[derive(Debug, Clone, PartialEq)]
@@ -424,7 +424,7 @@ pub enum TTIRStmt {
 pub struct TTIRExpr {
     pub kind: TTIRExprKind,
     // Every expression has one. That is the whole of what makes this the typed
-    // tree, and what lets `cfg::lower` build a graph that knows its own types.
+    // tree, and what lets `gir::lower` build a graph that knows its own types.
     pub ty:   TyId,
     pub line: usize,
     pub col:  usize,
@@ -489,7 +489,7 @@ pub enum TTIRExprKind {
         operand: TTIRExprId,
     },
     // `&&` and `||` are still here: this is a tree, and taking them apart into
-    // branches is what the CFG is for.
+    // branches is what the GIR is for.
     Binary {
         op:  TIRBinOp,
         lhs: TTIRExprId,

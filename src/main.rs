@@ -1,4 +1,4 @@
-mod cfg;
+mod gir;
 mod error;
 mod expand;
 mod lex;
@@ -87,7 +87,7 @@ fn dump_parse(path: &str, source: &str) {
     // The tree the rest of the compiler would read. Lowering is the last pass
     // that cares how any of it was written.
     //
-    // What comes next is `sema`, which turns this into the typed tree the CFG
+    // What comes next is `sema`, which turns this into the typed tree the GIR
     // is built from. `run` is the path that takes it there; this one is the
     // demo walk, which shows what one file lowers to and stops.
     let mut lowerer = Lowerer::new(&parser);
@@ -163,16 +163,16 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
 
         // And the graph, which is what the tree was for: the control flow drawn
         // as edges, every release placed, and the blocks nothing reaches gone.
-        let mut lowerer = cfg::lower::Lowerer::new(&ttir);
+        let mut lowerer = gir::lower::Lowerer::new(&ttir);
         lowerer.lower();
         let mut graph = lowerer.finish();
         let copies = sema::borrows::Copies::of(&ttir);
         let generics: Vec<Vec<tir::ttir_nodes::TTIRGeneric>> = (0..graph.bodies.len())
             .map(|body| generics_of(&ttir, body))
             .collect();
-        cfg::drops::Drops::new(&ttir, &copies).place(&mut graph, &generics);
+        gir::drops::Drops::new(&ttir, &copies).place(&mut graph, &generics);
         let blocks: usize = graph.bodies.iter().map(|b| b.blocks.len()).sum();
-        cfg::opt::optimize(&mut graph);
+        gir::opt::optimize(&mut graph);
         let left: usize = graph.bodies.iter().map(|b| b.blocks.len()).sum();
 
         println!(
@@ -196,7 +196,7 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
 // `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a
 // module whose path starts at no root; the file's own directory is looked in
 // first either way, and is what `suite` names.
-// The declaration a body belongs to, for the parts of `cfg` that answer a
+// The declaration a body belongs to, for the parts of `gir` that answer a
 // `Ty::Param` -- what a type parameter comes to is the declaration's and not
 // the body's.
 fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_nodes::TTIRGeneric> {
@@ -495,7 +495,7 @@ fn demos() {
          namespace n { type T = i32 }\n",
     );
 
-    // The closed set of attributes is checked while the CFG is built: a name
+    // The closed set of attributes is checked while the GIR is built: a name
     // the compiler does not know is an error naming what was probably meant.
     dump_parse("attr.fc", "%inlien\nfn f();\n");
     dump_parse("target.fc", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");

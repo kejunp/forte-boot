@@ -3,7 +3,7 @@
 // a folded constant no longer holds the `+` it replaced, and an eliminated
 // branch is no longer anywhere the roots can reach.
 //
-// This is kept beside the tree rather than in it. `CFGProgram` stays what it
+// This is kept beside the tree rather than in it. `GIRProgram` stays what it
 // is -- a tree and nothing else -- and a reader with no interest in where a
 // node came from does not have to carry the answer.
 //
@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use super::cfg_nodes::{CFGBlockId, CFGBodyId, CFGExprId};
+use super::gir_nodes::{GIRBlockId, GIRBodyId, GIRExprId};
 
 // What a rewrite did to the node it was written on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,24 +59,24 @@ pub struct Origin {
 // at is a block of the graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dropped {
-    pub body:  CFGBodyId,
-    pub block: CFGBlockId,
+    pub body:  GIRBodyId,
+    pub block: GIRBlockId,
     pub line:  usize,
     pub col:   usize,
     pub why:   Reason,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct CFGSourceMap {
+pub struct GIRSourceMap {
     pub rounds: usize,
-    rewritten:  HashMap<CFGExprId, Origin>,
-    blocks:     HashMap<(CFGBodyId, CFGBlockId), Origin>,
+    rewritten:  HashMap<GIRExprId, Origin>,
+    blocks:     HashMap<(GIRBodyId, GIRBlockId), Origin>,
     dropped:    Vec<Dropped>,
 }
 
-impl CFGSourceMap {
-    pub fn new() -> CFGSourceMap {
-        CFGSourceMap::default()
+impl GIRSourceMap {
+    pub fn new() -> GIRSourceMap {
+        GIRSourceMap::default()
     }
 
     // Notes what stood at `id` before this rewrite. The *first* answer is the
@@ -85,12 +85,12 @@ impl CFGSourceMap {
     // the position worth having is the one the source was written at, which is
     // the first. Every rewrite after that overwrites the node's own line and
     // col, so this is the only place it survives.
-    pub fn record(&mut self, id: CFGExprId, line: usize, col: usize, was: &'static str,
+    pub fn record(&mut self, id: GIRExprId, line: usize, col: usize, was: &'static str,
                   why: Rewrite) {
         self.rewritten.entry(id).or_insert(Origin { line, col, was, why });
     }
 
-    pub fn drop_block(&mut self, body: CFGBodyId, block: CFGBlockId, line: usize, col: usize,
+    pub fn drop_block(&mut self, body: GIRBodyId, block: GIRBlockId, line: usize, col: usize,
                       why: Reason) {
         if self.dropped.iter().any(|d| d.body == body && d.block == block) {
             return;
@@ -100,13 +100,13 @@ impl CFGSourceMap {
 
     // A block whose edges were redirected. Keyed by the pair, since a block is
     // numbered within its body and not across the program.
-    pub fn record_block(&mut self, body: CFGBodyId, block: CFGBlockId, line: usize, col: usize,
+    pub fn record_block(&mut self, body: GIRBodyId, block: GIRBlockId, line: usize, col: usize,
                         was: &'static str, why: Rewrite) {
         self.blocks.entry((body, block)).or_insert(Origin { line, col, was, why });
     }
 
     // Where the node at `id` was written, if a rewrite moved it.
-    pub fn origin(&self, id: CFGExprId) -> Option<&Origin> {
+    pub fn origin(&self, id: GIRExprId) -> Option<&Origin> {
         self.rewritten.get(&id)
     }
 
@@ -114,7 +114,7 @@ impl CFGSourceMap {
         &self.dropped
     }
 
-    pub fn block_origin(&self, body: CFGBodyId, block: CFGBlockId) -> Option<&Origin> {
+    pub fn block_origin(&self, body: GIRBodyId, block: GIRBlockId) -> Option<&Origin> {
         self.blocks.get(&(body, block))
     }
 

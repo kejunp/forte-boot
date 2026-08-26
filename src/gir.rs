@@ -1,5 +1,5 @@
-// The CFG -- the control flow graph: a function's body with its control flow
-// drawn as edges rather than nesting.
+// The GIR -- the graph IR: a function's body with its control flow drawn as
+// edges rather than nesting.
 //
 //     prep -> lex -> parse -> AST -> expand -> lower -> TIR
 //                                                       |
@@ -7,7 +7,7 @@
 //                                                       |
 //                                                      TTIR
 //                                                       |
-//                                                     lower -> CFG -> opt
+//                                                     lower -> GIR -> opt
 //
 // It is built from the TTIR and not from the TIR, so everything it holds is
 // already typed and already resolved. That ordering is the usual one and it is
@@ -38,4 +38,4 @@ pub mod drops;
 pub mod lower;
 pub mod opt;
 pub mod source_map;
-pub mod cfg_nodes;
+pub mod gir_nodes;

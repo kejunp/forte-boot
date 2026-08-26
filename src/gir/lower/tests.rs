@@ -1,22 +1,22 @@
 // What lowering makes of a typed tree: the control flow, and nothing else.
 
 use super::*;
-use crate::cfg::fixture::Fixture;
+use crate::gir::fixture::Fixture;
 use crate::tir::tir_nodes::TIRAssignOp;
 use crate::tir::ttir_nodes::{TTIRExprKind, TTIRStmt};
 
 // Lowers a fixture and hands back the one body it built.
-fn graph(f: Fixture) -> (CFGProgram, CFGBody) {
+fn graph(f: Fixture) -> (GIRProgram, GIRBody) {
     let ttir = f.p;
     let mut l = Lowerer::new(&ttir);
     l.lower();
-    let cfg = l.finish();
-    let body = cfg.bodies[0].clone();
-    (cfg, body)
+    let gir = l.finish();
+    let body = gir.bodies[0].clone();
+    (gir, body)
 }
 
 // Every terminator the entry can reach.
-fn terms(body: &CFGBody) -> Vec<CFGTerm> {
+fn terms(body: &GIRBody) -> Vec<GIRTerm> {
     let mut seen = vec![false; body.blocks.len()];
     let mut out = Vec::new();
     let mut stack = vec![body.entry];
@@ -27,13 +27,13 @@ fn terms(body: &CFGBody) -> Vec<CFGTerm> {
         seen[id] = true;
         let t = body.blocks[id].term.clone();
         match &t {
-            CFGTerm::Goto(to) => stack.push(*to),
-            CFGTerm::Branch { then, els, .. } => stack.extend([*then, *els]),
-            CFGTerm::Match { arms, otherwise, .. } => {
+            GIRTerm::Goto(to) => stack.push(*to),
+            GIRTerm::Branch { then, els, .. } => stack.extend([*then, *els]),
+            GIRTerm::Match { arms, otherwise, .. } => {
                 stack.extend(arms.iter().map(|a| a.block));
                 stack.extend(otherwise.iter());
             }
-            CFGTerm::ForEach { body: b, exit, .. } => stack.extend([*b, *exit]),
+            GIRTerm::ForEach { body: b, exit, .. } => stack.extend([*b, *exit]),
             _ => {}
         }
         out.push(t);
@@ -41,8 +41,8 @@ fn terms(body: &CFGBody) -> Vec<CFGTerm> {
     out
 }
 
-fn branches_in(body: &CFGBody) -> usize {
-    terms(body).iter().filter(|t| matches!(t, CFGTerm::Branch { .. })).count()
+fn branches_in(body: &GIRBody) -> usize {
+    terms(body).iter().filter(|t| matches!(t, GIRTerm::Branch { .. })).count()
 }
 
 // A body always ends by handing back a slot, whatever else it does.
@@ -52,19 +52,19 @@ fn a_body_returns_a_slot() {
     let value = f.int(1);
     let block = f.block(Vec::new(), Some(value));
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
-    assert!(terms(&body).iter().any(|t| matches!(t, CFGTerm::Return(Some(_)))));
+    assert!(terms(&body).iter().any(|t| matches!(t, GIRTerm::Return(Some(_)))));
     // The slot it hands back is one the lowering made, not one the source had.
-    let CFGTerm::Return(Some(answer)) = terms(&body)
+    let GIRTerm::Return(Some(answer)) = terms(&body)
         .into_iter()
-        .find(|t| matches!(t, CFGTerm::Return(Some(_))))
+        .find(|t| matches!(t, GIRTerm::Return(Some(_))))
         .unwrap()
     else {
         unreachable!()
     };
-    let CFGExprKind::Local(slot) = cfg.exprs[answer].kind else {
-        panic!("{:?}", cfg.exprs[answer].kind)
+    let GIRExprKind::Local(slot) = gir.exprs[answer].kind else {
+        panic!("{:?}", gir.exprs[answer].kind)
     };
     assert!(body.locals[slot].synthetic);
 }
@@ -96,13 +96,13 @@ fn a_short_circuit_becomes_two_branches() {
     let iff = f.if_(cond, then, None);
     let block = f.block(Vec::new(), Some(iff));
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     assert_eq!(branches_in(&body), 2, "one branch for each side");
     // And no `&&` reached an expression.
-    assert!(!cfg.exprs.iter().any(|e| matches!(
+    assert!(!gir.exprs.iter().any(|e| matches!(
         &e.kind,
-        CFGExprKind::Binary { op: crate::tir::tir_nodes::TIRBinOp::And, .. }
+        GIRExprKind::Binary { op: crate::tir::tir_nodes::TIRBinOp::And, .. }
     )));
 
     // `||` is the same shape with the edges the other way.
@@ -132,14 +132,14 @@ fn a_while_loops_back_to_its_condition() {
     let (_, body) = graph(f);
 
     let head = match body.blocks[body.entry].term {
-        CFGTerm::Goto(to) => to,
+        GIRTerm::Goto(to) => to,
         ref other => panic!("{:?}", other),
     };
     let inner_block = match body.blocks[head].term {
-        CFGTerm::Branch { then, .. } => then,
+        GIRTerm::Branch { then, .. } => then,
         ref other => panic!("{:?}", other),
     };
-    assert_eq!(body.blocks[inner_block].term, CFGTerm::Goto(head), "the body goes back");
+    assert_eq!(body.blocks[inner_block].term, GIRTerm::Goto(head), "the body goes back");
 }
 
 // A `for` stays one edge: there is no iterator protocol to draw it as two.
@@ -154,7 +154,7 @@ fn a_for_is_an_edge_of_its_own() {
     let block = f.block(vec![TTIRStmt::Expr { is_unsafe: false, expr: fo }], None);
     f.body(block);
     let (_, body) = graph(f);
-    assert!(terms(&body).iter().any(|t| matches!(t, CFGTerm::ForEach { .. })));
+    assert!(terms(&body).iter().any(|t| matches!(t, GIRTerm::ForEach { .. })));
 }
 
 // A `return` ends its block, and what follows is a block nothing reaches.
@@ -176,7 +176,7 @@ fn a_return_ends_the_block_it_stands_in() {
     let (_, body) = graph(f);
 
     // Two `Return`s: the one written, and the one every body ends with.
-    let returns = terms(&body).iter().filter(|t| matches!(t, CFGTerm::Return(_))).count();
+    let returns = terms(&body).iter().filter(|t| matches!(t, GIRTerm::Return(_))).count();
     assert!(returns >= 1);
     // The call after it is in a block, and the entry cannot get to it.
     let mut reachable = vec![false; body.blocks.len()];
@@ -186,7 +186,7 @@ fn a_return_ends_the_block_it_stands_in() {
             continue;
         }
         reachable[id] = true;
-        if let CFGTerm::Goto(to) = body.blocks[id].term {
+        if let GIRTerm::Goto(to) = body.blocks[id].term {
             stack.push(to);
         }
     }
@@ -211,7 +211,7 @@ fn a_let_fills_the_slot_it_was_given() {
     let set = body.blocks[body.entry]
         .stmts
         .iter()
-        .any(|s| matches!(s.kind, CFGStmtKind::Set { local, .. } if local == slot));
+        .any(|s| matches!(s.kind, GIRStmtKind::Set { local, .. } if local == slot));
     assert!(set, "{:#?}", body.blocks[body.entry].stmts);
 }
 
@@ -226,12 +226,12 @@ fn the_graph_keeps_the_types_it_was_handed() {
     let sum = f.add(a, b);
     let block = f.block(Vec::new(), Some(sum));
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
-    let added = cfg
+    let added = gir
         .exprs
         .iter()
-        .find(|e| matches!(e.kind, CFGExprKind::Binary { .. }))
+        .find(|e| matches!(e.kind, GIRExprKind::Binary { .. }))
         .expect("the addition");
     assert_eq!(added.ty, int_ty);
     // The slot the body hands back is typed as what it holds.
@@ -259,27 +259,27 @@ fn a_returned_value_is_in_a_slot_before_the_releases() {
         None,
     );
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     let at = body
         .blocks
         .iter()
-        .position(|b| matches!(b.term, CFGTerm::Return(Some(_))))
+        .position(|b| matches!(b.term, GIRTerm::Return(Some(_))))
         .expect("a block the `return` ended");
-    let CFGTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
-    let CFGExprKind::Local(slot) = cfg.exprs[value].kind else {
-        panic!("worked out in the terminator: {:?}", cfg.exprs[value].kind)
+    let GIRTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
+    let GIRExprKind::Local(slot) = gir.exprs[value].kind else {
+        panic!("worked out in the terminator: {:?}", gir.exprs[value].kind)
     };
 
     let filled = body.blocks[at]
         .stmts
         .iter()
-        .position(|s| matches!(s.kind, CFGStmtKind::Set { local, .. } if local == slot))
+        .position(|s| matches!(s.kind, GIRStmtKind::Set { local, .. } if local == slot))
         .expect("the statement that filled it");
     let released = body.blocks[at]
         .stmts
         .iter()
-        .position(|s| matches!(s.kind, CFGStmtKind::Drop { .. }))
+        .position(|s| matches!(s.kind, GIRStmtKind::Drop { .. }))
         .expect("the release the `return` left the scope by");
     assert!(filled < released, "filled at {}, released at {}", filled, released);
 }
@@ -295,15 +295,15 @@ fn a_return_with_nothing_to_release_needs_no_slot() {
     let ret = f.expr(TTIRExprKind::Return(Some(value)), ty);
     let block = f.block(vec![TTIRStmt::Expr { is_unsafe: false, expr: ret }], None);
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     let at = body
         .blocks
         .iter()
-        .position(|b| matches!(b.term, CFGTerm::Return(Some(_))))
+        .position(|b| matches!(b.term, GIRTerm::Return(Some(_))))
         .expect("a block the `return` ended");
-    let CFGTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
-    assert!(matches!(cfg.exprs[value].kind, CFGExprKind::Literal(_)));
+    let GIRTerm::Return(Some(value)) = body.blocks[at].term else { unreachable!() };
+    assert!(matches!(gir.exprs[value].kind, GIRExprKind::Literal(_)));
     assert!(body.blocks[at].stmts.is_empty());
 }
 
@@ -322,11 +322,11 @@ fn a_break_whose_value_is_wanted_by_nobody_still_works_it_out() {
     // A statement, so nothing wants what the loop is worth.
     let block = f.block(vec![f.eval(loop_)], None);
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     let called = body.blocks.iter().flat_map(|b| &b.stmts).any(|s| match s.kind {
-        CFGStmtKind::Eval(value) | CFGStmtKind::Set { value, .. } => {
-            matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+        GIRStmtKind::Eval(value) | GIRStmtKind::Set { value, .. } => {
+            matches!(gir.exprs[value].kind, GIRExprKind::Call { .. })
         }
         _ => false,
     });
@@ -351,21 +351,21 @@ fn an_operand_left_of_an_assignment_is_worked_out_first() {
     let sum = f.add(read, assign);
     let block = f.block(vec![f.let_(k, Some(sum))], None);
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     let stmts = &body.blocks[body.entry].stmts;
     let called = stmts
         .iter()
         .position(|s| match s.kind {
-            CFGStmtKind::Set { value, .. } => {
-                matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+            GIRStmtKind::Set { value, .. } => {
+                matches!(gir.exprs[value].kind, GIRExprKind::Call { .. })
             }
             _ => false,
         })
         .expect("the call in a slot of its own");
     let stored = stmts
         .iter()
-        .position(|s| matches!(s.kind, CFGStmtKind::Store { .. }))
+        .position(|s| matches!(s.kind, GIRStmtKind::Store { .. }))
         .expect("the store the assignment came to");
     assert!(called < stored, "called at {}, stored at {}", called, stored);
 }
@@ -384,14 +384,14 @@ fn an_operand_left_of_a_branch_is_worked_out_first() {
     let k = f.slot("k", int);
     let block = f.block(vec![f.let_(k, Some(sum))], None);
     f.body(block);
-    let (cfg, body) = graph(f);
+    let (gir, body) = graph(f);
 
     let entry = &body.blocks[body.entry];
-    assert!(matches!(entry.term, CFGTerm::Branch { .. }), "{:?}", entry.term);
+    assert!(matches!(entry.term, GIRTerm::Branch { .. }), "{:?}", entry.term);
     assert!(
         entry.stmts.iter().any(|s| match s.kind {
-            CFGStmtKind::Set { value, .. } => {
-                matches!(cfg.exprs[value].kind, CFGExprKind::Call { .. })
+            GIRStmtKind::Set { value, .. } => {
+                matches!(gir.exprs[value].kind, GIRExprKind::Call { .. })
             }
             _ => false,
         }),

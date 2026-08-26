@@ -180,7 +180,7 @@ impl<'a> Lowerer<'a> {
     // is an expression whose type was never worked out -- reported here,
     // because this is what has the spans.
     pub fn lower(mut self, at: Vec<String>) -> (TTIRProgram, Diagnostics) {
-        // `bool` whether the program mentions one or not: `cfg::drops` types a
+        // `bool` whether the program mentions one or not: `gir::drops` types a
         // release's flag with it, and a flag stands for a slot and not for
         // anything anybody wrote.
         self.types.prim(TIRPrim::Bool);

@@ -12,11 +12,11 @@
 // Both are marked settled in the prose and both are handed to "the checker"
 // without a pass being named. This is that pass.
 //
-// It walks the TTIR and not the CFG. The language is structured -- every branch
+// It walks the TTIR and not the GIR. The language is structured -- every branch
 // and every loop is an expression and there is no goto -- so a walk that joins
 // at an `if` and settles a loop by going round it twice reaches what a dataflow
 // over a graph would reach. What the graph does not keep is what this needs:
-// `cfg::lower` flattens the blocks a borrow's extent is measured in, drops which
+// `gir::lower` flattens the blocks a borrow's extent is measured in, drops which
 // locals were parameters, and binds a pattern's names on an edge rather than in
 // a statement.
 //
@@ -66,7 +66,7 @@
 //     given. `holds_ref` still sees the reference, so what comes of one is
 //     held to every parameter -- the elision rule's own answer, and never
 //     wrong.
-//   - Where a `Drop` runs. Settled in §2 and placed by `cfg::drops`, which is
+//   - Where a `Drop` runs. Settled in §2 and placed by `gir::drops`, which is
 //     where the graph is: "nothing at all where the value was moved away
 //     first" is a question about a program point, and a graph is what answers
 //     one. What this pass does with a move is refuse it, which wants the line

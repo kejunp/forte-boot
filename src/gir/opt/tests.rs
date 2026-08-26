@@ -1,33 +1,33 @@
 // What the simplifier makes of a graph, and what it deliberately leaves alone.
 
 use super::*;
-use crate::cfg::fixture::Fixture;
-use crate::cfg::lower::Lowerer;
-use crate::cfg::source_map::{Reason, Rewrite};
+use crate::gir::fixture::Fixture;
+use crate::gir::lower::Lowerer;
+use crate::gir::source_map::{Reason, Rewrite};
 use crate::tir::ttir_nodes::{TTIRExprKind, TTIRStmt};
 
 // Lowers a fixture and simplifies what came out.
-fn run(f: Fixture) -> (CFGProgram, CFGSourceMap, CFGBody) {
+fn run(f: Fixture) -> (GIRProgram, GIRSourceMap, GIRBody) {
     let ttir = f.p;
     let mut l = Lowerer::new(&ttir);
     l.lower();
-    let mut cfg = l.finish();
-    let map = optimize(&mut cfg);
-    let body = cfg.bodies[0].clone();
-    (cfg, map, body)
+    let mut gir = l.finish();
+    let map = optimize(&mut gir);
+    let body = gir.bodies[0].clone();
+    (gir, map, body)
 }
 
-fn branch_count(body: &CFGBody) -> usize {
+fn branch_count(body: &GIRBody) -> usize {
     let live = live_blocks(body);
     body.blocks
         .iter()
         .enumerate()
-        .filter(|(id, b)| live[*id] && matches!(b.term, CFGTerm::Branch { .. }))
+        .filter(|(id, b)| live[*id] && matches!(b.term, GIRTerm::Branch { .. }))
         .count()
 }
 
 // Every value written into a slot, which is where a folded answer ends up.
-fn set_values(cfg: &CFGProgram, body: &CFGBody) -> Vec<CFGExprKind> {
+fn set_values(gir: &GIRProgram, body: &GIRBody) -> Vec<GIRExprKind> {
     let live = live_blocks(body);
     let mut out = Vec::new();
     for (id, block) in body.blocks.iter().enumerate() {
@@ -35,8 +35,8 @@ fn set_values(cfg: &CFGProgram, body: &CFGBody) -> Vec<CFGExprKind> {
             continue;
         }
         for s in &block.stmts {
-            if let CFGStmtKind::Set { value, .. } = s.kind {
-                out.push(cfg.exprs[value].kind.clone());
+            if let GIRStmtKind::Set { value, .. } = s.kind {
+                out.push(gir.exprs[value].kind.clone());
             }
         }
     }
@@ -50,14 +50,14 @@ fn arithmetic_over_literals_folds() {
     let sum = f.add(a, b);
     let block = f.block(Vec::new(), Some(sum));
     f.body(block);
-    let (cfg, _, body) = run(f);
+    let (gir, _, body) = run(f);
 
     assert!(
-        set_values(&cfg, &body)
+        set_values(&gir, &body)
             .iter()
-            .any(|k| matches!(k, CFGExprKind::Literal(TIRLit::Int(3)))),
+            .any(|k| matches!(k, GIRExprKind::Literal(TIRLit::Int(3)))),
         "{:#?}",
-        set_values(&cfg, &body)
+        set_values(&gir, &body)
     );
 }
 
@@ -118,7 +118,7 @@ fn a_block_nothing_reaches_is_emptied() {
     for (id, block) in body.blocks.iter().enumerate() {
         if !live[id] {
             assert!(block.stmts.is_empty(), "block {} still holds statements", id);
-            assert_eq!(block.term, CFGTerm::Unreachable);
+            assert_eq!(block.term, GIRTerm::Unreachable);
         }
     }
     assert!(
@@ -135,12 +135,12 @@ fn a_fold_records_what_stood_there() {
     let sum = f.add(a, b);
     let block = f.block(Vec::new(), Some(sum));
     f.body(block);
-    let (cfg, map, _) = run(f);
+    let (gir, map, _) = run(f);
 
-    let folded = cfg
+    let folded = gir
         .exprs
         .iter()
-        .position(|e| matches!(&e.kind, CFGExprKind::Literal(TIRLit::Int(3))))
+        .position(|e| matches!(&e.kind, GIRExprKind::Literal(TIRLit::Int(3))))
         .expect("a folded 3");
     let origin = map.origin(folded).expect("an origin");
     assert_eq!(origin.why, Rewrite::Folded);
@@ -162,11 +162,11 @@ fn a_second_run_is_a_no_op() {
     let ttir = f.p;
     let mut l = Lowerer::new(&ttir);
     l.lower();
-    let mut cfg = l.finish();
-    optimize(&mut cfg);
-    let before = cfg.clone();
-    let again = optimize(&mut cfg);
+    let mut gir = l.finish();
+    optimize(&mut gir);
+    let before = gir.clone();
+    let again = optimize(&mut gir);
     assert_eq!(again.rounds, 1, "a settled graph takes one round to say so");
     assert_eq!(again.rewrites(), 0, "a settled graph is rewritten no further");
-    assert_eq!(cfg, before, "the second run moved something");
+    assert_eq!(gir, before, "the second run moved something");
 }

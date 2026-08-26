@@ -1,5 +1,5 @@
 // What a fn is compiled to. The TTIR is built by hand here for the reason
-// `cfg::fixture` builds one by hand: `sema` is what would produce a TTIR from
+// `gir::fixture` builds one by hand: `sema` is what would produce a TTIR from
 // source, which these do not go through.
 
 use super::*;

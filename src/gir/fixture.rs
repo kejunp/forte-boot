@@ -1,7 +1,7 @@
 // A TTIR built by hand, for the tests of the pass that reads one.
 //
 // `sema` builds a TTIR from a TIR, and going through it would put that pass
-// under test as well -- so the tests of `cfg::lower` make theirs here. What it builds is deliberately thin: every expression is typed
+// under test as well -- so the tests of `gir::lower` make theirs here. What it builds is deliberately thin: every expression is typed
 // because the TTIR says it must be, and nothing here cares which type, so most
 // of them are `null`.
 

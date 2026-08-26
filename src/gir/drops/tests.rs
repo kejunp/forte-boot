@@ -1,30 +1,30 @@
 // Where a release goes, and which ones run.
 
 use super::*;
-use crate::cfg::fixture::Fixture;
-use crate::cfg::lower::Lowerer;
+use crate::gir::fixture::Fixture;
+use crate::gir::lower::Lowerer;
 use crate::tir::ttir_nodes::{TTIRExprKind, TTIRStmt};
 
 // A fixture through both passes, and the body they made of it.
-fn placed(f: Fixture) -> CFGBody {
+fn placed(f: Fixture) -> GIRBody {
     let ttir = f.p;
     let mut l = Lowerer::new(&ttir);
     l.lower();
-    let mut cfg = l.finish();
+    let mut gir = l.finish();
     let copies = Copies::of(&ttir);
-    let generics: Vec<Vec<TTIRGeneric>> = vec![Vec::new(); cfg.bodies.len()];
-    Drops::new(&ttir, &copies).place(&mut cfg, &generics);
-    cfg.bodies[0].clone()
+    let generics: Vec<Vec<TTIRGeneric>> = vec![Vec::new(); gir.bodies.len()];
+    Drops::new(&ttir, &copies).place(&mut gir, &generics);
+    gir.bodies[0].clone()
 }
 
 // Every release the body holds, in the order the blocks were built -- which is
 // the order they were written.
-fn releases(body: &CFGBody) -> Vec<CFGLocalId> {
+fn releases(body: &GIRBody) -> Vec<GIRLocalId> {
     body.blocks
         .iter()
         .flat_map(|b| &b.stmts)
         .filter_map(|s| match s.kind {
-            CFGStmtKind::Drop { local } => Some(local),
+            GIRStmtKind::Drop { local } => Some(local),
             _ => None,
         })
         .collect()
@@ -32,7 +32,7 @@ fn releases(body: &CFGBody) -> Vec<CFGLocalId> {
 
 // The releases the entry can get to. What stands in a block nothing reaches is
 // not a release that runs, and is `opt`'s to take away rather than this pass's.
-fn reached(body: &CFGBody) -> Vec<CFGLocalId> {
+fn reached(body: &GIRBody) -> Vec<GIRLocalId> {
     let mut seen = vec![false; body.blocks.len()];
     let mut out = Vec::new();
     let mut stack = vec![body.entry];
@@ -42,17 +42,17 @@ fn reached(body: &CFGBody) -> Vec<CFGLocalId> {
         }
         seen[id] = true;
         out.extend(body.blocks[id].stmts.iter().filter_map(|s| match s.kind {
-            CFGStmtKind::Drop { local } => Some(local),
+            GIRStmtKind::Drop { local } => Some(local),
             _ => None,
         }));
         match &body.blocks[id].term {
-            CFGTerm::Goto(to) => stack.push(*to),
-            CFGTerm::Branch { then, els, .. } => stack.extend([*then, *els]),
-            CFGTerm::Match { arms, otherwise, .. } => {
+            GIRTerm::Goto(to) => stack.push(*to),
+            GIRTerm::Branch { then, els, .. } => stack.extend([*then, *els]),
+            GIRTerm::Match { arms, otherwise, .. } => {
                 stack.extend(arms.iter().map(|a| a.block));
                 stack.extend(otherwise.iter());
             }
-            CFGTerm::ForEach { body: b, exit, .. } => stack.extend([*b, *exit]),
+            GIRTerm::ForEach { body: b, exit, .. } => stack.extend([*b, *exit]),
             _ => {}
         }
     }
@@ -60,8 +60,8 @@ fn reached(body: &CFGBody) -> Vec<CFGLocalId> {
 }
 
 // Every branch the body ends a block on, which is how a flag shows.
-fn branches(body: &CFGBody) -> usize {
-    body.blocks.iter().filter(|b| matches!(b.term, CFGTerm::Branch { .. })).count()
+fn branches(body: &GIRBody) -> usize {
+    body.blocks.iter().filter(|b| matches!(b.term, GIRTerm::Branch { .. })).count()
 }
 
 // "a local at the end of its block" -- and only a local whose type has
