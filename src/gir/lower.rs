@@ -41,6 +41,13 @@ struct Builder {
     current: GIRBlockId,
     loops:   Vec<LoopCtx>,
     temps:   usize,
+    // The temporaries the statement being lowered made that something has to
+    // release -- "a temporary at the end of its statement" (§2). Not every
+    // temporary: only the ones holding a value the source produced and nobody
+    // keeps, which is what `kept` makes and what `close_temps` releases. The
+    // slots the lowering makes for its own sake -- a branch's answer, a value
+    // held across the releases of a `return` -- are not among them.
+    open:    Vec<GIRLocalId>,
     // The slots each open block declared, innermost last. Leaving one is where
     // its slots are released, in the reverse of the order they were bound:
     // "locals in the reverse of it, which is the order that lets a later one
@@ -177,6 +184,26 @@ impl<'a> Lowerer<'a> {
         b.locals.len() - 1
     }
 
+    // A temporary the statement holds until its end: the same slot, and a note
+    // that something is in it. A type with nothing to release needs no note --
+    // there would be no release to write.
+    fn kept(&mut self, ty: TyId) -> GIRLocalId {
+        let slot = self.temp(ty);
+        if self.b().locals[slot].drops {
+            self.b().open.push(slot);
+        }
+        slot
+    }
+
+    // The end of a statement: every temporary it made goes, in the reverse of
+    // the order they were made, as a block's locals do. Unconditional, like
+    // every release the lowering places -- one the statement moved away from
+    // is `gir::drops`' to take back out.
+    fn close_temps(&mut self, mark: usize, at: TTIRExprId) {
+        let held: Vec<GIRLocalId> = self.b().open.split_off(mark);
+        self.release(&held, at);
+    }
+
     fn local(&mut self, id: GIRLocalId, at: TTIRExprId) -> GIRExprId {
         let ty = self.b().locals[id].ty;
         self.push_expr(GIRExprKind::Local(id), ty, at)
@@ -212,6 +239,7 @@ impl<'a> Lowerer<'a> {
             current: 0,
             loops:   Vec::new(),
             temps:   0,
+            open:    Vec::new(),
             // The outermost scope is the frame's, and what it holds is the
             // parameters: they were filled by the caller and they go when the
             // body does, which is one scope further out than anything the body
@@ -245,6 +273,10 @@ impl<'a> Lowerer<'a> {
     // ---- Statements ------------------------------------------------------
 
     fn stmt(&mut self, stmt: &TTIRStmt) {
+        // What the statement makes for itself goes at the end of it, which is
+        // what this marks the start of. Nested, so a statement inside a block
+        // inside a statement closes its own and not the ones around it.
+        let mark = self.b().open.len();
         match stmt {
             TTIRStmt::Let { is_unsafe, local, init } => {
                 if let Some(scope) = self.b().scopes.last_mut() {
@@ -261,6 +293,7 @@ impl<'a> Lowerer<'a> {
                             *init,
                         );
                     }
+                    self.close_temps(mark, *init);
                 }
             }
             TTIRStmt::Expr { is_unsafe, expr } => {
@@ -271,10 +304,17 @@ impl<'a> Lowerer<'a> {
                     let place = self.value(place);
                     let v = self.value(value);
                     self.emit(GIRStmtKind::Store { place, op, value: v }, *is_unsafe, *expr);
+                } else if self.drops(self.ty(*expr)) {
+                    // The same as `discard`: a value nobody keeps still has to
+                    // be released, and it needs a slot to be released from.
+                    let slot = self.kept(self.ty(*expr));
+                    let value = self.value(*expr);
+                    self.emit(GIRStmtKind::Set { local: slot, value }, *is_unsafe, *expr);
                 } else {
                     let v = self.value(*expr);
                     self.emit(GIRStmtKind::Eval(v), *is_unsafe, *expr);
                 }
+                self.close_temps(mark, *expr);
             }
             // A declaration written inside a body is a declaration of the
             // program's, and its own body is lowered with the rest.
@@ -412,15 +452,41 @@ impl<'a> Lowerer<'a> {
             }
 
             TTIRExprKind::For { local, iter, body } => {
-                let it = self.value(iter);
-                let (inner, exit) = (self.new_block(body), self.new_block(id));
+                // The iterator is worked out once, into a slot. A loop is a
+                // head that is come back to, and what the terminator takes the
+                // next of has to be the same iterator every turn round rather
+                // than the expression written for it, run again.
+                let held = self.kept(self.ty(iter));
+                self.into(iter, held);
+                let (head, inner, exit) =
+                    (self.new_block(iter), self.new_block(body), self.new_block(id));
+                self.terminate(GIRTerm::Goto(head));
+
+                // The head, which is where the loop ends as well as where it
+                // goes round: the two edges of a `ForEach` are the turn and
+                // the way out, and both are answered here and nowhere else.
+                self.switch_to(head);
+                let it = self.local(held, iter);
+                // What the loop takes the next of, it takes: `gir::drops` reads
+                // the terminator as emptying the slot, so nothing releases the
+                // iterator afterwards and the binding is what goes each turn.
+                // Whether that is the right division is the iterator protocol's
+                // to settle, and the language has none.
                 self.terminate(GIRTerm::ForEach { local, iter: it, body: inner, exit });
+
                 self.switch_to(inner);
                 let depth = self.b().scopes.len();
-                self.b().loops.push(LoopCtx { brk: exit, cont: inner, value: dest, depth });
+                // The binding is the body's and a fresh one each turn, so it
+                // is released at the end of every one -- a local of the block,
+                // and held in a scope of its own because the block opens its
+                // own for what it declares itself.
+                self.b().scopes.push(vec![local]);
+                self.b().loops.push(LoopCtx { brk: exit, cont: head, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
-                self.terminate(GIRTerm::Goto(inner));
+                self.close_scope(id);
+                self.terminate(GIRTerm::Goto(head));
+
                 self.switch_to(exit);
                 self.fill_null(dest, id);
             }
@@ -461,12 +527,17 @@ impl<'a> Lowerer<'a> {
                 // slot stands in no scope, so nothing here releases it, and the
                 // move into it is written where `drops` can see it comes first.
                 let value = value.map(|v| {
-                    if self.releases_below(0) {
+                    // Worked out first, and asked afterwards whether it has to
+                    // be kept: what the unwinding releases is not known until
+                    // it is, since working it out is what makes the
+                    // temporaries the statement holds.
+                    let built = self.value(v);
+                    if self.releases_below(0) && !self.settled(built) {
                         let slot = self.temp(self.ty(v));
-                        self.into(v, slot);
+                        self.emit(GIRStmtKind::Set { local: slot, value: built }, false, v);
                         self.local(slot, v)
                     } else {
-                        self.value(v)
+                        built
                     }
                 });
                 // Everything still open goes, innermost first. The value has
@@ -524,13 +595,32 @@ impl<'a> Lowerer<'a> {
         self.release(&held, at);
     }
 
+    // Whether what was built already stands in a slot that nothing being left
+    // releases -- a temporary the lowering made for its own sake, which is
+    // where `value` puts anything that branched. One of those needs no second
+    // slot to survive the releases; it was never in reach of them.
+    fn settled(&mut self, value: GIRExprId) -> bool {
+        let slot = match self.gir.exprs[value].kind {
+            GIRExprKind::Local(slot) => slot,
+            _ => return false,
+        };
+        let b = self.b();
+        !b.open.contains(&slot) && !b.scopes.iter().flatten().any(|&held| held == slot)
+    }
+
     // Whether leaving every scope down to `depth` would release anything. A
     // value that has to outlive those releases is put in a slot first, and
     // where there is nothing to outlive the expression stands as it was
     // written -- a slot per `return` in a body that releases nothing would be
     // a node the graph has no use for.
+    //
+    // The temporaries of the statement being lowered count: leaving by a jump
+    // releases those as well, and `return mk().n` is a read of one of them.
     fn releases_below(&mut self, depth: usize) -> bool {
         let b = self.b();
+        if !b.open.is_empty() {
+            return true;
+        }
         let (scopes, locals) = (&b.scopes, &b.locals);
         scopes[depth..].iter().flatten().any(|&local| locals[local].drops)
     }
@@ -539,6 +629,12 @@ impl<'a> Lowerer<'a> {
     // `depth` goes, innermost first, and the ones below it stay open because
     // the block being jumped out of is still inside them.
     fn unwind_to(&mut self, depth: usize, at: TTIRExprId) {
+        // The statement is being left as well as the blocks, so what it made
+        // goes too, and first: a temporary stands inside everything a block
+        // declared. Not taken off the list, for the same reason the scopes go
+        // back on -- what follows the jump is unreachable but still lowered.
+        let temps = self.b().open.clone();
+        self.release(&temps, at);
         let mut open: Vec<Vec<GIRLocalId>> = Vec::new();
         while self.b().scopes.len() > depth {
             open.push(self.b().scopes.pop().unwrap_or_default());
@@ -567,6 +663,13 @@ impl<'a> Lowerer<'a> {
     fn discard(&mut self, id: TTIRExprId) {
         if branches(&self.kind(id)) {
             self.flow(id, None);
+        } else if self.drops(self.ty(id)) {
+            // Discarded is not the same as gone: `mk()` on a line of its own
+            // makes a value nobody keeps, and a value nobody keeps is exactly
+            // what "a temporary at the end of its statement" is about. It
+            // needs a slot to be released from.
+            let slot = self.kept(self.ty(id));
+            self.into(id, slot);
         } else {
             let v = self.value(id);
             self.emit(GIRStmtKind::Eval(v), false, id);
@@ -581,6 +684,29 @@ impl<'a> Lowerer<'a> {
             let value = self.push_expr(GIRExprKind::Literal(TIRLit::Null), ty, at);
             self.emit(GIRStmtKind::Set { local: slot, value }, false, at);
         }
+    }
+
+    // What is reached into, worked out into a slot where it is a value the
+    // statement made rather than somewhere the source can name. `mk().n` reads
+    // a field of a value nobody keeps, and unless that value is in a slot
+    // there is nothing for the end of the statement to release.
+    //
+    // A place is left alone: it is already somewhere, and putting it in a slot
+    // would make a copy and read the field of the copy.
+    fn based(&mut self, id: TTIRExprId) -> GIRExprId {
+        let ty = self.ty(id);
+        if self.drops(ty) && !place(&self.ttir.exprs[id].kind) {
+            let slot = self.kept(ty);
+            self.into(id, slot);
+            return self.local(slot, id);
+        }
+        self.value(id)
+    }
+
+    // Whether a type has anything to release, answered for the declaration the
+    // body being lowered stands in.
+    fn drops(&self, ty: TyId) -> bool {
+        self.copies.drops(ty, self.ttir, &self.generic)
     }
 
     // The operands of one expression, in the order they were written, with
@@ -682,10 +808,10 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::SelfExpr => GIRExprKind::SelfExpr,
 
             TTIRExprKind::Field { base, index } => {
-                GIRExprKind::Field { base: self.value(base), index }
+                GIRExprKind::Field { base: self.based(base), index }
             }
             TTIRExprKind::TupleIndex { base, index } => {
-                GIRExprKind::TupleIndex { base: self.value(base), index }
+                GIRExprKind::TupleIndex { base: self.based(base), index }
             }
             TTIRExprKind::Call { callee, args } => {
                 let mut all = vec![callee];
@@ -697,15 +823,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
             TTIRExprKind::Method { recv, item, args } => GIRExprKind::Method {
-                // The receiver stays where it is: a method may be written for
-                // `&self` or `*self`, and a receiver put in a slot is a copy
-                // of the thing that was to be reached through.
-                recv: self.value(recv),
+                // Reached into rather than handed over, so the same as a
+                // base: a slot only where the receiver is a value the
+                // statement made and nobody keeps. A receiver that is already
+                // a place stays one -- a method may be written for `&self` or
+                // `*self`, and a place put in a slot is a copy of the thing
+                // that was to be reached through.
+                recv: self.based(recv),
                 item,
                 args: self.operands(&args),
             },
             TTIRExprKind::Index { base, index } => {
-                GIRExprKind::Index { base: self.value(base), index: self.value(index) }
+                GIRExprKind::Index { base: self.based(base), index: self.value(index) }
             }
             TTIRExprKind::StructLit { item, fields } => {
                 GIRExprKind::StructLit { item, fields: self.operands(&fields) }
@@ -767,6 +896,21 @@ impl<'a> Lowerer<'a> {
         };
         self.push_expr(kind, ty, id)
     }
+}
+
+// Somewhere the source can name, which is somewhere a value already is. What
+// is not one is a value that was worked out, and the difference is whether
+// reaching into it needs a slot to reach into.
+fn place(kind: &TTIRExprKind) -> bool {
+    matches!(
+        kind,
+        TTIRExprKind::Local(_)
+            | TTIRExprKind::Item(_)
+            | TTIRExprKind::SelfExpr
+            | TTIRExprKind::Field { .. }
+            | TTIRExprKind::TupleIndex { .. }
+            | TTIRExprKind::Index { .. }
+    )
 }
 
 // Whether lowering this expression means adding edges to the graph rather than
