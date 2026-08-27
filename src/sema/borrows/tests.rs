@@ -4,8 +4,8 @@
 use super::*;
 use crate::error::Source;
 use crate::tir::tir_nodes::{
-    TIRFnUses,
-    TIRAssignOp, TIRAttrs, TIRFnAttrs, TIRInline, TIRIntro, TIRLit, TIRPrim, TIRVis,
+    TIRAssignOp, TIRAttrs, TIRBinding, TIRFnAttrs, TIRFnUses, TIRInline, TIRIntro, TIRLit,
+    TIRPrim, TIRRefOp, TIRSelf, TIRUnaryOp, TIRVis,
 };
 use crate::tir::ttir_nodes::*;
 
@@ -15,7 +15,7 @@ use crate::tir::ttir_nodes::*;
 struct Suite {
     p:      TTIRProgram,
     locals: Vec<TTIRLocal>,
-    line:   usize,
+    pub(super) line:   usize,
 }
 
 impl Suite {
@@ -86,7 +86,7 @@ impl Suite {
         }))
     }
 
-    fn expr(&mut self, kind: TTIRExprKind, ty: TyId) -> TTIRExprId {
+    pub(super) fn expr(&mut self, kind: TTIRExprKind, ty: TyId) -> TTIRExprId {
         self.line += 1;
         let line = self.line;
         self.p.exprs.push(TTIRExpr { kind, ty, line, col: 1 });
@@ -160,7 +160,7 @@ impl Suite {
         self.shut(outer, empty, captures)
     }
 
-    fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
+    pub(super) fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
         self.expr(TTIRExprKind::Block { stmts, tail }, Self::NULL)
     }
 
