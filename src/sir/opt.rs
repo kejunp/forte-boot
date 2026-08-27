@@ -100,6 +100,7 @@ use super::alias::{Alias, Base};
 use super::dom::Dominators;
 use super::loops::{preheader, Loop};
 use super::promote::promote;
+use super::target::{self, Target};
 use super::sir_nodes::*;
 
 // Rounds before the loop gives up. A body settles in two or three; the cap is
@@ -123,8 +124,8 @@ const MAX_ROUNDS: usize = 8;
 //   guess.
 //
 //   And one widens it: running the turns of a loop several at a time, which
-//   needs the other two kinds to have gone first and is the least settled
-//   thing here.
+//   needs the other two kinds to have gone first and needs something the rest
+//   of this compiler has no opinion about -- a machine. See `sir::target`.
 //
 // So: nothing, the first kind, the first two, and all three with the guesses
 // turned up. Which is what `-O0` through `-O3` mean everywhere else, and there
@@ -141,7 +142,8 @@ pub enum Level {
     // at unless something says otherwise.
     #[default]
     Default,
-    // And the widening, with the bounds on the copying raised.
+    // And the widening, with the bounds on the copying raised. What is widened
+    // and how far is the target's to say; this only says to ask it.
     More,
 }
 
@@ -214,15 +216,6 @@ impl Level {
             _ => 96,
         }
     }
-
-    // How many turns of a loop are run at once. Four because four is what the
-    // machines this would be compiled for have had for thirty years, and
-    // because there is no back end to ask -- see the note at the foot of this
-    // file, where the same guess is the reason the whole rewrite waits at
-    // `-O3` rather than standing with the rest.
-    fn lanes(self) -> usize {
-        4
-    }
 }
 
 // What the pass did, for the driver to print. Nothing reads it but the message.
@@ -252,7 +245,12 @@ pub struct Stats {
     pub promoted:  usize,
 }
 
-pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram, level: Level) -> Stats {
+pub fn optimize(
+    program: &mut SIRProgram,
+    ttir: &TTIRProgram,
+    level: Level,
+    target: Target,
+) -> Stats {
     let mut stats = Stats::default();
     if !level.shrinks() {
         return stats;
@@ -268,7 +266,7 @@ pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram, level: Level) -> S
             changed = true;
         }
         for body in &mut program.bodies {
-            changed |= clean(body, ttir, level, &mut stats);
+            changed |= clean(body, ttir, level, target, &mut stats);
         }
         stats.rounds = round;
         if !changed {
@@ -281,7 +279,13 @@ pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram, level: Level) -> S
 // One body, until the six have nothing left. The inner loop is here rather
 // than only in `optimize` so that a body settles without waiting on the whole
 // program to go round again.
-fn clean(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats) -> bool {
+fn clean(
+    body: &mut SIRBody,
+    ttir: &TTIRProgram,
+    level: Level,
+    target: Target,
+    stats: &mut Stats,
+) -> bool {
     let mut ever = false;
     for _ in 0..level.rounds() {
         let mut changed = false;
@@ -295,7 +299,7 @@ fn clean(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats
         changed |= forward(body, ttir, stats);
         changed |= overwritten(body, stats);
         if level.widens() {
-            changed |= vectorize(body, ttir, level, stats);
+            changed |= vectorize(body, ttir, target, stats);
         }
         changed |= branches(body, stats);
         changed |= merge(body, stats);
@@ -1982,8 +1986,17 @@ fn written_round(body: &mut SIRBody, held: &Loop, turns: &Turns, exit: SIRBlockI
 //   - nothing being grouped may trap or have an effect, because a vector
 //     instruction is one instruction and cannot trap for the third lane only:
 //     `effects`, the same answer `sweep` and `hoist` are held to;
-//   - and the group has to be as wide as the machine's, which is the one
-//     thing here nothing can answer. See `Level::lanes`.
+//   - and the machine has to be able to do it: as many at once as fit in one
+//     of its registers, and an instruction that exists over that many. That is
+//     `sir::target`, which is a description of a machine rather than a guess
+//     about one -- there is no integer divide over a vector on anything, so
+//     four divisions stay four however neatly they line up.
+//
+// And then, having found a group it *may* make, it asks whether it should.
+// Four instructions become one, which is a saving; four values that have to be
+// put into a register one at a time are four instructions, which is not. See
+// `pays`, where the two are counted against each other, and where an
+// instruction something else still reads counts as no saving at all.
 //
 // Nothing is taken out. The scalar instructions are left where they are and
 // `sweep` removes the ones nothing reads any more, which is what makes this
@@ -1994,6 +2007,9 @@ const WIDE_DEEP: usize = 4;
 // What a lane of a group is made of.
 struct Group {
     ty:   TyId,
+    // The values it stands for, one per lane. What the cost of leaving them
+    // alone is worked out from.
+    vals: Vec<SIRValueId>,
     plan: Plan,
 }
 
@@ -2008,70 +2024,200 @@ enum Plan {
     Gather(Vec<SIRValueId>),
 }
 
-fn vectorize(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats) -> bool {
-    let lanes = level.lanes();
+fn vectorize(
+    body: &mut SIRBody,
+    ttir: &TTIRProgram,
+    target: Target,
+    stats: &mut Stats,
+) -> bool {
+    if target.bytes == 0 {
+        return false;
+    }
     let live = body.live();
     for at in 0..body.blocks.len() {
         if !live[at] {
             continue;
         }
-        // One at a time: widening a run rewrites the block's list, and the
-        // next seed is looked for in what that left.
-        if let Some(run) = seed(body, ttir, at, lanes) {
-            widen(body, ttir, at, &run, lanes, stats);
+        let alias = Alias::of(body);
+        let held = made(body);
+        let counted = counts(body);
+        for run in runs(body, ttir, &alias, &held, target, at) {
+            let vals: Vec<SIRValueId> = run
+                .at
+                .iter()
+                .map(|&index| match body.blocks[at].insts[index].kind {
+                    SIRInstKind::Store { value, .. } => value,
+                    _ => unreachable!("a run is a run of stores"),
+                })
+                .collect();
+            let group = grouped(body, ttir, &alias, &held, &vals, 0);
+            if !target_does(ttir, target, &group, run.lanes) {
+                continue;
+            }
+            if !pays(target, &counted, &group, run.lanes) {
+                continue;
+            }
+            // One at a time: widening a run rewrites the block's list, and the
+            // next is looked for in what that left.
+            widen(body, at, &run, &group, stats);
             return true;
         }
     }
     false
 }
 
-// Where each of the run's stores stands, in the order they were written.
+// Where each of a run's stores stands, in the order they were written.
 struct Run {
     // The instruction each store is, by its place in the block.
     at:    Vec<usize>,
     // And the address each writes to, in the same order.
     addrs: Vec<SIRValueId>,
+    // How many of them there are, which is what the target said fits.
+    lanes: usize,
 }
 
-// A run of stores to neighbouring elements of one thing, with nothing between
+// Every run of stores in the block that writes neighbouring elements of one
+// thing, as many of them at a time as the machine holds, with nothing between
 // them that may read or write where they do.
-fn seed(body: &SIRBody, ttir: &TTIRProgram, at: SIRBlockId, lanes: usize) -> Option<Run> {
-    if lanes < 2 {
-        return None;
-    }
-    let alias = Alias::of(body);
-    let held = made(body);
-
+fn runs(
+    body: &SIRBody,
+    ttir: &TTIRProgram,
+    alias: &Alias,
+    held: &[Option<SIRInstKind>],
+    target: Target,
+    at: SIRBlockId,
+) -> Vec<Run> {
     // Every store in the block that writes an element whose number is known.
-    let mut writes: Vec<(usize, SIRValueId, i64, SIRValueId)> = Vec::new();
+    let mut writes: Vec<(usize, SIRValueId, i64, SIRValueId, SIRValueId)> = Vec::new();
     for (index, inst) in body.blocks[at].insts.iter().enumerate() {
-        let SIRInstKind::Store { to, .. } = inst.kind else { continue };
+        let SIRInstKind::Store { to, value } = inst.kind else { continue };
         let Some(Some(SIRInstKind::IndexAddr { base, index: which })) = held.get(to) else {
             continue;
         };
-        let Some(TIRLit::Int(n)) = lit_of(&held, *which) else { continue };
-        writes.push((index, *base, *n, to));
+        let Some(TIRLit::Int(n)) = lit_of(held, *which) else { continue };
+        writes.push((index, *base, *n, to, value));
     }
 
+    let mut out = Vec::new();
     for start in 0..writes.len() {
-        if start + lanes > writes.len() {
-            break;
+        // How many fit is a question about what is being written, so it is
+        // asked of the first of them and the rest are held to that.
+        let Some(width) = target::size(ttir, body.values[writes[start].4].ty) else { continue };
+        // As many as the register holds, and then half as many, and so on
+        // down to two. A register filled halfway is still a register: what a
+        // machine holds is a ceiling and not a quota, and refusing to write
+        // four of something out on a machine that could have held eight would
+        // leave every short array alone on the widest machines.
+        let mut lanes = target.lanes(width);
+        while lanes >= 2 {
+            if start + lanes <= writes.len() {
+                let group = &writes[start..start + lanes];
+                let neighbours = (1..lanes).all(|j| {
+                    group[j].2 == group[0].2 + j as i64 && alias.must(group[j].1, group[0].1)
+                });
+                let addrs: Vec<SIRValueId> = group.iter().map(|w| w.3).collect();
+                let places: Vec<usize> = group.iter().map(|w| w.0).collect();
+                if neighbours && settled(body, ttir, alias, at, &places, &addrs) {
+                    out.push(Run { at: places, addrs, lanes });
+                    break;
+                }
+            }
+            lanes /= 2;
         }
-        let group = &writes[start..start + lanes];
-        let neighbours = (1..lanes).all(|j| {
-            group[j].2 == group[0].2 + j as i64 && alias.must(group[j].1, group[0].1)
-        });
-        if !neighbours {
-            continue;
-        }
-        let addrs: Vec<SIRValueId> = group.iter().map(|(_, _, _, to)| *to).collect();
-        let places: Vec<usize> = group.iter().map(|(index, ..)| *index).collect();
-        if !settled(body, ttir, &alias, at, &places, &addrs) {
-            continue;
-        }
-        return Some(Run { at: places, addrs });
     }
-    None
+    out
+}
+
+// Whether the machine has an instruction for every step of the plan.
+//
+// Without this a group of four field reads would be written out as a "wide
+// field read", which is not a thing: `grouped` will happily find that four
+// instructions are the same instruction, and being the same is not the same as
+// being one the machine can do at once.
+fn target_does(ttir: &TTIRProgram, target: Target, group: &Group, lanes: usize) -> bool {
+    let Some(p) = target::prim(ttir, group.ty) else { return false };
+    if target::size_of(p).is_none() {
+        return false;
+    }
+    match &group.plan {
+        // Moving values about, which every machine with vectors can do.
+        Plan::Splat(_) | Plan::Gather(_) | Plan::Run { .. } => true,
+        Plan::Same { kind, args } => {
+            target.does(kind, p, lanes)
+                && args.iter().all(|arg| target_does(ttir, target, arg, lanes))
+        }
+    }
+}
+
+// Whether the wide instructions cost less than the narrow ones they stand for.
+//
+// The narrow side counts only what would actually go. An instruction whose
+// value something outside the group also reads is an instruction that stays
+// where it is however the group is written, so counting it as saved would be
+// counting a saving that does not happen -- which is the way a cost model
+// talks itself into a rewrite that makes things worse.
+//
+// The wide side counts what has to be built. A group whose operands were
+// already lined up -- neighbouring elements, or one value in every lane --
+// costs one instruction to read; a group whose operands have to be fetched one
+// at a time costs an insert each, and that is usually the whole difference
+// between a group worth making and one that is not.
+fn pays(target: Target, counted: &[usize], group: &Group, lanes: usize) -> bool {
+    // The stores themselves: `lanes` of them become one.
+    let (narrow, wide) = costs(target, counted, group, lanes);
+    narrow + lanes > wide + 1
+}
+
+fn costs(target: Target, counted: &[usize], group: &Group, lanes: usize) -> (usize, usize) {
+    // How many of the lanes are read by nothing but this group, and so go.
+    let goes = || group.vals.iter().filter(|&&v| counted.get(v) == Some(&1)).count();
+    match &group.plan {
+        // Already worked out, and staying: nothing is saved, and putting them
+        // side by side costs an insert each.
+        Plan::Gather(_) => (0, lanes * target.insert),
+        // One value in every lane is one broadcast.
+        Plan::Splat(_) => (0, 1),
+        Plan::Run { .. } => (goes(), 1),
+        Plan::Same { kind, args } => {
+            let mut narrow = goes();
+            let mut wide = target.cost(kind);
+            for arg in args {
+                let (n, w) = costs(target, counted, arg, lanes);
+                narrow += n;
+                wide += w;
+            }
+            (narrow, wide)
+        }
+    }
+}
+
+// How many times each value is read, which is what says whether taking one
+// instruction out would take it out.
+fn counts(body: &SIRBody) -> Vec<usize> {
+    let mut out = vec![0; body.values.len()];
+    let count = |value: SIRValueId, out: &mut Vec<usize>| {
+        if value < out.len() {
+            out[value] += 1;
+        }
+    };
+    for block in &body.blocks {
+        for phi in &block.phis {
+            for (_, value) in &phi.edges {
+                count(*value, &mut out);
+            }
+        }
+        for inst in &block.insts {
+            for value in SIRBody::uses(&inst.kind) {
+                count(value, &mut out);
+            }
+        }
+        match &block.term {
+            SIRTerm::Branch { cond, .. } => count(*cond, &mut out),
+            SIRTerm::Return(Some(value)) => count(*value, &mut out),
+            _ => {}
+        }
+    }
+    out
 }
 
 // Whether the stores may be brought together at the last of them: nothing
@@ -2124,15 +2270,15 @@ fn grouped(
     depth: usize,
 ) -> Group {
     let ty = body.values[vals[0]].ty;
-    let gather = |vals: &[SIRValueId]| Group { ty, plan: Plan::Gather(vals.to_vec()) };
+    let gather = || Group { ty, vals: vals.to_vec(), plan: Plan::Gather(vals.to_vec()) };
 
     // The same value in every lane, which is how a thing that does not vary
     // with the turn joins a group of things that do.
     if vals.iter().all(|&v| v == vals[0]) {
-        return Group { ty, plan: Plan::Splat(vals[0]) };
+        return Group { ty, vals: vals.to_vec(), plan: Plan::Splat(vals[0]) };
     }
     if depth >= WIDE_DEEP {
-        return gather(vals);
+        return gather();
     }
 
     // Neighbouring elements of one aggregate.
@@ -2154,7 +2300,11 @@ fn grouped(
         });
         if run {
             if let Ok(first) = u64::try_from(elems[0].1) {
-                return Group { ty, plan: Plan::Run { of: elems[0].0, at: first } };
+                return Group {
+                    ty,
+                    vals: vals.to_vec(),
+                    plan: Plan::Run { of: elems[0].0, at: first },
+                };
             }
         }
     }
@@ -2169,24 +2319,24 @@ fn grouped(
             _ => None,
         })
         .collect();
-    let Some(kinds) = kinds else { return gather(vals) };
+    let Some(kinds) = kinds else { return gather() };
     let first = shape(&kinds[0]);
     if !kinds.iter().all(|kind| shape(kind) == first) {
-        return gather(vals);
+        return gather();
     }
     let width = SIRBody::uses(&kinds[0]).len();
     // Nothing to group under it, and nothing above it either: an instruction
     // with no operands is the same instruction in every lane only if it is
     // literally the same value, which the splat above has already answered.
     if width == 0 {
-        return gather(vals);
+        return gather();
     }
     let mut args = Vec::new();
     for arg in 0..width {
         let lane: Vec<SIRValueId> = kinds.iter().map(|kind| SIRBody::uses(kind)[arg]).collect();
         args.push(grouped(body, ttir, alias, held, &lane, depth + 1));
     }
-    Group { ty, plan: Plan::Same { kind: kinds[0].clone(), args } }
+    Group { ty, vals: vals.to_vec(), plan: Plan::Same { kind: kinds[0].clone(), args } }
 }
 
 // An instruction with its operands blanked, which is what makes two of them
@@ -2201,30 +2351,11 @@ fn shape(kind: &SIRInstKind) -> SIRInstKind {
 
 // The group written out, and the run of stores replaced by the one that writes
 // all of it.
-fn widen(
-    body: &mut SIRBody,
-    ttir: &TTIRProgram,
-    at: SIRBlockId,
-    run: &Run,
-    lanes: usize,
-    stats: &mut Stats,
-) {
-    let alias = Alias::of(body);
-    let held = made(body);
-    let vals: Vec<SIRValueId> = run
-        .at
-        .iter()
-        .map(|&index| match body.blocks[at].insts[index].kind {
-            SIRInstKind::Store { value, .. } => value,
-            _ => unreachable!("a run is a run of stores"),
-        })
-        .collect();
-    let group = grouped(body, ttir, &alias, &held, &vals, 0);
-
+fn widen(body: &mut SIRBody, at: SIRBlockId, run: &Run, group: &Group, stats: &mut Stats) {
     let last = run.at[run.at.len() - 1];
     let (line, col) = (body.blocks[at].insts[last].line, body.blocks[at].insts[last].col);
     let mut out = Vec::new();
-    let value = write(body, &group, lanes, line, col, &mut out);
+    let value = write(body, group, run.lanes, line, col, &mut out);
     stats.widened += 1;
 
     // The scalar stores go and the vector one stands where the last of them
@@ -2561,38 +2692,44 @@ fn written_out(caller: &mut SIRBody, callee: &SIRBody, site: &Site) {
 
 // ---- What is left after the widening --------------------------------------
 //
-// `vectorize` above is the SLP pass, and it does what a vectorizer here can do
-// without a back end: it finds the same instruction being applied to
-// neighbouring places and writes it once over several of them. What it cannot
-// do is know whether that was worth doing, and that is the honest state of it.
+// `vectorize` above is the SLP pass. It finds the same instruction applied to
+// neighbouring places, asks `sir::target` whether the machine can do that to
+// several at once and how many, weighs the instructions it would save against
+// the ones it would have to add, and writes it once over the lot if that comes
+// out ahead. Which is the whole of the shape a vectorizer has; what is left is
+// how much it knows.
 //
-// Two things are still guesses. How wide a vector may be is `Level::lanes`,
-// and it says four because four is what the machines this would be compiled
-// for have had for thirty years -- not because anything here worked it out.
-// And what a wide instruction costs against the narrow ones it replaced is a
-// question with no answer at all until something emits code: `widen` takes
-// every group it can prove is safe, because "safe" is the only half of the
-// decision that can be made from here.
+// The target descriptions are coarse, and deliberately so: a register width, a
+// flag for the multiply that arrived late, a flag for shifts that differ by
+// lane, and what an insert costs. Every one of those is a claim about hardware
+// that can be checked and changed. What is *not* there is anything about how
+// long an instruction takes, how many may go at once, or what a load costs
+// when it misses -- and none of that can be added honestly until something
+// measures a machine, which needs a back end to measure.
 //
-// That is why it stands at `-O3` alone rather than beside the rest. Everything
-// else in this file is a rewrite that is worth making on any machine; this one
-// is a rewrite that is *correct* on any machine and worth making on some.
+// So the costs are counted in instructions, and one instruction is one unit.
+// That is right about the thing that matters most here -- a vector add does
+// four adds and costs one -- and silent about everything else. A group that
+// this makes is a group that is nearly certainly worth making; a group it
+// turns down on cost is one it is only fairly sure about.
 //
 // What would sharpen it, in the order the work would be done:
 //
-//   - a target, which settles the width, says which operations exist over a
-//     vector, and gives `widen` a cost to weigh a group against rather than
-//     taking every one it can;
+//   - a back end, which is what makes a cost a measurement rather than a
+//     claim, and what would let `Target` carry a number per instruction
+//     instead of one number for all of them;
 //   - seeds other than stores. A run of writes is the clearest group there is
 //     and it is not the only one: a reduction -- four adds into one running
 //     total -- is the other shape loops are full of, and it needs the adds
 //     reassociated before they can be grouped, which is a rewrite this file
 //     does not have;
-//   - and `Lanes` over memory. A run read out of an aggregate *value* is what
-//     this emits, because that is what the lowering leaves; a run read
-//     straight out of memory would need the load and the extraction to be one
-//     instruction, which is a change to what `sir::lower` builds rather than
-//     to what is made of it.
+//   - `Lanes` over memory. A run read out of an aggregate *value* is what this
+//     emits, because that is what the lowering leaves; a run read straight out
+//     of memory would need the load and the extraction to be one instruction,
+//     which is a change to what `sir::lower` builds rather than to what is
+//     made of it;
+//   - and a group that is wider than the register, written out as two. What
+//     falls back to a narrower group now could as well go the other way.
 
 #[cfg(test)]
 mod tests;

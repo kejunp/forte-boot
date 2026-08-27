@@ -17,6 +17,7 @@ use crate::tir::ttir_nodes::*;
 
 use super::lower::Lowerer;
 use super::opt::{optimize, Level, Stats};
+use super::target::{self, Target};
 use super::promote::promote;
 use super::sir_nodes::*;
 use super::verify::{verify, verify_order};
@@ -343,6 +344,13 @@ pub fn worked(f: Fixture) -> (SIRProgram, Stats) {
     worked_at(f, Level::Default)
 }
 
+// The machine the tests are written against. Named rather than left to the
+// host, so that what a test asserts about how many lanes something came out in
+// is a fact about the test and not about where it was run.
+pub fn machine() -> Target {
+    target::X86_64
+}
+
 // And at a level of one's choosing, for the tests that are about what a level
 // turns on -- and for the widening, which stands at the top one alone.
 pub fn worked_at(f: Fixture, level: Level) -> (SIRProgram, Stats) {
@@ -353,7 +361,7 @@ pub fn worked_at(f: Fixture, level: Level) -> (SIRProgram, Stats) {
     sound(&out);
     promote(&mut out);
     sound(&out);
-    let stats = optimize(&mut out, &ttir, level);
+    let stats = optimize(&mut out, &ttir, level, machine());
     sound(&out);
     (out, stats)
 }

@@ -70,4 +70,5 @@ pub mod lower;
 pub mod opt;
 pub mod promote;
 pub mod sir_nodes;
+pub mod target;
 pub mod verify;

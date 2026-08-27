@@ -118,7 +118,12 @@ fn dump_parse(path: &str, source: &str) {
 //
 // `false` where the build stopped. A warning is not that, so a report that is
 // not empty is not the same as a compilation that failed.
-fn compile(root: &Path, search_paths: Vec<PathBuf>, level: sir::opt::Level) -> bool {
+fn compile(
+    root: &Path,
+    search_paths: Vec<PathBuf>,
+    level: sir::opt::Level,
+    target: sir::target::Target,
+) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
     // so there is no `import` to point a caret at.
@@ -190,12 +195,12 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>, level: sir::opt::Level) -> b
         // instruction count is what this moves, so it is counted either side
         // rather than at the end.
         let insts = instructions(&ssa);
-        let worked = sir::opt::optimize(&mut ssa, &ttir, level);
+        let worked = sir::opt::optimize(&mut ssa, &ttir, level, target);
 
         println!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
-             {} instructions ({} after {:?}: {} calls written out, {} loops unrolled, \
+             {} instructions ({} after {:?} for {}: {} calls written out, {} loops unrolled, \
              {} lifted out of a loop, {} widened, {} folded, {} shared, {} forwarded, \
              {} dead)",
             name.display(),
@@ -211,6 +216,7 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>, level: sir::opt::Level) -> b
             insts,
             instructions(&ssa),
             level,
+            target.name,
             worked.inlined,
             worked.unrolled,
             worked.hoisted,
@@ -270,6 +276,10 @@ fn run(args: &[String]) -> bool {
     // What is built when nothing says otherwise: everything that only removes,
     // and everything that moves code, but not the widening.
     let mut level = sir::opt::Level::default();
+    // And what for: the machine this is running on, until something names
+    // another. See `sir::target`, which is the only thing in this compiler
+    // that has an opinion about where the program will end up.
+    let mut target = sir::target::Target::default();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -295,6 +305,23 @@ fn run(args: &[String]) -> bool {
                     },
                 };
             }
+            "--target" => match rest.next() {
+                Some(name) => match sir::target::of(name) {
+                    Some(held) => target = held,
+                    None => {
+                        eprintln!(
+                            "no such target: {} (there is {})",
+                            name,
+                            sir::target::NAMES.join(", ")
+                        );
+                        return false;
+                    }
+                },
+                None => {
+                    eprintln!("--target wants a name after it");
+                    return false;
+                }
+            },
             other if other.starts_with('-') => {
                 eprintln!("no such option: {}", other);
                 return false;
@@ -307,9 +334,9 @@ fn run(args: &[String]) -> bool {
         }
     }
     match root {
-        Some(root) => compile(&root, search_paths, level),
+        Some(root) => compile(&root, search_paths, level, target),
         None => {
-            eprintln!("usage: fortec <root.fc> [-O<0-3>] [-I <dir>]...");
+            eprintln!("usage: fortec <root.fc> [-O<0-3>] [--target <name>] [-I <dir>]...");
             false
         }
     }
