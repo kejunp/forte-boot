@@ -195,8 +195,8 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         println!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
-             {} instructions ({} after opt: {} calls written out, {} folded, {} shared, \
-             {} dead)",
+             {} instructions ({} after opt: {} calls written out, {} loops unrolled, \
+             {} lifted out of a loop, {} folded, {} shared, {} dead)",
             name.display(),
             ttir.items.len(),
             symbols.len(),
@@ -210,6 +210,8 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
             insts,
             instructions(&ssa),
             worked.inlined,
+            worked.unrolled,
+            worked.hoisted,
             worked.folded,
             worked.shared,
             worked.dead

@@ -46,7 +46,9 @@
 //
 // `dom` is what `promote` places phis by, and is the one piece of this any
 // later pass will want on its own: dominance is what "this value is usable
-// here" means, and every rewrite over the graph has to ask it.
+// here" means, and every rewrite over the graph has to ask it. `loops` is the
+// second thing it answers -- a back edge is an edge to a block that dominates
+// it -- and is what the two rewrites over loops in `opt` are written against.
 //
 // Nothing consumes a SIR yet -- there is no backend -- so most of what is
 // built here is built for the pass after, and the warning about that would be
@@ -57,6 +59,7 @@
 pub mod fixture;
 
 pub mod dom;
+pub mod loops;
 pub mod lower;
 pub mod opt;
 pub mod promote;
