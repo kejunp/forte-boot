@@ -118,7 +118,7 @@ fn dump_parse(path: &str, source: &str) {
 //
 // `false` where the build stopped. A warning is not that, so a report that is
 // not empty is not the same as a compilation that failed.
-fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
+fn compile(root: &Path, search_paths: Vec<PathBuf>, level: sir::opt::Level) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
     // so there is no `import` to point a caret at.
@@ -190,13 +190,14 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         // instruction count is what this moves, so it is counted either side
         // rather than at the end.
         let insts = instructions(&ssa);
-        let worked = sir::opt::optimize(&mut ssa, &ttir);
+        let worked = sir::opt::optimize(&mut ssa, &ttir, level);
 
         println!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
-             {} instructions ({} after opt: {} calls written out, {} loops unrolled, \
-             {} lifted out of a loop, {} folded, {} shared, {} forwarded, {} dead)",
+             {} instructions ({} after {:?}: {} calls written out, {} loops unrolled, \
+             {} lifted out of a loop, {} widened, {} folded, {} shared, {} forwarded, \
+             {} dead)",
             name.display(),
             ttir.items.len(),
             symbols.len(),
@@ -209,9 +210,11 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
             slots,
             insts,
             instructions(&ssa),
+            level,
             worked.inlined,
             worked.unrolled,
             worked.hoisted,
+            worked.widened,
             worked.folded,
             worked.shared,
             worked.forwarded,
@@ -264,6 +267,9 @@ fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_n
 fn run(args: &[String]) -> bool {
     let mut root: Option<PathBuf> = None;
     let mut search_paths = Vec::new();
+    // What is built when nothing says otherwise: everything that only removes,
+    // and everything that moves code, but not the widening.
+    let mut level = sir::opt::Level::default();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -274,6 +280,21 @@ fn run(args: &[String]) -> bool {
                     return false;
                 }
             },
+            // `-O`, `-O0` .. `-O3`. Bare `-O` is the most there is, which is
+            // what it means everywhere else.
+            other if other.starts_with("-O") => {
+                let asked = &other[2..];
+                level = match asked {
+                    "" => sir::opt::Level::More,
+                    _ => match asked.parse::<u8>() {
+                        Ok(n) => sir::opt::Level::of(n),
+                        Err(_) => {
+                            eprintln!("-O wants a number after it, not `{}`", asked);
+                            return false;
+                        }
+                    },
+                };
+            }
             other if other.starts_with('-') => {
                 eprintln!("no such option: {}", other);
                 return false;
@@ -286,9 +307,9 @@ fn run(args: &[String]) -> bool {
         }
     }
     match root {
-        Some(root) => compile(&root, search_paths),
+        Some(root) => compile(&root, search_paths, level),
         None => {
-            eprintln!("usage: fortec <root.fc> [-I <dir>]...");
+            eprintln!("usage: fortec <root.fc> [-O<0-3>] [-I <dir>]...");
             false
         }
     }

@@ -714,7 +714,7 @@ impl<'a> Lowerer<'a> {
 
     fn new_value(&mut self, ty: TyId, of: Option<GIRLocalId>, line: usize, col: usize)
         -> SIRValueId {
-        self.b.values.push(SIRValue { ty, of, line, col });
+        self.b.values.push(SIRValue::one(ty, of, line, col));
         self.b.values.len() - 1
     }
 

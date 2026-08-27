@@ -156,7 +156,7 @@ fn two_numbered_elements_are_two_places_and_two_unknown_ones_are_not() {
 // name holding it out of the frame -- for `Base::Elsewhere` to arise at all.
 fn from_elsewhere(lets_out: bool) -> SIRBody {
     let hold = |kind, def| SIRInst { def, kind, is_unsafe: false, line: 1, col: 1 };
-    let value = SIRValue { ty: 0, of: None, line: 1, col: 1 };
+    let value = SIRValue::one(0, None, 1, 1);
     // %0 is the parameter, and the rest are made below.
     let values = vec![value; 8];
     let mut insts = vec![

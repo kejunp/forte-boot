@@ -482,6 +482,13 @@ fn a_loop_survives_every_rewrite() {
 // It is the only test here that would catch a rewrite that is sound on every
 // shape a fixture writes and wrong on the shape a `while` lowers to.
 fn compiled(source: &str) -> (SIRProgram, crate::sir::opt::Stats) {
+    compiled_at(source, crate::sir::opt::Level::Default)
+}
+
+fn compiled_at(
+    source: &str,
+    level: crate::sir::opt::Level,
+) -> (SIRProgram, crate::sir::opt::Stats) {
     use crate::expand::Expander;
     use crate::gir;
     use crate::lex::lexer::Lexer;
@@ -525,7 +532,7 @@ fn compiled(source: &str) -> (SIRProgram, crate::sir::opt::Stats) {
     let mut out = lowerer.finish();
     promote(&mut out);
     sound(&out);
-    let stats = optimize(&mut out, &ttir);
+    let stats = optimize(&mut out, &ttir, level);
     sound(&out);
     (out, stats)
 }
@@ -887,11 +894,11 @@ fn a_walk_over_an_array_writes_out_the_reads_it_takes() {
     );
 }
 
-// A `break` is a second way out, and the block it leaves from would have one
-// copy per turn where the code after the loop needs one block standing before
-// it. Left alone rather than written out wrongly.
+// A `break` is a second way out, and it is allowed: every copy of the block it
+// leaves from goes to the same place, and the phis where it lands are given
+// one entry per copy like any other way in.
 #[test]
-fn a_walk_with_a_second_way_out_is_left_alone() {
+fn a_walk_with_a_second_way_out_is_still_written_out() {
     let mut f = Fixture::new();
     let x = f.local("x", f.int);
     let c = f.param("c", f.bool);
@@ -921,8 +928,56 @@ fn a_walk_with_a_second_way_out_is_left_alone() {
     let (p, stats) = worked(f);
     let body = &p.bodies[0];
 
+    assert_eq!(stats.unrolled, 1, "{:#?}", stats);
+    assert!(loops(body).is_empty(), "{:#?}", body.blocks);
+    // Three turns, each of which may leave early, so the three still ask.
+    let handed: Vec<TIRLit> = all_handed(body).into_iter().map(|v| literal(body, v)).collect();
+    assert_eq!(handed, vec![TIRLit::Int(0), TIRLit::Int(1), TIRLit::Int(2)], "{:#?}", kinds(body));
+}
+
+// What is turned down is a value carried out of the loop without a phi to
+// carry it: the block it was worked out in stood before the block that read
+// it, and after this there would be one such block per turn.
+#[test]
+fn a_value_carried_out_without_a_phi_stops_the_walk_being_written_out() {
+    let mut f = Fixture::new();
+    let x = f.local("x", f.int);
+    let held = f.local("held", f.int);
+    let c = f.param("c", f.bool);
+    let (before, head, inner, exit) = (f.block(), f.block(), f.block(), f.block());
+    f.term(before, GIRTerm::Goto(head));
+    let (lo, hi) = (f.int(0), f.int(3));
+    let ty = f.null;
+    let range = f.expr(
+        GIRExprKind::Range {
+            op:    crate::tir::tir_nodes::TIRRangeOp::Exclusive,
+            start: Some(lo),
+            end:   Some(hi),
+        },
+        ty,
+    );
+    f.term(head, GIRTerm::ForEach { local: x, iter: range, body: inner, exit });
+    // Worked out in the loop, and read in a block only this one reaches -- so
+    // nothing joins there and nothing put a phi in it.
+    let (read, one) = (f.read(x), f.int(1));
+    let sum = f.add(read, one);
+    f.set(inner, held, sum);
+    let cond = f.read(c);
+    let (out, again) = (f.block(), f.block());
+    f.term(inner, GIRTerm::Branch { cond, then: out, els: again });
+    f.term(again, GIRTerm::Goto(head));
+    let read = f.read(held);
+    let hands = f.hands(read);
+    f.eval(out, hands);
+    f.term(out, GIRTerm::Return(None));
+    f.term(exit, GIRTerm::Return(None));
+    f.body(before);
+
+    let (p, stats) = worked(f);
+    let body = &p.bodies[0];
+
     assert_eq!(stats.unrolled, 0, "{:#?}", stats);
-    assert_eq!(loops(body).len(), 1, "{:#?}", body.blocks);
+    assert_eq!(loops(body).len(), 1, "the loop stands: {:#?}", body.blocks);
 }
 
 // The same two rewrites, from source, over what the lowering actually makes.
@@ -1229,4 +1284,350 @@ fn a_name_whose_address_went_out_is_still_read_back_as_what_was_written() {
     // And the store stays: the address went out, so something else may read
     // what is there.
     assert_eq!(count(body, |k| matches!(k, SIRInstKind::Store { .. })), 2, "{:#?}", kinds(body));
+}
+
+// ---- Stores nothing will read -----------------------------------------------
+
+// Written twice with nothing between: the first write is one nobody could have
+// seen the result of.
+#[test]
+fn a_store_written_over_before_anything_reads_it_goes() {
+    let mut f = Fixture::new();
+    let x = f.local("x", f.int);
+    let at = f.block();
+    let read = f.read(x);
+    let addr = f.addr_of(read);
+    let hands = f.hands(addr);
+    f.eval(at, hands);
+    let one = f.int(1);
+    f.set(at, x, one);
+    let two = f.int(2);
+    f.set(at, x, two);
+    f.term(at, GIRTerm::Return(None));
+    f.body(at);
+
+    let (out, _) = worked(f);
+    let body = &out.bodies[0];
+
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Store { .. })),
+        1,
+        "one write where there were two: {:#?}",
+        kinds(body)
+    );
+}
+
+// Unless something between may read it. A read of the name is the plain case;
+// a call is the case that needs to know whether the name ever got out.
+#[test]
+fn a_read_between_them_keeps_the_first_write() {
+    let mut f = Fixture::new();
+    let x = f.local("x", f.int);
+    let at = f.block();
+    let read = f.read(x);
+    let addr = f.addr_of(read);
+    let hands = f.hands(addr);
+    f.eval(at, hands);
+    let one = f.int(1);
+    f.set(at, x, one);
+    let read = f.read(x);
+    let hands = f.hands(read);
+    f.eval(at, hands);
+    let two = f.int(2);
+    f.set(at, x, two);
+    f.term(at, GIRTerm::Return(None));
+    f.body(at);
+
+    let (out, _) = worked(f);
+    let body = &out.bodies[0];
+
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Store { .. })),
+        2,
+        "{:#?}",
+        kinds(body)
+    );
+}
+
+// A call between them reads it if it could have reached it, and not if it
+// could not -- the same question, and the same answer, as everywhere else.
+#[test]
+fn a_call_between_them_keeps_the_first_write_only_if_it_could_read_it() {
+    let build = |lets_out: bool| {
+        let mut f = Fixture::new();
+        let x = f.local("x", f.int);
+        let at = f.block();
+        if lets_out {
+            let read = f.read(x);
+            let addr = f.addr_of(read);
+            let hands = f.hands(addr);
+            f.eval(at, hands);
+        } else {
+            // Something else that keeps the name in the frame without letting
+            // it out, so that there is still a store here to have an opinion
+            // about.
+            let ty = f.int;
+            let base = f.read(x);
+            let field = f.expr(GIRExprKind::Field { base, index: 0 }, ty);
+            let nine = f.int(9);
+            f.store(at, field, TIRAssignOp::Set, nine);
+        }
+        let one = f.int(1);
+        f.set(at, x, one);
+        let call = f.call();
+        f.eval(at, call);
+        let two = f.int(2);
+        f.set(at, x, two);
+        f.term(at, GIRTerm::Return(None));
+        f.body(at);
+        worked(f).0
+    };
+
+    let open = build(true);
+    assert_eq!(
+        count(&open.bodies[0], |k| matches!(k, SIRInstKind::Store { .. })),
+        2,
+        "the call may read what was written: {:#?}",
+        kinds(&open.bodies[0])
+    );
+
+    let shut = build(false);
+    // The write to the field, and one of the two to the name.
+    assert_eq!(
+        count(&shut.bodies[0], |k| matches!(k, SIRInstKind::Store { .. })),
+        2,
+        "the call cannot have reached it: {:#?}",
+        kinds(&shut.bodies[0])
+    );
+}
+
+// ---- Several turns at once --------------------------------------------------
+
+// The canonical shape, and the one the three rewrites before this one exist to
+// leave behind: a counted loop written out as its turns, each turn reading two
+// neighbouring elements and writing a third. Four adds become one.
+const NEIGHBOURS: &str = "struct Range<T> { pub lo: T, pub hi: T }\n\
+     fn add4(a: i32[4], b: i32[4]): i32[4] {\n\
+         var c: i32[4] = [0, 0, 0, 0];\n\
+         for i in 0..4 { c[i] = a[i] + b[i]; }\n\
+         c\n\
+     }\n";
+
+fn wide(body: &SIRBody, want: impl Fn(&SIRInstKind) -> bool) -> Vec<usize> {
+    insts(body)
+        .into_iter()
+        .filter(|(_, inst)| want(&inst.kind))
+        .filter_map(|(_, inst)| inst.def.map(|def| body.values[def].lanes))
+        .collect()
+}
+
+#[test]
+fn a_run_of_writes_to_neighbouring_places_becomes_one_write() {
+    let (p, stats) = compiled_at(NEIGHBOURS, crate::sir::opt::Level::More);
+    let body = &p.bodies[0];
+
+    assert_eq!(stats.unrolled, 1, "{:#?}", stats);
+    assert_eq!(stats.widened, 1, "{:#?}", stats);
+
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::VecStore { .. })),
+        1,
+        "one write where there were four: {:#?}",
+        kinds(body)
+    );
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Lanes { lanes: 4, .. })),
+        2,
+        "and one read of each thing read: {:#?}",
+        kinds(body)
+    );
+    // The add is one instruction over four of everything.
+    assert_eq!(
+        wide(body, |k| matches!(k, SIRInstKind::Binary { .. })),
+        vec![4],
+        "{:#?}",
+        kinds(body)
+    );
+    // And the elements are not read one at a time any more.
+    assert_eq!(count(body, |k| matches!(k, SIRInstKind::Index { .. })), 0, "{:#?}", kinds(body));
+}
+
+// It stands at the top level alone: the width is a guess about a machine, and
+// a guess is not something to make on a program's behalf unless it was asked
+// for.
+#[test]
+fn nothing_is_widened_below_the_top_level() {
+    for level in [
+        crate::sir::opt::Level::Less,
+        crate::sir::opt::Level::Default,
+    ] {
+        let (p, stats) = compiled_at(NEIGHBOURS, level);
+        assert_eq!(stats.widened, 0, "at {:?}: {:#?}", level, stats);
+        assert_eq!(
+            count(&p.bodies[0], |k| matches!(k, SIRInstKind::VecStore { .. })),
+            0,
+            "at {:?}",
+            level
+        );
+    }
+}
+
+// And only where the writes can be brought together. A call standing between
+// them is what decides it -- and whether it decides it turns entirely on
+// whether the call could have reached what is being written, which is the
+// question `sir::alias` answers and nothing before it could.
+#[test]
+fn a_call_between_the_writes_stops_it_only_if_it_could_have_reached_them() {
+    let build = |lets_out: bool| {
+        let source = format!(
+            "struct Range<T> {{ pub lo: T, pub hi: T }}\n\
+             %noinline\n\
+             fn sink(p: &i32[4]): null {{ null }}\n\
+             %noinline\n\
+             fn touch(): null {{ null }}\n\
+             fn go(a: i32[4]): i32[4] {{\n\
+                 var c: i32[4] = [0, 0, 0, 0];\n\
+                 {}\n\
+                 for i in 0..4 {{ c[i] = a[i]; touch(); }}\n\
+                 c\n\
+             }}\n",
+            if lets_out { "sink(&c);" } else { "" }
+        );
+        compiled_at(&source, crate::sir::opt::Level::More)
+    };
+
+    let (_, shut) = build(false);
+    assert_eq!(
+        shut.widened, 1,
+        "nothing kept the address of `c`, so the calls cannot have written it: {:#?}",
+        shut
+    );
+
+    let (_, open) = build(true);
+    assert_eq!(
+        open.widened, 0,
+        "the address went out, so what the calls did with it is not known: {:#?}",
+        open
+    );
+}
+
+// Fewer neighbours than there are lanes is not a group. Two writes are two
+// writes.
+#[test]
+fn a_run_shorter_than_the_lanes_is_left_as_it_was() {
+    let (p, stats) = compiled_at(
+        "struct Range<T> { pub lo: T, pub hi: T }\n\
+         fn two(a: i32[4]): i32[4] {\n\
+             var c: i32[4] = [0, 0, 0, 0];\n\
+             for i in 0..2 { c[i] = a[i]; }\n\
+             c\n\
+         }\n",
+        crate::sir::opt::Level::More,
+    );
+
+    assert_eq!(stats.widened, 0, "{:#?}", stats);
+    assert_eq!(
+        count(&p.bodies[0], |k| matches!(k, SIRInstKind::Store { .. })),
+        3,
+        "the array is filled, and then two of its elements written: {:#?}",
+        kinds(&p.bodies[0])
+    );
+}
+
+// ---- How hard to try --------------------------------------------------------
+
+// A program with something for every kind of rewrite in it, run at each level,
+// so that what each one turns on is written down as a test rather than as a
+// comment.
+const EVERYTHING: &str = "struct Range<T> { pub lo: T, pub hi: T }\n\
+     fn twice(n: i32): i32 { n * 2 }\n\
+     fn all(a: i32[4]): i32[4] {\n\
+         var c: i32[4] = [0, 0, 0, 0];\n\
+         var k: i32 = twice(3) + 0;\n\
+         for i in 0..4 { c[i] = a[i] + k; }\n\
+         c\n\
+     }\n";
+
+// Nothing at all, which is what `-O0` is for: what comes out is what the
+// lowering and the promotion made of the source.
+#[test]
+fn the_bottom_level_changes_nothing() {
+    let (p, stats) = compiled_at(EVERYTHING, crate::sir::opt::Level::None);
+
+    assert_eq!(stats, crate::sir::opt::Stats::default(), "{:#?}", stats);
+    let body = p.bodies.last().expect("a body");
+    assert!(!loops(body).is_empty(), "the loop is still a loop");
+    assert!(
+        count(body, |k| matches!(k, SIRInstKind::Call { .. })) > 0,
+        "and the call is still a call: {:#?}",
+        kinds(body)
+    );
+}
+
+// The first level takes things away and moves nothing.
+#[test]
+fn the_first_level_removes_and_does_not_move() {
+    let (p, stats) = compiled_at(EVERYTHING, crate::sir::opt::Level::Less);
+
+    assert_eq!(stats.inlined, 0, "{:#?}", stats);
+    assert_eq!(stats.unrolled, 0, "{:#?}", stats);
+    assert_eq!(stats.hoisted, 0, "{:#?}", stats);
+    assert_eq!(stats.widened, 0, "{:#?}", stats);
+    assert!(stats.dead > 0 || stats.folded > 0 || stats.shared > 0, "{:#?}", stats);
+    assert!(!loops(p.bodies.last().expect("a body")).is_empty(), "the loop stands");
+}
+
+// The second moves code as well, which is where a program may come out bigger
+// than it went in.
+#[test]
+fn the_second_level_writes_calls_and_loops_out() {
+    let (p, stats) = compiled_at(EVERYTHING, crate::sir::opt::Level::Default);
+
+    assert!(stats.inlined > 0, "{:#?}", stats);
+    assert!(stats.unrolled > 0, "{:#?}", stats);
+    assert_eq!(stats.widened, 0, "{:#?}", stats);
+    let body = p.bodies.last().expect("a body");
+    assert!(loops(body).is_empty(), "the loop is written out: {:#?}", body.blocks);
+    // `twice(3) + 0` is 6, worked out here and not there.
+    assert!(
+        count(body, |k| matches!(k, SIRInstKind::Literal(TIRLit::Int(6)))) > 0,
+        "{:#?}",
+        kinds(body)
+    );
+}
+
+// And the third widens what the second left in a straight line.
+#[test]
+fn the_third_level_runs_the_turns_together() {
+    let (p, stats) = compiled_at(EVERYTHING, crate::sir::opt::Level::More);
+
+    assert!(stats.inlined > 0, "{:#?}", stats);
+    assert!(stats.unrolled > 0, "{:#?}", stats);
+    assert_eq!(stats.widened, 1, "{:#?}", stats);
+    let body = p.bodies.last().expect("a body");
+    // The literal that does not vary with the turn is in every lane of one
+    // value rather than in four instructions.
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Pack(_))),
+        1,
+        "{:#?}",
+        kinds(body)
+    );
+    assert_eq!(count(body, |k| matches!(k, SIRInstKind::VecStore { .. })), 1);
+}
+
+// The levels are ordered, which is what lets a rewrite ask `>= Default`
+// instead of naming every level it runs at.
+#[test]
+fn the_levels_are_ordered_and_numbered() {
+    use crate::sir::opt::Level;
+    assert!(Level::None < Level::Less);
+    assert!(Level::Less < Level::Default);
+    assert!(Level::Default < Level::More);
+    assert_eq!(Level::of(0), Level::None);
+    assert_eq!(Level::of(2), Level::Default);
+    assert_eq!(Level::of(3), Level::More);
+    // A number nobody wrote a level for is the most there is.
+    assert_eq!(Level::of(9), Level::More);
+    assert_eq!(Level::default(), Level::Default);
 }

@@ -12,7 +12,7 @@
 // program -- there is no diagnostic left to get wrong -- so a rewrite here is
 // only ever wrong about what the program *does*.
 //
-// Nine rewrites, run round and round until none of them has anything left:
+// Eleven rewrites, run round and round until none of them has anything left:
 //
 //   `unroll`    a loop whose turns are counted before it starts, written out
 //               as the turns it runs.
@@ -27,6 +27,9 @@
 //               operands, where the first stands before the second.
 //   `forward`   a load answered by the store above it, where nothing between
 //               them may have written where it reads.
+//   `overwritten` a store written over before anything reads it.
+//   `vectorize` a run of the same thing done to neighbouring places, done at
+//               once.
 //   `branches`  a branch whose condition is already known, and one whose two
 //               edges go to one block.
 //   `merge`     a block whose only way in is a `Goto`, folded into the block
@@ -60,9 +63,17 @@
 // arbitrary: unrolling turns a loop variable into a literal, which folding
 // makes conditions out of, which makes branches into gotos, which leaves
 // blocks with one way in for `merge`, which puts an instruction next to the
-// one it repeats for `share`. Nothing depends on that order being right,
-// though -- the loop runs until nothing changes, so a rewrite that only
-// becomes possible after another one just happens a round later.
+// one it repeats for `share` -- and leaves the turns of a loop side by side in
+// one block, which is what `vectorize` needs to see them as one. Nothing
+// depends on that order being right, though: the loop runs until nothing
+// changes, so a rewrite that only becomes possible after another one just
+// happens a round later.
+//
+// Four of them are about memory -- `hoist` for the loads it moves, `forward`,
+// `overwritten` and `vectorize` -- and none of the four could be written
+// before `alias.rs` was. "Does this write land where that reads" is the whole
+// of what each of them has to know, and a pass with no answer to it has to
+// assume the worst everywhere, which is the same as not being written.
 //
 // The two over loops are the two that need to know what a loop *is*, which is
 // a question about the graph and not about the source: see `loops.rs`, where a
@@ -95,14 +106,124 @@ use super::sir_nodes::*;
 // for a rewrite that undoes another, which would be a bug here rather than
 // anything a program can do.
 const MAX_ROUNDS: usize = 8;
-// How many instructions a callee may hold and still be written out. A call is
-// a handful of instructions itself, so this is roughly "a body worth less than
-// the call to it, or not much more".
-const INLINE_MAX: usize = 32;
-// And how many calls one body may take in one round. The rounds compose --
-// what was written into a callee last round is written into its caller this
-// round -- so this bounds the growth per round and not the depth.
-const INLINE_EACH: usize = 8;
+
+// ---- How hard to try ------------------------------------------------------
+
+// The rewrites here fall into three kinds, and a level is a line drawn between
+// them rather than a list of passes turned on.
+//
+//   Some only ever remove. Folding an operator over two literals, taking out
+//   what nothing reads, joining two blocks that were one -- none of these can
+//   leave a program bigger or slower than it was, and there is no reason to
+//   want them off except to see what the lowering made.
+//
+//   Some move code, or copy it. Writing a call out, lifting something out of a
+//   loop, writing a loop out as its turns: each makes the program bigger in
+//   the hope of making it quicker, and each is bounded by a number that is a
+//   guess.
+//
+//   And one widens it: running the turns of a loop several at a time, which
+//   needs the other two kinds to have gone first and is the least settled
+//   thing here.
+//
+// So: nothing, the first kind, the first two, and all three with the guesses
+// turned up. Which is what `-O0` through `-O3` mean everywhere else, and there
+// is no reason for them to mean something else here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Level {
+    // Nothing at all. What comes out is what `sir::lower` and `sir::promote`
+    // made, which is the shape to read when the question is what the front of
+    // the compiler did rather than what this pass made of it.
+    None,
+    // Everything that only ever takes something away.
+    Less,
+    // And everything that moves or copies code. The level a program is built
+    // at unless something says otherwise.
+    #[default]
+    Default,
+    // And the widening, with the bounds on the copying raised.
+    More,
+}
+
+impl Level {
+    // `-O<n>`, and anything past the end is the most there is: a number nobody
+    // has written a level for is a level nobody meant to name.
+    pub fn of(n: u8) -> Level {
+        match n {
+            0 => Level::None,
+            1 => Level::Less,
+            2 => Level::Default,
+            _ => Level::More,
+        }
+    }
+
+    // The rewrites that only remove.
+    fn shrinks(self) -> bool {
+        self > Level::None
+    }
+
+    // The ones that move code, or write a second copy of it.
+    fn moves(self) -> bool {
+        self >= Level::Default
+    }
+
+    // And running the turns of a loop several at a time.
+    fn widens(self) -> bool {
+        self >= Level::More
+    }
+
+    fn rounds(self) -> usize {
+        match self {
+            Level::None => 0,
+            Level::Less => 2,
+            Level::Default => MAX_ROUNDS,
+            Level::More => MAX_ROUNDS * 2,
+        }
+    }
+
+    // How many instructions a callee may hold and still be written out. A call
+    // is a handful of instructions itself, so the middle of these is roughly
+    // "a body worth less than the call to it, or not much more".
+    fn inline_max(self) -> usize {
+        match self {
+            Level::More => 96,
+            _ => 32,
+        }
+    }
+
+    // And how many calls one body may take in one round. The rounds compose --
+    // what was written into a callee last round is written into its caller
+    // this round -- so this bounds the growth per round and not the depth.
+    fn inline_each(self) -> usize {
+        match self {
+            Level::More => 24,
+            _ => 8,
+        }
+    }
+
+    fn unroll_turns(self) -> usize {
+        match self {
+            Level::More => 16,
+            _ => 8,
+        }
+    }
+
+    fn unroll_insts(self) -> usize {
+        match self {
+            Level::More => 256,
+            _ => 96,
+        }
+    }
+
+    // How many turns of a loop are run at once. Four because four is what the
+    // machines this would be compiled for have had for thirty years, and
+    // because there is no back end to ask -- see the note at the foot of this
+    // file, where the same guess is the reason the whole rewrite waits at
+    // `-O3` rather than standing with the rest.
+    fn lanes(self) -> usize {
+        4
+    }
+}
 
 // What the pass did, for the driver to print. Nothing reads it but the message.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -124,25 +245,30 @@ pub struct Stats {
     // they run for.
     pub hoisted:   usize,
     pub unrolled:  usize,
+    // Runs of writes to neighbouring places, turned into one write of several.
+    pub widened:   usize,
     // Slots the re-run of `promote` took out, which are the callee's locals
     // now that they are the caller's.
     pub promoted:  usize,
 }
 
-pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram) -> Stats {
+pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram, level: Level) -> Stats {
     let mut stats = Stats::default();
+    if !level.shrinks() {
+        return stats;
+    }
     let graph = Calls::of(program, ttir);
-    for round in 1..=MAX_ROUNDS {
+    for round in 1..=level.rounds() {
         let mut changed = false;
         // The program first: writing a call out is what gives the body
         // rewrites something new to work on, and the slots it brings with it
         // are the caller's now, so the promotion is asked again.
-        if inline(program, &graph, &mut stats) {
+        if level.moves() && inline(program, &graph, level, &mut stats) {
             stats.promoted += promote(program);
             changed = true;
         }
         for body in &mut program.bodies {
-            changed |= clean(body, ttir, &mut stats);
+            changed |= clean(body, ttir, level, &mut stats);
         }
         stats.rounds = round;
         if !changed {
@@ -155,16 +281,22 @@ pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram) -> Stats {
 // One body, until the six have nothing left. The inner loop is here rather
 // than only in `optimize` so that a body settles without waiting on the whole
 // program to go round again.
-fn clean(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
+fn clean(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats) -> bool {
     let mut ever = false;
-    for _ in 0..MAX_ROUNDS {
+    for _ in 0..level.rounds() {
         let mut changed = false;
-        changed |= unroll(body, ttir, stats);
-        changed |= hoist(body, ttir, stats);
+        if level.moves() {
+            changed |= unroll(body, ttir, level, stats);
+            changed |= hoist(body, ttir, stats);
+        }
         changed |= fold(body, ttir, stats);
         changed |= phis(body, stats);
         changed |= share(body, ttir, stats);
         changed |= forward(body, ttir, stats);
+        changed |= overwritten(body, stats);
+        if level.widens() {
+            changed |= vectorize(body, ttir, level, stats);
+        }
         changed |= branches(body, stats);
         changed |= merge(body, stats);
         changed |= sweep(body, ttir, stats);
@@ -272,7 +404,8 @@ fn effects(
         | SIRInstKind::Method { .. }
         | SIRInstKind::Store { .. }
         | SIRInstKind::Drop(_)
-        | SIRInstKind::DropSlot(_) => true,
+        | SIRInstKind::DropSlot(_)
+        | SIRInstKind::VecStore { .. } => true,
         SIRInstKind::Index { base, index } | SIRInstKind::IndexAddr { base, index } => {
             !within(values, ttir, made, *base, *index)
         }
@@ -1145,6 +1278,10 @@ fn forward(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
                 | SIRInstKind::DropSlot(_) => {
                     known.retain(|(addr, _)| alias.own(*addr));
                 }
+                // A run of places written at once, and only the first of them
+                // named. See `overwritten`, where the same answer is given for
+                // the same reason.
+                SIRInstKind::VecStore { .. } => known.clear(),
                 _ => {}
             }
         }
@@ -1161,6 +1298,85 @@ fn forward(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
         });
     }
     replace(body, &subst);
+    true
+}
+
+// ---- Stores nothing will read ---------------------------------------------
+
+// A store whose value is written over before anything reads it is a store that
+// need not have happened. The mirror of `forward`, and it reads the block the
+// other way round: from the bottom, holding the addresses that are certainly
+// written again below, and dropping one as soon as something between might
+// read it.
+//
+// It has to be `must` below and `may` between, and the two are not the same
+// question turned round. A store is dead only if what overwrites it certainly
+// lands on the same place; it is alive again if anything that might read it
+// stands in the way. Getting either the wrong way about is a store dropped
+// that somebody wanted.
+//
+// A block at a time, again, and for the same reason as `forward`: what a store
+// is worth past the end of its block is a question about every path out of it.
+// Stopping at the end of the block is what makes "nothing reads it" a fact
+// about a straight line rather than a claim about the graph.
+fn overwritten(body: &mut SIRBody, stats: &mut Stats) -> bool {
+    let alias = Alias::of(body);
+    let live = body.live();
+    let mut gone: Vec<Vec<bool>> =
+        body.blocks.iter().map(|b| vec![false; b.insts.len()]).collect();
+    let mut changed = false;
+
+    for at in 0..body.blocks.len() {
+        if !live[at] {
+            continue;
+        }
+        // Addresses written again below without being read in between.
+        let mut over: Vec<SIRValueId> = Vec::new();
+        for index in (0..body.blocks[at].insts.len()).rev() {
+            match body.blocks[at].insts[index].kind {
+                SIRInstKind::Store { to, .. } => {
+                    if over.iter().any(|&held| alias.must(held, to)) {
+                        gone[at][index] = true;
+                        stats.dead += 1;
+                        changed = true;
+                    } else {
+                        over.push(to);
+                    }
+                }
+                SIRInstKind::Load { from } => over.retain(|&held| !alias.may(held, from)),
+                // Releasing what is in a name reads what is in it.
+                SIRInstKind::DropSlot(slot) => over.retain(|&held| {
+                    alias.place(held).map(|p| p.base) != Some(Base::Slot(slot))
+                }),
+                SIRInstKind::Drop(value) => {
+                    over.retain(|&held| alias.own(held) && !alias.may(held, value))
+                }
+                // A call reads wherever it can reach, which is everywhere but
+                // a name of this frame whose address nothing kept.
+                SIRInstKind::Call { .. } | SIRInstKind::Method { .. } => {
+                    over.retain(|&held| alias.own(held))
+                }
+                // A vector store writes a run of places and this knows the
+                // address of the first of them only. Rather than reason about
+                // how far it reaches, nothing is held across one -- which
+                // costs nothing worth having: it is written by the last
+                // rewrite in the round, after this one has already run.
+                SIRInstKind::VecStore { .. } => over.clear(),
+                _ => {}
+            }
+        }
+    }
+
+    if !changed {
+        return false;
+    }
+    for at in 0..body.blocks.len() {
+        let mut index = 0;
+        body.blocks[at].insts.retain(|_| {
+            index += 1;
+            !gone[at][index - 1]
+        });
+    }
     true
 }
 
@@ -1235,6 +1451,10 @@ fn lift(body: &mut SIRBody, ttir: &TTIRProgram, held: &Loop, stats: &mut Stats) 
                 SIRInstKind::Call { .. } | SIRInstKind::Method { .. } | SIRInstKind::Drop(_) => {
                     calls = true
                 }
+                // A vector store reaches further than the address it names, so
+                // it is treated as reaching everywhere rather than reasoned
+                // about.
+                SIRInstKind::VecStore { .. } => calls = true,
                 _ => {}
             }
         }
@@ -1367,15 +1587,16 @@ fn liftable(
 //     outside the loop -- which is what makes the test the thing being taken
 //     out;
 //   - the copies fit: the turns are few and the body is small, because this
-//     is the one rewrite here that makes a program bigger on purpose;
-//   - and the head's failing test is the loop's only way out. A `break` is a
-//     second way, and the block it leaves from would have one copy per turn,
-//     none of which stands before the code after the loop the way the one
-//     block did. Handling that means placing a phi where the break lands, and
-//     placing phis is `promote`'s trade rather than something to do twice.
-const UNROLL_TURNS: usize = 8;
-const UNROLL_INSTS: usize = 96;
-
+//     is the one rewrite here that makes a program bigger on purpose, and how
+//     few and how small is what a `Level` says;
+//   - and nothing the loop worked out is read past it except through a phi.
+//     A phi is answered by giving it one entry per copy, which the rewrite
+//     does anyway; anything else wanted one block standing before it, and
+//     after this there are as many blocks as there were turns. With the head's
+//     failing test as the only way out that never bites -- what the head made
+//     is taken from the last head, which is the one that ran -- so it is only
+//     a `break` that this ever turns down, and only a `break` that carries a
+//     value out without a phi to carry it.
 // How many turns, and what the loop variable is on each of them.
 struct Turns {
     count: usize,
@@ -1386,21 +1607,70 @@ struct Turns {
     first: Option<(i64, TIRPrim)>,
 }
 
-fn unroll(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
+fn unroll(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats) -> bool {
     let doms = Dominators::of(body);
     for held in Loop::all(body, &doms) {
         let Some((elem, exit)) = walked(body, &held) else { continue };
-        let Some(turns) = counted(body, ttir, &held, elem) else { continue };
+        let Some(turns) = counted(body, ttir, &held, elem, level) else { continue };
         let size: usize = held.blocks.iter().map(|&at| body.blocks[at].insts.len()).sum();
-        if turns.count > UNROLL_TURNS || size * (turns.count + 1) > UNROLL_INSTS {
+        if turns.count > level.unroll_turns() || size * (turns.count + 1) > level.unroll_insts() {
             continue;
         }
-        if held.ways_out(body) != vec![(held.head, exit)] {
+        // A second way out is a `break`, and it is allowed as long as nothing
+        // the loop worked out is read past it other than through a phi. With
+        // one way out that is not a limit at all -- what the head made can be
+        // taken from the last head, which is the one that ran -- but a break
+        // reaches the code after the loop without passing through the head, so
+        // there is no one copy to take it from.
+        if held.ways_out(body) != vec![(held.head, exit)] && reaches_out(body, &held) {
             continue;
         }
         written_round(body, &held, &turns, exit);
         stats.unrolled += 1;
         return true;
+    }
+    false
+}
+
+// Whether anything the loop makes is read outside it by something other than a
+// phi. A phi is answered by giving it one edge per copy; anything else needs
+// one block standing before it, and after this rewrite there are as many
+// blocks as there were turns.
+fn reaches_out(body: &SIRBody, held: &Loop) -> bool {
+    let live = body.live();
+    let mut within = vec![false; body.values.len()];
+    for &at in &held.blocks {
+        for phi in &body.blocks[at].phis {
+            within[phi.def] = true;
+        }
+        for inst in &body.blocks[at].insts {
+            if let Some(def) = inst.def {
+                within[def] = true;
+            }
+        }
+    }
+    for at in 0..body.blocks.len() {
+        if !live[at] || held.has(at) {
+            continue;
+        }
+        for inst in &body.blocks[at].insts {
+            if SIRBody::uses(&inst.kind).iter().any(|&value| within[value]) {
+                return true;
+            }
+        }
+        match &body.blocks[at].term {
+            SIRTerm::Branch { cond, .. } => {
+                if within[*cond] {
+                    return true;
+                }
+            }
+            SIRTerm::Return(Some(value)) => {
+                if within[*value] {
+                    return true;
+                }
+            }
+            _ => {}
+        }
     }
     false
 }
@@ -1424,6 +1694,7 @@ fn counted(
     ttir: &TTIRProgram,
     held: &Loop,
     iter: SIRValueId,
+    level: Level,
 ) -> Option<Turns> {
     let made = made(body);
     // The element type, which is what a range's values have to fit in.
@@ -1448,7 +1719,7 @@ fn counted(
             TIRRangeOp::Exclusive => *to as i128 - 1,
         };
         let count = usize::try_from((last - *from as i128 + 1).max(0)).ok()?;
-        if count > UNROLL_TURNS {
+        if count > level.unroll_turns() {
             return None;
         }
         // The values the loop variable takes are written as literals, so every
@@ -1681,6 +1952,331 @@ fn written_round(body: &mut SIRBody, held: &Loop, turns: &Turns, exit: SIRBlockI
     repair(body);
 }
 
+// ---- Several turns at once -------------------------------------------------
+
+// The same thing done to four neighbouring places, done once.
+//
+// This is superword-level parallelism, and it is here rather than a loop
+// vectorizer because of the order the rewrites above happen in. `unroll` has
+// already written a counted loop out as its turns, so what would have been a
+// loop to widen is a straight run of instructions in one block, each doing to
+// element `k + j` what the one before did to `k + j - 1`. Finding that is a
+// matter of looking at a list, which is a much smaller thing than reasoning
+// about a loop -- and everything the loop version would have had to prove has
+// already been proved by the passes that got here.
+//
+// It starts at the writes and works upwards. A run of stores to consecutive
+// elements of one thing is the seed: whatever they store is a group of four
+// values that want to be one, and what made those is a group of instructions
+// that want to be one instruction. Upwards from there until it reaches
+// something it cannot group, and then that is packed as it stands.
+//
+// Four things have to hold, and three of them are answered by work already
+// done:
+//
+//   - the elements have to be neighbours, which needs the numbers indexing
+//     them to be literals -- which is what `unroll` leaves behind when it
+//     writes out a walk over a range;
+//   - the writes have to be able to happen together, which means nothing
+//     between them may read or write where they do: `sir::alias`;
+//   - nothing being grouped may trap or have an effect, because a vector
+//     instruction is one instruction and cannot trap for the third lane only:
+//     `effects`, the same answer `sweep` and `hoist` are held to;
+//   - and the group has to be as wide as the machine's, which is the one
+//     thing here nothing can answer. See `Level::lanes`.
+//
+// Nothing is taken out. The scalar instructions are left where they are and
+// `sweep` removes the ones nothing reads any more, which is what makes this
+// safe to do to a group whose values are also read by something that was not
+// part of it: that use still reads the scalar, and the scalar is still there.
+const WIDE_DEEP: usize = 4;
+
+// What a lane of a group is made of.
+struct Group {
+    ty:   TyId,
+    plan: Plan,
+}
+
+enum Plan {
+    // The same value in every lane.
+    Splat(SIRValueId),
+    // Neighbouring elements of one aggregate, read at once.
+    Run { of: SIRValueId, at: u64 },
+    // The same instruction in every lane, over groups.
+    Same { kind: SIRInstKind, args: Vec<Group> },
+    // And anything else: the values as they are, side by side.
+    Gather(Vec<SIRValueId>),
+}
+
+fn vectorize(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats: &mut Stats) -> bool {
+    let lanes = level.lanes();
+    let live = body.live();
+    for at in 0..body.blocks.len() {
+        if !live[at] {
+            continue;
+        }
+        // One at a time: widening a run rewrites the block's list, and the
+        // next seed is looked for in what that left.
+        if let Some(run) = seed(body, ttir, at, lanes) {
+            widen(body, ttir, at, &run, lanes, stats);
+            return true;
+        }
+    }
+    false
+}
+
+// Where each of the run's stores stands, in the order they were written.
+struct Run {
+    // The instruction each store is, by its place in the block.
+    at:    Vec<usize>,
+    // And the address each writes to, in the same order.
+    addrs: Vec<SIRValueId>,
+}
+
+// A run of stores to neighbouring elements of one thing, with nothing between
+// them that may read or write where they do.
+fn seed(body: &SIRBody, ttir: &TTIRProgram, at: SIRBlockId, lanes: usize) -> Option<Run> {
+    if lanes < 2 {
+        return None;
+    }
+    let alias = Alias::of(body);
+    let held = made(body);
+
+    // Every store in the block that writes an element whose number is known.
+    let mut writes: Vec<(usize, SIRValueId, i64, SIRValueId)> = Vec::new();
+    for (index, inst) in body.blocks[at].insts.iter().enumerate() {
+        let SIRInstKind::Store { to, .. } = inst.kind else { continue };
+        let Some(Some(SIRInstKind::IndexAddr { base, index: which })) = held.get(to) else {
+            continue;
+        };
+        let Some(TIRLit::Int(n)) = lit_of(&held, *which) else { continue };
+        writes.push((index, *base, *n, to));
+    }
+
+    for start in 0..writes.len() {
+        if start + lanes > writes.len() {
+            break;
+        }
+        let group = &writes[start..start + lanes];
+        let neighbours = (1..lanes).all(|j| {
+            group[j].2 == group[0].2 + j as i64 && alias.must(group[j].1, group[0].1)
+        });
+        if !neighbours {
+            continue;
+        }
+        let addrs: Vec<SIRValueId> = group.iter().map(|(_, _, _, to)| *to).collect();
+        let places: Vec<usize> = group.iter().map(|(index, ..)| *index).collect();
+        if !settled(body, ttir, &alias, at, &places, &addrs) {
+            continue;
+        }
+        return Some(Run { at: places, addrs });
+    }
+    None
+}
+
+// Whether the stores may be brought together at the last of them: nothing
+// standing between may read or write where any of them writes.
+fn settled(
+    body: &SIRBody,
+    ttir: &TTIRProgram,
+    alias: &Alias,
+    at: SIRBlockId,
+    places: &[usize],
+    addrs: &[SIRValueId],
+) -> bool {
+    let held = made(body);
+    let first = places[0];
+    let last = places[places.len() - 1];
+    for index in first..=last {
+        if places.contains(&index) {
+            continue;
+        }
+        let kind = &body.blocks[at].insts[index].kind;
+        let touches = match kind {
+            SIRInstKind::Load { from } => addrs.iter().any(|&a| alias.may(a, *from)),
+            SIRInstKind::Store { to, .. } | SIRInstKind::VecStore { to, .. } => {
+                addrs.iter().any(|&a| alias.may(a, *to))
+            }
+            SIRInstKind::DropSlot(slot) => addrs
+                .iter()
+                .any(|&a| alias.place(a).map(|p| p.base) == Some(Base::Slot(*slot))),
+            SIRInstKind::Call { .. } | SIRInstKind::Method { .. } | SIRInstKind::Drop(_) => {
+                !addrs.iter().all(|&a| alias.own(a))
+            }
+            // Anything else works a value out, and a value is not somewhere
+            // anything can have been written.
+            other => effects(&body.values, ttir, &held, other),
+        };
+        if touches {
+            return false;
+        }
+    }
+    true
+}
+
+// What the lanes of a group are, worked out from the values that fill them.
+fn grouped(
+    body: &SIRBody,
+    ttir: &TTIRProgram,
+    alias: &Alias,
+    held: &[Option<SIRInstKind>],
+    vals: &[SIRValueId],
+    depth: usize,
+) -> Group {
+    let ty = body.values[vals[0]].ty;
+    let gather = |vals: &[SIRValueId]| Group { ty, plan: Plan::Gather(vals.to_vec()) };
+
+    // The same value in every lane, which is how a thing that does not vary
+    // with the turn joins a group of things that do.
+    if vals.iter().all(|&v| v == vals[0]) {
+        return Group { ty, plan: Plan::Splat(vals[0]) };
+    }
+    if depth >= WIDE_DEEP {
+        return gather(vals);
+    }
+
+    // Neighbouring elements of one aggregate.
+    let elems: Option<Vec<(SIRValueId, i64)>> = vals
+        .iter()
+        .map(|&v| match held.get(v) {
+            Some(Some(kind @ SIRInstKind::Index { base, index })) => {
+                match (lit_of(held, *index), effects(&body.values, ttir, held, kind)) {
+                    (Some(TIRLit::Int(n)), false) => Some((*base, *n)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(elems) = elems {
+        let run = (1..elems.len()).all(|j| {
+            elems[j].1 == elems[0].1 + j as i64 && alias.must(elems[j].0, elems[0].0)
+        });
+        if run {
+            if let Ok(first) = u64::try_from(elems[0].1) {
+                return Group { ty, plan: Plan::Run { of: elems[0].0, at: first } };
+            }
+        }
+    }
+
+    // Or the same instruction in every lane. `shape` is what "the same" means:
+    // the instruction with its operands blanked, so that two adds are one
+    // shape and an add and a subtract are two.
+    let kinds: Option<Vec<SIRInstKind>> = vals
+        .iter()
+        .map(|&v| match held.get(v) {
+            Some(Some(kind)) if !effects(&body.values, ttir, held, kind) => Some(kind.clone()),
+            _ => None,
+        })
+        .collect();
+    let Some(kinds) = kinds else { return gather(vals) };
+    let first = shape(&kinds[0]);
+    if !kinds.iter().all(|kind| shape(kind) == first) {
+        return gather(vals);
+    }
+    let width = SIRBody::uses(&kinds[0]).len();
+    // Nothing to group under it, and nothing above it either: an instruction
+    // with no operands is the same instruction in every lane only if it is
+    // literally the same value, which the splat above has already answered.
+    if width == 0 {
+        return gather(vals);
+    }
+    let mut args = Vec::new();
+    for arg in 0..width {
+        let lane: Vec<SIRValueId> = kinds.iter().map(|kind| SIRBody::uses(kind)[arg]).collect();
+        args.push(grouped(body, ttir, alias, held, &lane, depth + 1));
+    }
+    Group { ty, plan: Plan::Same { kind: kinds[0].clone(), args } }
+}
+
+// An instruction with its operands blanked, which is what makes two of them
+// the same instruction for this purpose.
+fn shape(kind: &SIRInstKind) -> SIRInstKind {
+    let mut out = kind.clone();
+    for value in SIRBody::uses_mut(&mut out) {
+        *value = 0;
+    }
+    out
+}
+
+// The group written out, and the run of stores replaced by the one that writes
+// all of it.
+fn widen(
+    body: &mut SIRBody,
+    ttir: &TTIRProgram,
+    at: SIRBlockId,
+    run: &Run,
+    lanes: usize,
+    stats: &mut Stats,
+) {
+    let alias = Alias::of(body);
+    let held = made(body);
+    let vals: Vec<SIRValueId> = run
+        .at
+        .iter()
+        .map(|&index| match body.blocks[at].insts[index].kind {
+            SIRInstKind::Store { value, .. } => value,
+            _ => unreachable!("a run is a run of stores"),
+        })
+        .collect();
+    let group = grouped(body, ttir, &alias, &held, &vals, 0);
+
+    let last = run.at[run.at.len() - 1];
+    let (line, col) = (body.blocks[at].insts[last].line, body.blocks[at].insts[last].col);
+    let mut out = Vec::new();
+    let value = write(body, &group, lanes, line, col, &mut out);
+    stats.widened += 1;
+
+    // The scalar stores go and the vector one stands where the last of them
+    // did -- which is below every value any of them wrote, so nothing it reads
+    // is read above where it is made.
+    let mut insts = Vec::with_capacity(body.blocks[at].insts.len() + out.len());
+    for (index, inst) in body.blocks[at].insts.iter().enumerate() {
+        if index == last {
+            insts.append(&mut out);
+            insts.push(SIRInst {
+                def:       None,
+                kind:      SIRInstKind::VecStore { to: run.addrs[0], value },
+                is_unsafe: inst.is_unsafe,
+                line,
+                col,
+            });
+        } else if !run.at.contains(&index) {
+            insts.push(inst.clone());
+        }
+    }
+    body.blocks[at].insts = insts;
+}
+
+// One group written out, operands first, and the value it comes to.
+fn write(
+    body: &mut SIRBody,
+    group: &Group,
+    lanes: usize,
+    line: usize,
+    col: usize,
+    out: &mut Vec<SIRInst>,
+) -> SIRValueId {
+    let kind = match &group.plan {
+        Plan::Splat(value) => SIRInstKind::Pack(vec![*value; lanes]),
+        Plan::Gather(values) => SIRInstKind::Pack(values.clone()),
+        Plan::Run { of, at } => SIRInstKind::Lanes { of: *of, at: *at, lanes },
+        Plan::Same { kind, args } => {
+            let held: Vec<SIRValueId> =
+                args.iter().map(|arg| write(body, arg, lanes, line, col, out)).collect();
+            let mut kind = kind.clone();
+            for (slot, value) in SIRBody::uses_mut(&mut kind).into_iter().zip(held) {
+                *slot = value;
+            }
+            kind
+        }
+    };
+    body.values.push(SIRValue { ty: group.ty, lanes, of: None, line, col });
+    let def = body.values.len() - 1;
+    out.push(SIRInst { def: Some(def), kind, is_unsafe: false, line, col });
+    def
+}
+
 // ---- Writing a call out ---------------------------------------------------
 
 // Which body each declaration is, and which bodies each body can reach. The
@@ -1771,11 +2367,11 @@ struct Site {
     def:    Option<SIRValueId>,
 }
 
-fn inline(program: &mut SIRProgram, graph: &Calls, stats: &mut Stats) -> bool {
+fn inline(program: &mut SIRProgram, graph: &Calls, level: Level, stats: &mut Stats) -> bool {
     let mut changed = false;
     for caller in 0..program.bodies.len() {
-        for _ in 0..INLINE_EACH {
-            let Some(site) = pick(program, graph, caller) else { break };
+        for _ in 0..level.inline_each() {
+            let Some(site) = pick(program, graph, caller, level) else { break };
             let callee = program.bodies[site.callee].clone();
             written_out(&mut program.bodies[caller], &callee, &site);
             stats.inlined += 1;
@@ -1788,7 +2384,7 @@ fn inline(program: &mut SIRProgram, graph: &Calls, stats: &mut Stats) -> bool {
 // The first call in the body worth writing out. First and not best: the ones
 // refused are refused on a rule, and among the rest one call is much like
 // another at this size.
-fn pick(program: &SIRProgram, graph: &Calls, caller: SIRBodyId) -> Option<Site> {
+fn pick(program: &SIRProgram, graph: &Calls, caller: SIRBodyId, level: Level) -> Option<Site> {
     let body = &program.bodies[caller];
     let held = made(body);
     let live = body.live();
@@ -1805,7 +2401,7 @@ fn pick(program: &SIRProgram, graph: &Calls, caller: SIRBodyId) -> Option<Site> 
             if asked == TIRInline::Never || graph.cycles(callee, caller) {
                 continue;
             }
-            if !worth(&program.bodies[callee], inst, args, asked) {
+            if !worth(&program.bodies[callee], inst, args, asked, level) {
                 continue;
             }
             return Some(Site {
@@ -1821,7 +2417,13 @@ fn pick(program: &SIRProgram, graph: &Calls, caller: SIRBodyId) -> Option<Site> 
 }
 
 // Whether this body may stand where this call did.
-fn worth(callee: &SIRBody, call: &SIRInst, args: &[SIRValueId], asked: TIRInline) -> bool {
+fn worth(
+    callee: &SIRBody,
+    call: &SIRInst,
+    args: &[SIRValueId],
+    asked: TIRInline,
+    level: Level,
+) -> bool {
     if callee.params.len() != args.len() {
         return false;
     }
@@ -1851,7 +2453,7 @@ fn worth(callee: &SIRBody, call: &SIRInst, args: &[SIRValueId], asked: TIRInline
     // The size is this pass's guess at what a call is worth, and `%inline` is
     // the source saying it has a better one. Everything above this line is a
     // rule about whether the rewrite is *sound*, and a hint waives none of it.
-    asked == TIRInline::Always || size <= INLINE_MAX
+    asked == TIRInline::Always || size <= level.inline_max()
 }
 
 // The callee written into the caller at the call.
@@ -1957,44 +2559,40 @@ fn written_out(caller: &mut SIRBody, callee: &SIRBody, site: &Site) {
     caller.blocks.push(SIRBlock { phis, insts: tail, term, line, col });
 }
 
-// ---- What is left before vectorization ------------------------------------
+// ---- What is left after the widening --------------------------------------
 //
-// Running two turns of a loop at once needs four things. Three of them are
-// here now, and the fourth is not a rewrite at all.
+// `vectorize` above is the SLP pass, and it does what a vectorizer here can do
+// without a back end: it finds the same instruction being applied to
+// neighbouring places and writes it once over several of them. What it cannot
+// do is know whether that was worth doing, and that is the honest state of it.
 //
-// The turns have to be counted, so that there is a known number of them to
-// group. `unroll` answers that for the walks whose count is in the source or
-// in a type, and writing them out is also what puts the turns side by side in
-// one block, which is the form the grouping wants: not a loop to be widened
-// but a run of instructions doing the same thing to neighbouring places.
+// Two things are still guesses. How wide a vector may be is `Level::lanes`,
+// and it says four because four is what the machines this would be compiled
+// for have had for thirty years -- not because anything here worked it out.
+// And what a wide instruction costs against the narrow ones it replaced is a
+// question with no answer at all until something emits code: `widen` takes
+// every group it can prove is safe, because "safe" is the only half of the
+// decision that can be made from here.
 //
-// What does not vary with the turn has to be out of the way, or every group
-// would be a group of one thing repeated. `hoist` does that.
+// That is why it stands at `-O3` alone rather than beside the rest. Everything
+// else in this file is a rewrite that is worth making on any machine; this one
+// is a rewrite that is *correct* on any machine and worth making on some.
 //
-// And two turns must be shown not to tread on each other -- that neither
-// writes where the other reads, and that two writes are not to the one place.
-// That is `alias.rs`, and it is the piece that was missing: `may` is exactly
-// the question "are these two turns independent", asked of the addresses the
-// unrolled body holds. `xs[0]` and `xs[1]` are answered apart, and a local
-// array nothing kept the address of is answered apart from every call in the
-// body.
+// What would sharpen it, in the order the work would be done:
 //
-// The fourth is a *representation*, and it is the one thing here that cannot
-// be worked out from what is already written. A vector is a value with several
-// of something in it, and there is nowhere in the SIR to put one: `SIRValue`
-// carries a `TyId` and the type arena is the checker's, which has no vector in
-// it and should not grow one for a machine's sake. The two honest answers are
-// a lane count on `SIRValue` -- a value that is `n` of its type, which leaves
-// the arena alone and says what is meant -- or a `Ty::Vector` in the arena,
-// which is one answer to what a type is at the cost of teaching every pass
-// that matches on `Ty` about a type no source can write.
-//
-// After that comes a target, which is the other thing this compiler has not
-// got: how wide a vector may be and what one costs against the scalar run are
-// facts about where the program is going to run, and there is no back end to
-// hold an opinion. Picking four would still be picking.
-//
-// So what is left is a decision and then a pass, rather than an analysis.
+//   - a target, which settles the width, says which operations exist over a
+//     vector, and gives `widen` a cost to weigh a group against rather than
+//     taking every one it can;
+//   - seeds other than stores. A run of writes is the clearest group there is
+//     and it is not the only one: a reduction -- four adds into one running
+//     total -- is the other shape loops are full of, and it needs the adds
+//     reassociated before they can be grouped, which is a rewrite this file
+//     does not have;
+//   - and `Lanes` over memory. A run read out of an aggregate *value* is what
+//     this emits, because that is what the lowering leaves; a run read
+//     straight out of memory would need the load and the extraction to be one
+//     instruction, which is a change to what `sir::lower` builds rather than
+//     to what is made of it.
 
 #[cfg(test)]
 mod tests;

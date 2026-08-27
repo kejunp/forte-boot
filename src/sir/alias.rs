@@ -269,7 +269,8 @@ fn escapes(body: &SIRBody, places: &[Place]) -> Vec<bool> {
         for inst in &block.insts {
             match &inst.kind {
                 SIRInstKind::Load { .. } => {}
-                SIRInstKind::Store { value, .. } => leak(*value, &mut leaked),
+                SIRInstKind::Store { value, .. }
+                | SIRInstKind::VecStore { value, .. } => leak(*value, &mut leaked),
                 SIRInstKind::FieldAddr { base, .. } | SIRInstKind::TupleAddr { base, .. } => {
                     if let Some(def) = inst.def {
                         steps.push((def, *base));

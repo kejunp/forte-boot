@@ -75,13 +75,33 @@ pub struct SIRBody {
 // because a promoted slot is worth saying the name of in a message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SIRValue {
-    pub ty:   TyId,
+    pub ty:    TyId,
+    // How many of that type it holds. One for every value the lowering makes
+    // and every value any pass made until `sir::opt` learned to run the turns
+    // of a loop several at a time; more only for the values that rewrite
+    // builds.
+    //
+    // Here rather than in the type arena, and that is a decision rather than
+    // an accident. A `Ty` is the checker's, and there is no vector in the
+    // language for the checker to have inferred -- so a `Ty::Vector` would be
+    // a type no source can write, carried through every pass that matches on
+    // one, for the sake of a machine the checker has never heard of. A count
+    // beside the type says the same thing where it belongs: this is four of
+    // those, and what "those" are is still the one answer the checker gave.
+    pub lanes: usize,
     // The GIR slot it came out of, where it came out of one. `sir::promote`
     // sets this as it takes a name out of memory, so a message can still say
     // `x` rather than `%14`.
-    pub of:   Option<GIRLocalId>,
-    pub line: usize,
-    pub col:  usize,
+    pub of:    Option<GIRLocalId>,
+    pub line:  usize,
+    pub col:   usize,
+}
+
+impl SIRValue {
+    // One of its type, which is what all but a handful of them are.
+    pub fn one(ty: TyId, of: Option<GIRLocalId>, line: usize, col: usize) -> SIRValue {
+        SIRValue { ty, lanes: 1, of, line, col }
+    }
 }
 
 // Somewhere in the frame, for a name a value cannot stand in. `sir::lower`
@@ -287,6 +307,42 @@ pub enum SIRInstKind {
         at:   SIRValueId,
     },
 
+    // ---- Several at once ---------------------------------------------------
+    // What `sir::opt` builds when it finds the same thing being done to
+    // several places at once -- which, after a counted loop has been written
+    // out as its turns, is what a great many loop bodies look like.
+    //
+    // A value with more than one of its type in it is a value whose `lanes` is
+    // more than one, and these four are the only instructions that make or
+    // take one apart. Everything else that may hold one -- `Unary`, `Binary`
+    // -- does to all of them what it did to the one, which is what makes them
+    // the same instruction and not a second set.
+
+    // Several values side by side. Also how a scalar joins them: the same
+    // value named as many times as there are lanes.
+    Pack(Vec<SIRValueId>),
+    // And one of them back out, for a use that was not part of the group.
+    Lane {
+        of: SIRValueId,
+        at: usize,
+    },
+    // A run of adjacent elements of an aggregate, read at once: what several
+    // `Index`es at consecutive numbers come to. `at` is the first of them and
+    // `lanes` says how many, so the run is `at .. at + lanes`.
+    Lanes {
+        of:    SIRValueId,
+        at:    u64,
+        lanes: usize,
+    },
+    // The write, `to` being the address of the first of the elements written.
+    // Not a `Store` with a wide value, because a store writes one place and
+    // this writes a run of them -- which is exactly the difference every pass
+    // that asks what it wrote has to see.
+    VecStore {
+        to:    SIRValueId,
+        value: SIRValueId,
+    },
+
     // ---- Releases ----------------------------------------------------------
     // Where the GIR put them, carried through unmoved: which releases run was
     // settled by `gir::drops` on the graph, and nothing here asks it again.
@@ -388,12 +444,15 @@ impl SIRBody {
             | SIRInstKind::FieldAddr { base, .. }
             | SIRInstKind::TupleAddr { base, .. } => vec![*base],
             SIRInstKind::Payload { of, .. } => vec![*of],
+            SIRInstKind::Lane { of, .. } | SIRInstKind::Lanes { of, .. } => vec![*of],
 
             SIRInstKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
             SIRInstKind::Index { base, index } | SIRInstKind::IndexAddr { base, index } => {
                 vec![*base, *index]
             }
-            SIRInstKind::Store { to, value } => vec![*to, *value],
+            SIRInstKind::Store { to, value } | SIRInstKind::VecStore { to, value } => {
+                vec![*to, *value]
+            }
             SIRInstKind::IterValid { iter, at }
             | SIRInstKind::IterElem { iter, at }
             | SIRInstKind::IterStep { iter, at } => vec![*iter, *at],
@@ -415,7 +474,8 @@ impl SIRBody {
             | SIRInstKind::VariantLit { fields, .. }
             | SIRInstKind::ArrayLit(fields)
             | SIRInstKind::TupleLit(fields)
-            | SIRInstKind::Set { elems: fields, .. } => fields.clone(),
+            | SIRInstKind::Set { elems: fields, .. }
+            | SIRInstKind::Pack(fields) => fields.clone(),
             SIRInstKind::Map { entries, .. } => {
                 entries.iter().flat_map(|(k, v)| [*k, *v]).collect()
             }
@@ -449,12 +509,15 @@ impl SIRBody {
             | SIRInstKind::FieldAddr { base, .. }
             | SIRInstKind::TupleAddr { base, .. } => vec![base],
             SIRInstKind::Payload { of, .. } => vec![of],
+            SIRInstKind::Lane { of, .. } | SIRInstKind::Lanes { of, .. } => vec![of],
 
             SIRInstKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
             SIRInstKind::Index { base, index } | SIRInstKind::IndexAddr { base, index } => {
                 vec![base, index]
             }
-            SIRInstKind::Store { to, value } => vec![to, value],
+            SIRInstKind::Store { to, value } | SIRInstKind::VecStore { to, value } => {
+                vec![to, value]
+            }
             SIRInstKind::IterValid { iter, at }
             | SIRInstKind::IterElem { iter, at }
             | SIRInstKind::IterStep { iter, at } => vec![iter, at],
@@ -476,7 +539,8 @@ impl SIRBody {
             | SIRInstKind::VariantLit { fields, .. }
             | SIRInstKind::ArrayLit(fields)
             | SIRInstKind::TupleLit(fields)
-            | SIRInstKind::Set { elems: fields, .. } => fields.iter_mut().collect(),
+            | SIRInstKind::Set { elems: fields, .. }
+            | SIRInstKind::Pack(fields) => fields.iter_mut().collect(),
             SIRInstKind::Map { entries, .. } => {
                 entries.iter_mut().flat_map(|(k, v)| [k, v]).collect()
             }

@@ -35,8 +35,11 @@
 //              never goes anywhere but a load or a store, with the phis that
 //              takes.
 //   `opt`      what the program does not have to do, taken out of it: calls
-//              written where they were called, operators over values already
-//              worked out, and everything nothing reads.
+//              written where they were called, loops written out as the turns
+//              they run, operators over values already worked out, everything
+//              nothing reads -- and, at the top level, the turns of a loop run
+//              several at a time. How much of that happens is a `Level`, and
+//              `Level::None` is none of it.
 //   `verify`   the two rules that make it SSA, checked rather than assumed.
 //
 // `opt` is the one that needs all three of the others. It can only be written

@@ -16,7 +16,7 @@ use crate::tir::tir_nodes::{TIRAssignOp, TIRAttrs, TIRBinOp, TIRBinding, TIRFnAt
 use crate::tir::ttir_nodes::*;
 
 use super::lower::Lowerer;
-use super::opt::{optimize, Stats};
+use super::opt::{optimize, Level, Stats};
 use super::promote::promote;
 use super::sir_nodes::*;
 use super::verify::{verify, verify_order};
@@ -340,6 +340,12 @@ pub fn taken_out(f: Fixture) -> SIRProgram {
 // of what it folded should not be the only thing standing between a broken
 // rewrite and the pass after.
 pub fn worked(f: Fixture) -> (SIRProgram, Stats) {
+    worked_at(f, Level::Default)
+}
+
+// And at a level of one's choosing, for the tests that are about what a level
+// turns on -- and for the widening, which stands at the top one alone.
+pub fn worked_at(f: Fixture, level: Level) -> (SIRProgram, Stats) {
     let (ttir, gir) = f.finish();
     let mut lowerer = Lowerer::new(&ttir, &gir);
     lowerer.lower();
@@ -347,7 +353,7 @@ pub fn worked(f: Fixture) -> (SIRProgram, Stats) {
     sound(&out);
     promote(&mut out);
     sound(&out);
-    let stats = optimize(&mut out, &ttir);
+    let stats = optimize(&mut out, &ttir, level);
     sound(&out);
     (out, stats)
 }

@@ -141,7 +141,7 @@ fn seed(body: &mut SIRBody, out: &[bool]) -> HashMap<SIRSlotId, SIRValueId> {
         }
         let ty = body.slots[slot].ty;
         let of = body.slots[slot].of;
-        body.values.push(SIRValue { ty, of, line, col });
+        body.values.push(SIRValue::one(ty, of, line, col));
         let def = body.values.len() - 1;
         insts.push(SIRInst {
             def:       Some(def),
@@ -219,7 +219,7 @@ fn place(
                 let ty = body.slots[slot].ty;
                 let held = body.slots[slot].of;
                 let (line, col) = (body.blocks[y].line, body.blocks[y].col);
-                body.values.push(SIRValue { ty, of: held, line, col });
+                body.values.push(SIRValue::one(ty, held, line, col));
                 let def = body.values.len() - 1;
                 body.blocks[y].phis.push(SIRPhi { def, edges: Vec::new() });
                 of[y].push(Some(slot));
