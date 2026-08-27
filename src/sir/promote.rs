@@ -163,15 +163,23 @@ fn seed(body: &mut SIRBody, out: &[bool]) -> HashMap<SIRSlotId, SIRValueId> {
 // the phis stand in their block -- `SIRPhi` does not carry it, because once the
 // renaming is done a phi is a value like any other and which slot it came out
 // of is only this pass's business.
+//
+// One entry per phi the block ends up with, and `None` for the ones that were
+// already there. This pass is run twice: `sir::opt` writes a call out and asks
+// again, and by then the body is full of phis from the first run and from the
+// rewrite itself. They are nobody's slot now -- the numbering they were placed
+// under is gone -- and what matters is only that they are counted, so that the
+// ones placed here still line up with where they stand.
 fn place(
     body: &mut SIRBody,
     doms: &Dominators,
     out: &[bool],
     owners: &HashMap<SIRValueId, SIRSlotId>,
-) -> Vec<Vec<SIRSlotId>> {
+) -> Vec<Vec<Option<SIRSlotId>>> {
     let frontiers = doms.frontiers(body);
     let live = body.live();
-    let mut of: Vec<Vec<SIRSlotId>> = vec![Vec::new(); body.blocks.len()];
+    let mut of: Vec<Vec<Option<SIRSlotId>>> =
+        body.blocks.iter().map(|block| vec![None; block.phis.len()]).collect();
 
     // Where each slot is stored to, gathered once rather than per slot.
     let mut stores: HashMap<SIRSlotId, Vec<SIRBlockId>> = HashMap::new();
@@ -214,7 +222,7 @@ fn place(
                 body.values.push(SIRValue { ty, of: held, line, col });
                 let def = body.values.len() - 1;
                 body.blocks[y].phis.push(SIRPhi { def, edges: Vec::new() });
-                of[y].push(slot);
+                of[y].push(Some(slot));
                 if !ever[y] {
                     ever[y] = true;
                     work.push(y);
@@ -233,7 +241,7 @@ fn rename(
     doms: &Dominators,
     out: &[bool],
     owners: &HashMap<SIRValueId, SIRSlotId>,
-    of: &[Vec<SIRSlotId>],
+    of: &[Vec<Option<SIRSlotId>>],
     undef: &HashMap<SIRSlotId, SIRValueId>,
 ) {
     let children = doms.children();
@@ -261,7 +269,9 @@ fn rename(
 
         let mut mine: Vec<SIRSlotId> = Vec::new();
         for (index, phi) in body.blocks[at].phis.iter().enumerate() {
-            let slot = of[at][index];
+            // A phi this pass did not place stands for no slot of this run's
+            // numbering, and there is nothing to push for it.
+            let Some(slot) = of[at][index] else { continue };
             stacks[slot].push(phi.def);
             mine.push(slot);
         }
@@ -314,7 +324,10 @@ fn rename(
         // on top now that the block is done.
         for to in body.blocks[at].term.targets() {
             for index in 0..body.blocks[to].phis.len() {
-                let slot = of[to][index];
+                // Again the ones already there: their edges were written when
+                // they were placed, and a second one would be a way in the
+                // block has not got.
+                let Some(slot) = of[to][index] else { continue };
                 let held = *stacks[slot].last().expect("a stack is seeded");
                 body.blocks[to].phis[index].edges.push((at, held));
             }

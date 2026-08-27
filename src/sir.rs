@@ -44,11 +44,13 @@
 // and it is the pass most able to break it silently, which is what `verify` is
 // run over every body it touches for.
 //
-// `dom` is what `promote` places phis by, and is the one piece of this any
-// later pass will want on its own: dominance is what "this value is usable
-// here" means, and every rewrite over the graph has to ask it. `loops` is the
-// second thing it answers -- a back edge is an edge to a block that dominates
-// it -- and is what the two rewrites over loops in `opt` are written against.
+// Three of these are analyses rather than passes, and are what the rewrites
+// are written against. `dom` is what `promote` places phis by: dominance is
+// what "this value is usable here" means, and every rewrite over the graph has
+// to ask it. `loops` is the next thing it answers -- a back edge is an edge to
+// a block that dominates it. And `alias` is the one about memory: whether two
+// addresses may be the same address, which is the question a load, a store and
+// a loop that holds either all turn on.
 //
 // Nothing consumes a SIR yet -- there is no backend -- so most of what is
 // built here is built for the pass after, and the warning about that would be
@@ -58,6 +60,7 @@
 #[cfg(test)]
 pub mod fixture;
 
+pub mod alias;
 pub mod dom;
 pub mod loops;
 pub mod lower;

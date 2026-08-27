@@ -196,7 +196,7 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
              {} instructions ({} after opt: {} calls written out, {} loops unrolled, \
-             {} lifted out of a loop, {} folded, {} shared, {} dead)",
+             {} lifted out of a loop, {} folded, {} shared, {} forwarded, {} dead)",
             name.display(),
             ttir.items.len(),
             symbols.len(),
@@ -214,6 +214,7 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
             worked.hoisted,
             worked.folded,
             worked.shared,
+            worked.forwarded,
             worked.dead
         );
         for (symbol, _) in symbols.sorted() {

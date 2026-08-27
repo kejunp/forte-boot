@@ -12,7 +12,7 @@
 // program -- there is no diagnostic left to get wrong -- so a rewrite here is
 // only ever wrong about what the program *does*.
 //
-// Eight rewrites, run round and round until none of them has anything left:
+// Nine rewrites, run round and round until none of them has anything left:
 //
 //   `unroll`    a loop whose turns are counted before it starts, written out
 //               as the turns it runs.
@@ -25,6 +25,8 @@
 //               joined nothing.
 //   `share`     two instructions that make the same value from the same
 //               operands, where the first stands before the second.
+//   `forward`   a load answered by the store above it, where nothing between
+//               them may have written where it reads.
 //   `branches`  a branch whose condition is already known, and one whose two
 //               edges go to one block.
 //   `merge`     a block whose only way in is a `Goto`, folded into the block
@@ -83,6 +85,7 @@ use crate::tir::tir_nodes::{TIRBinOp, TIRFnUses, TIRInline, TIRLit, TIRPrim, TIR
                             TIRUnaryOp};
 use crate::tir::ttir_nodes::{TTIRItemId, TTIRItemKind, TTIRProgram, Ty, TyId};
 
+use super::alias::{Alias, Base};
 use super::dom::Dominators;
 use super::loops::{preheader, Loop};
 use super::promote::promote;
@@ -104,22 +107,26 @@ const INLINE_EACH: usize = 8;
 // What the pass did, for the driver to print. Nothing reads it but the message.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
-    pub rounds:   usize,
-    pub inlined:  usize,
-    pub folded:   usize,
+    pub rounds:    usize,
+    pub inlined:   usize,
+    pub folded:    usize,
     // Values that turned out to be a value there already: a phi that joined
     // one answer, or an instruction that repeated one.
-    pub shared:   usize,
-    pub dead:     usize,
+    pub shared:    usize,
+    // Loads answered by what a store above them wrote, which is the same idea
+    // over memory and is counted apart because it is the one that needed an
+    // analysis rather than a comparison.
+    pub forwarded: usize,
+    pub dead:      usize,
     // Blocks emptied, merged away, or left with one edge where they had two.
-    pub blocks:   usize,
+    pub blocks:    usize,
     // Instructions lifted out of a loop, and loops written out as the turns
     // they run for.
-    pub hoisted:  usize,
-    pub unrolled: usize,
+    pub hoisted:   usize,
+    pub unrolled:  usize,
     // Slots the re-run of `promote` took out, which are the callee's locals
     // now that they are the caller's.
-    pub promoted: usize,
+    pub promoted:  usize,
 }
 
 pub fn optimize(program: &mut SIRProgram, ttir: &TTIRProgram) -> Stats {
@@ -157,9 +164,10 @@ fn clean(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
         changed |= fold(body, ttir, stats);
         changed |= phis(body, stats);
         changed |= share(body, ttir, stats);
+        changed |= forward(body, ttir, stats);
         changed |= branches(body, stats);
         changed |= merge(body, stats);
-        changed |= sweep(body, stats);
+        changed |= sweep(body, ttir, stats);
         ever |= changed;
         if !changed {
             break;
@@ -226,6 +234,19 @@ fn prim(ttir: &TTIRProgram, ty: TyId) -> Option<TIRPrim> {
     }
 }
 
+// Whether two types say the same thing, which is not the same as being the
+// same entry.
+//
+// A `TyId` is not a name for a type: `sema` interns as it infers, so a program
+// with three `i32`s written in it can leave three entries that all read
+// `Prim(I32)`. Everything here that compares two types wants them one where
+// they say the same thing -- an instruction repeated is repeated whichever
+// `i32` the checker happened to be holding -- so the comparison is over what
+// the entry says. The id is tried first because it usually settles it.
+fn alike(ttir: &TTIRProgram, a: TyId, b: TyId) -> bool {
+    a == b || (ttir.types.get(a).is_some() && ttir.types.get(a) == ttir.types.get(b))
+}
+
 fn integer(p: TIRPrim) -> bool {
     use TIRPrim::*;
     matches!(p, I8 | I16 | I32 | I64 | I128 | U8 | U16 | U32 | U64 | U128)
@@ -240,14 +261,21 @@ fn integer(p: TIRPrim) -> bool {
 // that is not its own. And a division whose divisor is not a literal that is
 // plainly not zero is the same: the trap, if there is one, is the thing being
 // removed.
-fn effects(made: &[Option<SIRInstKind>], kind: &SIRInstKind) -> bool {
+fn effects(
+    values: &[SIRValue],
+    ttir: &TTIRProgram,
+    made: &[Option<SIRInstKind>],
+    kind: &SIRInstKind,
+) -> bool {
     match kind {
         SIRInstKind::Call { .. }
         | SIRInstKind::Method { .. }
         | SIRInstKind::Store { .. }
         | SIRInstKind::Drop(_)
         | SIRInstKind::DropSlot(_) => true,
-        SIRInstKind::Index { .. } | SIRInstKind::IndexAddr { .. } => true,
+        SIRInstKind::Index { base, index } | SIRInstKind::IndexAddr { base, index } => {
+            !within(values, ttir, made, *base, *index)
+        }
         SIRInstKind::Binary { op: TIRBinOp::Div | TIRBinOp::Rem, rhs, .. } => {
             match lit_of(made, *rhs) {
                 Some(TIRLit::Int(n)) => *n == 0,
@@ -259,6 +287,27 @@ fn effects(made: &[Option<SIRInstKind>], kind: &SIRInstKind) -> bool {
         }
         _ => false,
     }
+}
+
+// Whether the element being asked for is one the thing being indexed certainly
+// has. A number for an index and a length in the type is the whole of what can
+// be answered here, and it is enough for the shape that matters: a name of this
+// frame, declared `T[n]`, reached at a place the unrolling worked out.
+//
+// Everything else is left as something that might be past the end -- which is
+// not the same as saying it traps, only that nothing here knows it does not,
+// and moving or dropping it would be answering a question §5 has not.
+fn within(
+    values: &[SIRValue],
+    ttir: &TTIRProgram,
+    made: &[Option<SIRInstKind>],
+    base: SIRValueId,
+    index: SIRValueId,
+) -> bool {
+    let Some(TIRLit::Int(n)) = lit_of(made, index) else { return false };
+    let Some(held) = values.get(base) else { return false };
+    let Some(Ty::Array { len, .. }) = ttir.types.get(held.ty) else { return false };
+    *n >= 0 && (*n as u128) < *len as u128
 }
 
 // Whether two of them with the same operands make the same value.
@@ -282,6 +331,12 @@ fn known(kind: &SIRInstKind) -> bool {
             | SIRInstKind::SelfAddr
             | SIRInstKind::FieldAddr { .. }
             | SIRInstKind::TupleAddr { .. }
+            // Two of these make the one value whether or not either traps: if
+            // the first one did, there is no second one to have shared with.
+            // Whether a dead one may *go* is `effects`, which is a different
+            // question and answered differently.
+            | SIRInstKind::Index { .. }
+            | SIRInstKind::IndexAddr { .. }
     )
 }
 
@@ -785,7 +840,7 @@ fn share(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
             if !place && !shareable(ttir, ty) {
                 continue;
             }
-            match seen.iter().find(|(held, of, _)| *of == ty && *held == kind) {
+            match seen.iter().find(|(held, of, _)| alike(ttir, *of, ty) && *held == kind) {
                 Some((_, _, held)) => {
                     subst.insert(def, *held);
                     gone[at][index] = true;
@@ -932,7 +987,7 @@ fn merge(body: &mut SIRBody, stats: &mut Stats) -> bool {
 // Blocks nothing reaches go the same way, and first: an instruction standing
 // in one is not run either, and leaving it there would keep alive whatever it
 // reads.
-fn sweep(body: &mut SIRBody, stats: &mut Stats) -> bool {
+fn sweep(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
     let live = body.live();
     let mut changed = false;
     for at in 0..body.blocks.len() {
@@ -966,7 +1021,7 @@ fn sweep(body: &mut SIRBody, stats: &mut Stats) -> bool {
             continue;
         }
         for inst in &body.blocks[at].insts {
-            if effects(&held, &inst.kind) {
+            if effects(&body.values, ttir, &held, &inst.kind) {
                 for value in SIRBody::uses(&inst.kind) {
                     want(value, &mut wanted, &mut work);
                 }
@@ -990,11 +1045,23 @@ fn sweep(body: &mut SIRBody, stats: &mut Stats) -> bool {
         }
         let before = body.blocks[at].insts.len() + body.blocks[at].phis.len();
         body.blocks[at].phis.retain(|phi| wanted[phi.def]);
-        body.blocks[at].insts.retain(|inst| match inst.def {
-            Some(def) => wanted[def] || effects(&held, &inst.kind),
-            // An instruction that makes nothing is there for what it does, and
-            // one that does nothing either is one nothing put there.
-            None => effects(&held, &inst.kind),
+        // Worked out before the list is touched: what an instruction is for
+        // is a question about the whole body, and the answer cannot be asked
+        // for while the list it is about is being written to.
+        let keep: Vec<bool> = body.blocks[at]
+            .insts
+            .iter()
+            .map(|inst| match inst.def {
+                Some(def) => wanted[def] || effects(&body.values, ttir, &held, &inst.kind),
+                // An instruction that makes nothing is there for what it does,
+                // and one that does nothing either is one nothing put there.
+                None => effects(&body.values, ttir, &held, &inst.kind),
+            })
+            .collect();
+        let mut index = 0;
+        body.blocks[at].insts.retain(|_| {
+            index += 1;
+            keep[index - 1]
         });
         let after = body.blocks[at].insts.len() + body.blocks[at].phis.len();
         if after != before {
@@ -1003,6 +1070,98 @@ fn sweep(body: &mut SIRBody, stats: &mut Stats) -> bool {
         }
     }
     changed
+}
+
+// ---- What a store put there ------------------------------------------------
+
+// A load below a store to the same address finds what the store wrote, so it
+// need not go and look: the value is already in hand. And a second load of an
+// address nothing has written since finds what the first one found.
+//
+// This is the rewrite `share` cannot make. Two instructions with the same
+// operands make the same value, which is why `share` may put one where two
+// were -- but a load's operands are an address, and what is *at* an address is
+// not among them. What is at it is whatever the last write left, so the
+// question is which writes stand between the two, and that is what `alias`
+// answers.
+//
+// Within a block and no further. Following the answer across a join means
+// carrying what is known at every edge and joining it where they meet, which
+// is a memory SSA and is a larger thing than this; a block at a time catches
+// the shape that matters -- a name written and read on the next line -- and
+// `hoist` is what carries a load out of a loop.
+//
+// Three things end what is known. A store to an address that may be the same
+// one replaces it. A call, a method or a release may write anywhere it can
+// reach, so everything goes but what is rooted in a name of this frame whose
+// address nothing kept. And a value with something to release is never
+// forwarded at all: the load would be the value the store wrote rather than a
+// copy of it, and both would be released.
+fn forward(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -> bool {
+    let alias = Alias::of(body);
+    let live = body.live();
+    let mut subst: HashMap<SIRValueId, SIRValueId> = HashMap::new();
+    let mut gone: Vec<Vec<bool>> =
+        body.blocks.iter().map(|b| vec![false; b.insts.len()]).collect();
+
+    for at in 0..body.blocks.len() {
+        if !live[at] {
+            continue;
+        }
+        // What is at an address, in the order it was learnt.
+        let mut known: Vec<(SIRValueId, SIRValueId)> = Vec::new();
+        for index in 0..body.blocks[at].insts.len() {
+            match body.blocks[at].insts[index].kind {
+                SIRInstKind::Store { to, value } => {
+                    known.retain(|(addr, _)| !alias.may(*addr, to));
+                    known.push((to, settle(&subst, value)));
+                }
+                SIRInstKind::Load { from } => {
+                    let Some(def) = body.blocks[at].insts[index].def else { continue };
+                    if !shareable(ttir, body.values[def].ty) {
+                        continue;
+                    }
+                    let found = known
+                        .iter()
+                        .rev()
+                        .find(|(addr, _)| alias.must(*addr, from))
+                        .map(|(_, held)| *held);
+                    match found {
+                        // The types have to agree as well as the addresses. A
+                        // union read back as the other arm is one address and
+                        // two values, and this pass is not the place to decide
+                        // what that means.
+                        Some(held) if alike(ttir, body.values[held].ty, body.values[def].ty) => {
+                            subst.insert(def, held);
+                            gone[at][index] = true;
+                            stats.forwarded += 1;
+                        }
+                        _ => known.push((from, def)),
+                    }
+                }
+                SIRInstKind::Call { .. }
+                | SIRInstKind::Method { .. }
+                | SIRInstKind::Drop(_)
+                | SIRInstKind::DropSlot(_) => {
+                    known.retain(|(addr, _)| alias.own(*addr));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if subst.is_empty() {
+        return false;
+    }
+    for at in 0..body.blocks.len() {
+        let mut index = 0;
+        body.blocks[at].insts.retain(|_| {
+            index += 1;
+            !gone[at][index - 1]
+        });
+    }
+    replace(body, &subst);
+    true
 }
 
 // ---- Out of the loop ------------------------------------------------------
@@ -1058,19 +1217,38 @@ fn lift(body: &mut SIRBody, ttir: &TTIRProgram, held: &Loop, stats: &mut Stats) 
         return false;
     }
 
-    // Whether anything in the loop may change what a load would find.
-    let writes = held.blocks.iter().any(|&at| {
-        body.blocks[at].insts.iter().any(|inst| {
-            matches!(
-                inst.kind,
-                SIRInstKind::Store { .. }
-                    | SIRInstKind::Call { .. }
-                    | SIRInstKind::Method { .. }
-                    | SIRInstKind::Drop(_)
-                    | SIRInstKind::DropSlot(_)
-            )
-        })
-    });
+    // What the loop writes, so that a load can be asked whether any of it
+    // lands where it reads. Three kinds: the addresses stored to, the slots
+    // released, and whether it calls out at all -- a call writes wherever it
+    // can reach, which is everywhere but a name of this frame whose address
+    // nothing kept.
+    let alias = Alias::of(body);
+    let held_made = made(body);
+    let mut wrote: Vec<SIRValueId> = Vec::new();
+    let mut released: Vec<SIRSlotId> = Vec::new();
+    let mut calls = false;
+    for &at in &held.blocks {
+        for inst in &body.blocks[at].insts {
+            match &inst.kind {
+                SIRInstKind::Store { to, .. } => wrote.push(*to),
+                SIRInstKind::DropSlot(slot) => released.push(*slot),
+                SIRInstKind::Call { .. } | SIRInstKind::Method { .. } | SIRInstKind::Drop(_) => {
+                    calls = true
+                }
+                _ => {}
+            }
+        }
+    }
+    let quiet = |from: SIRValueId| {
+        if wrote.iter().any(|&to| alias.may(to, from)) {
+            return false;
+        }
+        if released.iter().any(|&slot| alias.place(from).map(|p| p.base) == Some(Base::Slot(slot)))
+        {
+            return false;
+        }
+        !calls || alias.own(from)
+    };
 
     // What the loop makes, which is what "comes from outside" is the negation
     // of. Cleared as an instruction is lifted, so that what read it is lifted
@@ -1094,8 +1272,13 @@ fn lift(body: &mut SIRBody, ttir: &TTIRProgram, held: &Loop, stats: &mut Stats) 
         for index in 0..body.blocks[at].insts.len() {
             let inst = &body.blocks[at].insts[index];
             let Some(def) = inst.def else { continue };
-            if !liftable(ttir, &inst.kind, body.values[def].ty, writes) {
+            if !liftable(ttir, &body.values, &held_made, &inst.kind, body.values[def].ty) {
                 continue;
+            }
+            if let SIRInstKind::Load { from } = inst.kind {
+                if !quiet(from) {
+                    continue;
+                }
             }
             if SIRBody::uses(&inst.kind).iter().any(|&value| within[value]) {
                 continue;
@@ -1124,7 +1307,13 @@ fn lift(body: &mut SIRBody, ttir: &TTIRProgram, held: &Loop, stats: &mut Stats) 
     true
 }
 
-fn liftable(ttir: &TTIRProgram, kind: &SIRInstKind, ty: TyId, writes: bool) -> bool {
+fn liftable(
+    ttir: &TTIRProgram,
+    values: &[SIRValue],
+    made: &[Option<SIRInstKind>],
+    kind: &SIRInstKind,
+    ty: TyId,
+) -> bool {
     let place = matches!(
         kind,
         SIRInstKind::Addr(_)
@@ -1132,11 +1321,24 @@ fn liftable(ttir: &TTIRProgram, kind: &SIRInstKind, ty: TyId, writes: bool) -> b
             | SIRInstKind::SelfAddr
             | SIRInstKind::FieldAddr { .. }
             | SIRInstKind::TupleAddr { .. }
+            | SIRInstKind::IndexAddr { .. }
     );
     if !place && !shareable(ttir, ty) {
         return false;
     }
-    known(kind) || (!writes && matches!(kind, SIRInstKind::Load { .. }))
+    // Nothing that may trap, which is the same list `sweep` is held to and for
+    // the mirror of the same reason: a loop that turns nought times still
+    // reaches the block this is going into, so a division by something that
+    // might be zero, or an index that might be past the end, would be a trap
+    // moved onto a path it was not on. `known` is not that question -- `share`
+    // puts nothing anywhere new -- which is why both are asked here.
+    if effects(values, ttir, made, kind) {
+        return false;
+    }
+    // A load is liftable as far as this is concerned; whether what it reads
+    // stays put for the length of the loop is `quiet`'s to say, and it is the
+    // only one of these that has to ask.
+    known(kind) || matches!(kind, SIRInstKind::Load { .. })
 }
 
 // ---- The loop written out as the turns it runs ----------------------------
@@ -1755,42 +1957,44 @@ fn written_out(caller: &mut SIRBody, callee: &SIRBody, site: &Site) {
     caller.blocks.push(SIRBlock { phis, insts: tail, term, line, col });
 }
 
-// ---- What would have to come before vectorization -------------------------
+// ---- What is left before vectorization ------------------------------------
 //
-// Not written, and this is what it would take, so that the next pass over this
-// file starts from the question rather than from the gap.
+// Running two turns of a loop at once needs four things. Three of them are
+// here now, and the fourth is not a rewrite at all.
 //
-// A vector is a type before it is a rewrite. `Ty` has no vector and the SIR
-// has no instruction that takes one, so the first move is not in this file at
-// all: `<n x T>` in the type arena, and the loads, stores and operators over
-// it in `sir_nodes.rs`. Without them there is nothing for a vectorized loop to
-// be written *as*, and a pass that reshaped the loop and left it in scalars
-// would have done nothing but make it longer.
+// The turns have to be counted, so that there is a known number of them to
+// group. `unroll` answers that for the walks whose count is in the source or
+// in a type, and writing them out is also what puts the turns side by side in
+// one block, which is the form the grouping wants: not a loop to be widened
+// but a run of instructions doing the same thing to neighbouring places.
 //
-// Then a target. How wide a vector may be, which operations the machine has
-// over one, and what the two cost against the scalar loop are all facts about
-// where the program is going to run, and this compiler has no back end to have
-// an opinion. Guessing four would be a guess.
+// What does not vary with the turn has to be out of the way, or every group
+// would be a group of one thing repeated. `hoist` does that.
 //
-// Then the analysis, which is the real work and the reason it is not a small
-// change. Two turns of a loop may be run at once only where neither writes
-// what the other reads -- so it needs to know when two addresses are the same
-// address, which is an alias analysis nothing here has, and when a loop's turn
-// count is known before it starts, which the `Iter*` protocol answers for a
-// range and not for a set. `sema::borrows` already knows a great deal about
-// what may alias what, and the honest route is to carry that answer forward
-// into the SIR rather than to work it out again here from the graph.
+// And two turns must be shown not to tread on each other -- that neither
+// writes where the other reads, and that two writes are not to the one place.
+// That is `alias.rs`, and it is the piece that was missing: `may` is exactly
+// the question "are these two turns independent", asked of the addresses the
+// unrolled body holds. `xs[0]` and `xs[1]` are answered apart, and a local
+// array nothing kept the address of is answered apart from every call in the
+// body.
 //
-// What was worth doing first, and needed none of the above, is `unroll`: the
-// cursor of a walk over a literal range is a value this pass can work out, so
-// the body is written down the number of times it will run and the loop
-// variable is a literal in each copy. That is where a vectorizer would start
-// as well -- a loop whose turns are counted and whose body is written out is
-// the loop whose turns are worth running together -- and it is one of the two
-// reasons the next step is smaller than it was: the trip count is answered,
-// and `hoist` has already moved out of the body everything that does not vary
-// with the turn. What is left to find is only which of the remaining
-// instructions may run in a different order, which is the alias analysis.
+// The fourth is a *representation*, and it is the one thing here that cannot
+// be worked out from what is already written. A vector is a value with several
+// of something in it, and there is nowhere in the SIR to put one: `SIRValue`
+// carries a `TyId` and the type arena is the checker's, which has no vector in
+// it and should not grow one for a machine's sake. The two honest answers are
+// a lane count on `SIRValue` -- a value that is `n` of its type, which leaves
+// the arena alone and says what is meant -- or a `Ty::Vector` in the arena,
+// which is one answer to what a type is at the cost of teaching every pass
+// that matches on `Ty` about a type no source can write.
+//
+// After that comes a target, which is the other thing this compiler has not
+// got: how wide a vector may be and what one costs against the scalar run are
+// facts about where the program is going to run, and there is no back end to
+// hold an opinion. Picking four would still be picking.
+//
+// So what is left is a decision and then a pass, rather than an analysis.
 
 #[cfg(test)]
 mod tests;
