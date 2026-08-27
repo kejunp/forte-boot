@@ -1,0 +1,190 @@
+// A body inside a body, and what it took with it.
+//
+// A closure's parameters are slots of its own body and its captures are not:
+// a name it uses but did not declare is found in the body outside, and what is
+// written down is how it was taken rather than what it resolved to. Which of
+// the three ways it was taken -- read, written to, taken -- is worked out per
+// name from what the body asks of it, and it is what tells `fn`, `var fn` and
+// `once fn` apart.
+//
+// A method call is here for the same reason a closure is: both need a receiver
+// found before anything else can be looked up, and both are the place where
+// what is in scope stops being a list of names in this body.
+
+
+use crate::error::Diagnostic;
+use crate::tir::tir_nodes::*;
+use crate::tir::ttir_nodes::*;
+
+use super::{Frame, Lowerer};
+
+impl<'a> Lowerer<'a> {
+    // A closure is a body inside a body. Its parameters are slots of its own,
+    // and every name it uses but did not declare is taken from the frame it was
+    // written in -- which is what `catch` does as each name is met.
+    pub(super) fn closure(
+        &mut self,
+        is_move: bool,
+        params: &[crate::tir::tir_nodes::TIRParam],
+        body: TIRExprId,
+        at: TIRExprId,
+    ) -> TTIRExprId {
+        // What it gives back is worked out from what its body comes to: a
+        // closure writes no return type, there being nowhere to write one.
+        let ret = self.types.fresh();
+        self.frames.push(Frame::new(ret, is_move));
+
+        let mut arg_tys = Vec::new();
+        for p in params {
+            let ty = match p.ty {
+                Some(ty) => self.ty(ty),
+                None => self.types.fresh(),
+            };
+            arg_tys.push(ty);
+            self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let, self.at(at));
+        }
+
+        let value = self.expr(body);
+        let found = self.out.exprs[value].ty;
+        if self.types.unify(found, ret).is_err() {
+            let (found, ret) = (self.spell(found), self.spell(ret));
+            self.errors.push(
+                Diagnostic::error(
+                    format!("this closure gives back `{}` and `{}` at once", found, ret),
+                    self.at(at),
+                )
+                .with_label("it is worth one type"),
+            );
+        }
+
+        // The frame comes off, and what it caught comes with it.
+        let captures = self.frames.last().expect("a frame").captures.clone();
+        // What calling it does to what it captured, which is the most any one
+        // capture asks: "worked out per name, each taking the least the body
+        // asks of it" (§5), and the closure is the most of those.
+        //
+        // A `move` capture is what takes: the closure owns the value, so a
+        // second call would hand away what the first already did. A capture
+        // the body assigns to is what writes. Everything else only reads, and
+        // a closure that captured nothing reads nothing.
+        let made = self.finish_body(value);
+        let uses = captures
+            .iter()
+            .map(|c| match c.mode {
+                // "By value is a copy where the name's type copies and a move
+                // where it does not": a copy is the closure's own and calling
+                // it changes nothing, and one that moved is only given away
+                // where the body gives it away.
+                TTIRCaptureMode::Value => {
+                    let ty = self.out.bodies[made].locals[c.slot].ty;
+                    if !self.copies(ty) && self.hands_away(made, c.slot) {
+                        TIRFnUses::Takes
+                    } else if self.writes_to(made, c.slot) {
+                        // A `move` closure with a copy of its own that it
+                        // writes to has state, and state is what one holder at
+                        // a time is for.
+                        TIRFnUses::Writes
+                    } else {
+                        TIRFnUses::Reads
+                    }
+                }
+                TTIRCaptureMode::Ref(TIRRefOp::Mut) => TIRFnUses::Writes,
+                TTIRCaptureMode::Ref(TIRRefOp::Imm) => TIRFnUses::Reads,
+            })
+            .max()
+            .unwrap_or(TIRFnUses::Reads);
+        let ty = self.types.intern(Ty::Fn { uses, params: arg_tys, ret, is_unsafe: false });
+        self.make(TTIRExprKind::Closure { captures, body: made }, ty, at)
+    }
+
+    // A call of a field, where the field turns out to be a method. `None` where
+    // it is not one -- a field holding a fn is called like anything else, and
+    // that is a `Call` of a `Field`.
+    pub(super) fn method(
+        &mut self,
+        base: TIRExprId,
+        name: &str,
+        args: &[TIRExprId],
+        at: TIRExprId,
+    ) -> Option<TTIRExprId> {
+        let recv = self.expr(base);
+        let held = self.out.exprs[recv].ty;
+        // A field of the same name wins: it is the nearer thing, and a struct
+        // holding a fn is reached before an impl is looked in.
+        if self.field_of(held, name).is_some() {
+            return None;
+        }
+        let item = self.method_of(held, name)?;
+
+        let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return None };
+        let (fn_ty, takes_self) = (
+            f.ty,
+            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..))),
+        );
+        let Ty::Fn { params, ret, .. } = self.types.get(fn_ty).clone() else { return None };
+
+        // The receiver is the first parameter, so what is left is what the call
+        // was handed.
+        let wanted: Vec<TyId> = if takes_self { params[1..].to_vec() } else { params.clone() };
+        if wanted.len() != made.len() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` takes {} and was handed {}", name, wanted.len(), made.len()),
+                    self.at(at),
+                )
+                .with_label("the wrong number of arguments"),
+            );
+        } else {
+            for (i, (&want, &got)) in wanted.iter().zip(made.iter()).enumerate() {
+                let found = self.out.exprs[got].ty;
+                if self.types.unify(found, want).is_err() {
+                    let (found, want) = (self.spell(found), self.spell(want));
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("argument {} is `{}` and it takes `{}`", i + 1, found, want),
+                            self.at(at),
+                        )
+                        .with_label("this is what it was handed"),
+                    );
+                }
+                let at = self.at(at);
+                self.stands_as(found, want, at);
+            }
+        }
+        Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+    }
+
+    // The method of that name written for that type. "an impl makes methods for
+    // its type and holds nothing else" (§8), so this is every impl whose
+    // subject is the type, and the member of it with that name.
+    fn method_of(&mut self, ty: TyId, name: &str) -> Option<TTIRItemId> {
+        // A reference stands for the place it refers to, so a method of the
+        // referent is a method of the reference.
+        let held = match self.types.get(ty).clone() {
+            Ty::Ref { inner, .. } => inner,
+            _ => ty,
+        };
+        let of = match self.types.get(held).clone() {
+            Ty::Named { item, .. } => item,
+            _ => return None,
+        };
+        for item in &self.out.items {
+            let TTIRItemKind::Impl { ty: subject, members, .. } = &item.kind else { continue };
+            let Ty::Named { item: written, .. } = self.types.get(*subject).clone() else {
+                continue;
+            };
+            if written != of {
+                continue;
+            }
+            for &member in members {
+                if let TTIRItemKind::Fn(f) = &self.out.items[member].kind {
+                    if f.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+        }
+        None
+    }
+}

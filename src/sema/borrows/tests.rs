@@ -15,7 +15,7 @@ use crate::tir::ttir_nodes::*;
 struct Suite {
     p:      TTIRProgram,
     locals: Vec<TTIRLocal>,
-    pub(super) line:   usize,
+    line:   usize,
 }
 
 impl Suite {
@@ -86,7 +86,7 @@ impl Suite {
         }))
     }
 
-    pub(super) fn expr(&mut self, kind: TTIRExprKind, ty: TyId) -> TTIRExprId {
+    fn expr(&mut self, kind: TTIRExprKind, ty: TyId) -> TTIRExprId {
         self.line += 1;
         let line = self.line;
         self.p.exprs.push(TTIRExpr { kind, ty, line, col: 1 });
@@ -160,7 +160,7 @@ impl Suite {
         self.shut(outer, empty, captures)
     }
 
-    pub(super) fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
+    fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
         self.expr(TTIRExprKind::Block { stmts, tail }, Self::NULL)
     }
 

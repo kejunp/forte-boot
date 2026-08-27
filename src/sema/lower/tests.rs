@@ -8,8 +8,10 @@ use crate::lex::lexer::Lexer;
 use crate::parse::parser::Parser;
 use crate::prep::preprocess;
 use crate::tir::lower::Lowerer as TIRLowerer;
-use crate::tir::ttir_nodes::{TTIRBound, TTIRCaptureMode, TTIRGeneric, TTIRPatKind, TTIRSubject};
-use crate::tir::tir_nodes::TIRRefOp;
+// Named rather than reached through `super::*`: the pass itself imports only
+// what it uses, and what these assert on is a good deal more than that.
+use crate::tir::tir_nodes::{TIRPrim, TIRRefOp, TIRVis};
+use crate::tir::ttir_nodes::*;
 
 // Source to typed tree. The passes before this one must all succeed: what this
 // makes of a tree they turned down is not what is under test.
