@@ -1,4 +1,5 @@
 mod gir;
+mod sir;
 mod error;
 mod expand;
 mod lex;
@@ -175,15 +176,43 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         gir::opt::optimize(&mut graph);
         let left: usize = graph.bodies.iter().map(|b| b.blocks.len()).sum();
 
+        // And the SSA, which is what the graph was for: the trees flattened,
+        // the last two terminators written out as tests and a loop, and every
+        // name whose address goes nowhere taken out of the frame and named
+        // where it is made.
+        let mut lowerer = sir::lower::Lowerer::new(&ttir, &graph);
+        lowerer.lower();
+        let mut ssa = lowerer.finish();
+        let slots: usize = ssa.bodies.iter().map(|b| b.slots.len()).sum();
+        let promoted = sir::promote::promote(&mut ssa);
+        let values: usize = ssa.bodies.iter().map(|b| b.values.len()).sum();
+        // And then what the program does not have to do, taken out of it. The
+        // instruction count is what this moves, so it is counted either side
+        // rather than at the end.
+        let insts = instructions(&ssa);
+        let worked = sir::opt::optimize(&mut ssa, &ttir);
+
         println!(
-            "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt)",
+            "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
+             {} values ({} of {} slots promoted), \
+             {} instructions ({} after opt: {} calls written out, {} folded, {} shared, \
+             {} dead)",
             name.display(),
             ttir.items.len(),
             symbols.len(),
             ttir.types.len(),
             ttir.bodies.len(),
             blocks,
-            left
+            left,
+            values,
+            promoted,
+            slots,
+            insts,
+            instructions(&ssa),
+            worked.inlined,
+            worked.folded,
+            worked.shared,
+            worked.dead
         );
         for (symbol, _) in symbols.sorted() {
             println!("    {}", symbol);
@@ -191,6 +220,25 @@ fn compile(root: &Path, search_paths: Vec<PathBuf>) -> bool {
         let _ = scopes;
     }
     !stopped
+}
+
+// Every instruction the bodies can still reach, which is what `sir::opt`
+// changes. The blocks it emptied are still in the arena -- nothing in this
+// compiler shrinks one -- so the count is over what the entry reaches and not
+// over what is there.
+fn instructions(ssa: &sir::sir_nodes::SIRProgram) -> usize {
+    ssa.bodies
+        .iter()
+        .map(|body| {
+            let live = body.live();
+            body.blocks
+                .iter()
+                .enumerate()
+                .filter(|(at, _)| live[*at])
+                .map(|(_, block)| block.insts.len() + block.phis.len())
+                .sum::<usize>()
+        })
+        .sum()
 }
 
 // `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a
