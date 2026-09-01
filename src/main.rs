@@ -3,6 +3,7 @@ mod sir;
 mod error;
 mod expand;
 mod lex;
+mod mir;
 mod parse;
 mod prep;
 mod tir;
