@@ -107,7 +107,10 @@ use crate::tir::ttir_nodes::{
     TTIRItemKind, TTIRLocalId, TTIRProgram, TTIRStmt,
 };
 
-mod copies;
+// `pub` for the one thing outside `sema` that has to ask its questions:
+// `mir::lower::glue`, which writes the body of the release this pass decided
+// to place, and has to agree with it about which types have one.
+pub mod copies;
 mod escape;
 mod holds;
 mod place;

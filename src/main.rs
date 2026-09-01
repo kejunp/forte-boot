@@ -214,7 +214,20 @@ fn compile(
         let m = mir::machine::Machine::of(target);
         let mut lowerer = mir::lower::Lowerer::new(&made, m);
         lowerer.lower();
+        // A release the lowering could not write. It does not stop the
+        // compilation -- what is left is a program with one routine missing,
+        // which is a link error and not a wrong answer -- but it is the
+        // difference between a leak and a leak nobody mentioned.
+        for said in std::mem::take(&mut lowerer.gaps) {
+            eprintln!("{}: {}", name.display(), said);
+        }
         let machine_ir = lowerer.finish();
+
+        // How many of the bodies are a release rather than something somebody
+        // wrote, which is what says how much of the output the compiler made
+        // up out of the declarations.
+        let releases =
+            machine_ir.bodies.iter().filter(|body| body.symbol.starts_with("__D")).count();
 
         // How many types the runtime was told about. Every one of them is a
         // type the collector will read a map of rather than guess at, so the
@@ -239,7 +252,7 @@ fn compile(
              {} instructions ({} after {:?} for {}: {} calls written out, {} loops unrolled, \
              {} lifted out of a loop, {} widened, {} folded, {} shared, {} forwarded, \
              {} dead), \
-             then {} machine bodies ({} made from a generic) on {}: \
+             then {} machine bodies ({} made from a generic, {} a release) on {}: \
              {} bytes of frame, {} spilled, {} registers wanted at once, \
              {} types described for the runtime",
             name.display(),
@@ -266,6 +279,7 @@ fn compile(
             worked.dead,
             machine_ir.bodies.len(),
             made.instances,
+            releases,
             m.name,
             frame,
             spills,

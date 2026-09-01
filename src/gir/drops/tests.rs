@@ -185,10 +185,9 @@ fn a_parameter_is_released_like_any_other_slot() {
 
 // Except in the one body that *is* a release. `drop(self)` takes its receiver
 // by value, so the end of the body is the end of the receiver -- and releasing
-// it there is this body again, which is a routine that calls itself for ever
-// the moment anything emits a body for `__D`. Nothing is left unreleased by
-// leaving it out: whatever writes those bodies runs the receiver's fields
-// after the call returns.
+// it there is this body again, which is a routine that calls itself for ever.
+// Nothing is left unreleased by leaving it out: `mir::lower::glue` runs the
+// receiver's fields after the call returns.
 #[test]
 fn the_receiver_of_a_written_drop_is_not_released() {
     let mut f = Fixture::new();

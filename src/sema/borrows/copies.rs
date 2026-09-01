@@ -223,7 +223,10 @@ impl Copies {
 // What an item is called. `sema::names` has one of these and it is private to
 // that module; a trait is asked its name in one place here and the two are the
 // same question.
-pub(super) fn name_of(id: TTIRItemId, p: &TTIRProgram) -> String {
+// `pub(crate)` for `gir::drops`, which has the same question about the same
+// two names: an `impl Drop` is found by the name of the trait it is written
+// for and by nothing else, here and there alike.
+pub(crate) fn name_of(id: TTIRItemId, p: &TTIRProgram) -> String {
     match &p.items[id].kind {
         TTIRItemKind::Fn(f) => f.name.clone(),
         TTIRItemKind::Struct { name, .. }

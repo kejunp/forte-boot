@@ -170,9 +170,12 @@ pub const ITER_STEP: &str = "__rt_iter_step";
 //
 // So the type is put in the *name*, exactly as it is for a fn: `__D` and then
 // the type spelled the way `sema::names::Mangler` spells one. `__D3i32` is the
-// release of an `i32`, and what defines it is a later piece of work -- these
-// are the one group here the runtime does not define, because a release is a
-// thing the *compiler* has to emit a body for.
+// release of an `i32`.
+//
+// These are the one group here the runtime crate does not define, and could
+// not: what releasing a `Point` comes to is a fact about a declaration only
+// the compiler has seen. `mir::lower::glue` writes the bodies, out of the same
+// table `gir::drops` used to decide where a release goes at all.
 pub fn glue(spelled: &str) -> String {
     let mut out = String::from("__D");
     part(spelled, &mut out);

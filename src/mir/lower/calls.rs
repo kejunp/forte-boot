@@ -314,8 +314,14 @@ impl<'a> Lowerer<'a> {
     // ---- Releases ----------------------------------------------------------
 
     // One routine per type, named after the type -- see `mir::runtime::glue`.
+    //
+    // The type is remembered as well as spelled: what the routine *does* is
+    // written by `glue`, which runs once every body has been walked, and the
+    // only way it knows which routines a program wants is that they were asked
+    // for here.
     fn release(&mut self, held: MIRRegId, ty: TyId, line: usize, col: usize) {
         let spelled = self.spell(ty);
+        self.wants(ty);
         self.effect(
             MIRInstKind::Call {
                 to:   MIRCallee::Symbol(runtime::glue(&spelled)),

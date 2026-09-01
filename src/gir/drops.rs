@@ -25,10 +25,11 @@
 //
 // With one exception, and it is the receiver of `Drop::drop`. That body is what
 // releasing the type *is*, so a release of its own receiver at the end of it is
-// the same release again -- a routine that calls itself for ever, the moment
-// anything emits a body for `__D`. Nothing is left unreleased by leaving it
-// out: whatever writes those bodies runs the receiver's fields after the call
-// returns, which is where they were always going to be run.
+// the same release again -- and `mir::lower::glue`, which emits the routine
+// that calls it, would have written a routine that calls itself for ever.
+// Nothing is left unreleased by leaving it out: the glue runs the receiver's
+// fields after the call returns, which is where they were always going to be
+// run.
 
 use std::collections::HashMap;
 

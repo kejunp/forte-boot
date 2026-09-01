@@ -56,7 +56,9 @@
 //                cannot work out for itself.
 //   `mir_nodes`  what the graph is made of.
 //   `lower`      the SIR turned into it: every type a number, every value in a
-//                register or in the frame, every release a call.
+//                register or in the frame, every release a call -- and a body
+//                for each of those releases, which is the one thing here that
+//                emits code no source wrote.
 //   `verify`     the rules that make it a graph worth reading, checked rather
 //                than assumed.
 //

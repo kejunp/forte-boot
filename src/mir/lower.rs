@@ -24,7 +24,9 @@
 // **What the language has and a machine does not becomes a call.** A map, a
 // set, a closure's captures, a release at the end of a scope. `mir::runtime`
 // names them and this writes the calls; nothing else in the compiler mentions
-// them again.
+// them again. One of the four is also *written* here rather than called into a
+// library -- a release is a fact about a declaration, so `glue` builds a body
+// per type once every other body has been walked.
 //
 // The registers are made before any instruction is. Every value in the SIR gets
 // one up front, because a phi at the top of a loop reads a value made at the
@@ -39,6 +41,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::sema::borrows::Copies;
 use crate::sema::names::Mangler;
 use crate::sir::sir_nodes::*;
 use crate::tir::tir_nodes::TIRPrim;
@@ -51,17 +54,31 @@ use super::mono::Made;
 
 mod aggregates;
 mod calls;
+mod glue;
 mod places;
 mod values;
 mod vectors;
 
 pub struct Lowerer<'a> {
-    made:    &'a Made,
-    layouts: Layouts<'a>,
-    mangler: Mangler,
-    machine: Machine,
-    out:     MIRProgram,
-    b:       Builder,
+    made:      &'a Made,
+    layouts:   Layouts<'a>,
+    mangler:   Mangler,
+    machine:   Machine,
+    out:       MIRProgram,
+    b:         Builder,
+    // Which types have anything to release, asked the same way `gir::drops`
+    // asked it. The two have to agree: that pass decided where a release goes
+    // and this one writes what it does, and a type it called droppable and
+    // this one did not would be a call to a routine nothing emitted.
+    copies:    Copies,
+    // The types a release was emitted for, and the routines already written.
+    // A glue body releases the fields of its type, which wants more glue, so
+    // the first is a worklist rather than a list.
+    wanted:    Vec<TyId>,
+    written:   HashSet<String>,
+    // What could not be written, in the words a driver should print. A generic
+    // whose argument the arena cannot name is the only thing that gets here.
+    pub gaps:  Vec<String>,
 }
 
 #[derive(Default)]
@@ -119,6 +136,10 @@ impl<'a> Lowerer<'a> {
             machine,
             out: MIRProgram::default(),
             b: Builder::default(),
+            copies: Copies::of(&made.ttir),
+            wanted: Vec::new(),
+            written: HashSet::new(),
+            gaps: Vec::new(),
         }
     }
 
@@ -127,6 +148,10 @@ impl<'a> Lowerer<'a> {
             let built = self.body(at);
             self.out.bodies.push(built);
         }
+        // And a body for every release the bodies above called for, which is
+        // the last thing because it is the only pass here whose input is what
+        // the others emitted.
+        self.glue();
     }
 
     pub fn finish(self) -> MIRProgram {
