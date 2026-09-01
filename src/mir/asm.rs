@@ -10,12 +10,9 @@
 // -- so what is left is the difference between writing `copy.24` and writing
 // the instructions a machine has that come to the same thing.
 //
-// Two machines so far, and the parts that are the same for both are here; the
-// parts that are not are in a file each, because they are not nearly the same.
-// x86-64 has an instruction that adds a value in memory to a register and
-// aarch64 has nothing of the kind; one of them writes the destination first
-// and the other writes it last. A single emitter parameterised over that would
-// be a file about the differences rather than a file about either machine. x86-64 has an instruction
+// Three machines, and they are the three `mir::machine` describes. The parts
+// that are the same for all of them are here; the parts that are not are in a
+// file each, because they are not nearly the same. x86-64 has an instruction
 // that adds a value in memory to a register and RISC-V has no instruction that
 // touches memory except a load and a store; aarch64 writes the destination
 // first and x86-64 writes it last; one of the three has a link register and two
@@ -51,6 +48,7 @@ use super::regalloc::{allocate, Allocation, Where};
 use super::text;
 
 pub mod aarch64;
+pub mod riscv64;
 pub mod x86_64;
 
 // Where a virtual register turned out to live.
@@ -274,15 +272,9 @@ pub fn render(p: &MIRProgram, m: Machine) -> (String, Vec<String>) {
         let at = allocate(&mut held, m);
         let one = Body::new(&held, &at, m, index);
         let (text, complaints) = match m.name {
-            "x86-64" => x86_64::body(&one),
             "aarch64" => aarch64::body(&one),
-            // A machine with no file of its own. Emitting one machine's
-            // instructions under another's name would assemble and would not
-            // run, so what comes out is nothing and a line saying so.
-            _ => (
-                String::new(),
-                vec![format!("{}: nothing here emits for {}", one.held.symbol, m.name)],
-            ),
+            "riscv64" => riscv64::body(&one),
+            _ => x86_64::body(&one),
         };
         out.push_str(&text);
         said.extend(complaints);
@@ -296,6 +288,7 @@ pub fn render(p: &MIRProgram, m: Machine) -> (String, Vec<String>) {
     if !p.pool.is_empty() {
         let text = match m.name {
             "aarch64" => aarch64::pool(&p.pool),
+            "riscv64" => riscv64::pool(&p.pool),
             _ => x86_64::pool(&p.pool),
         };
         out.push_str(&text);

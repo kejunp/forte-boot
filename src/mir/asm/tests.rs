@@ -8,7 +8,7 @@
 // a cycle, and in no body smaller. A frame whose saved registers overlap its
 // slots is a value that changes when a call is made.
 
-use super::super::machine::{Class, Reg, AARCH64, X86_64};
+use super::super::machine::{Class, Reg, AARCH64, RISCV64, X86_64};
 use super::*;
 
 fn int(name: &'static str) -> Reg {
@@ -221,7 +221,7 @@ fn a_class_that_runs_out_of_registers_says_so() {
 
 #[test]
 fn every_machine_passes_its_first_argument_in_its_first_register() {
-    for m in [X86_64, AARCH64] {
+    for m in [X86_64, AARCH64, RISCV64] {
         let held = passing(m, &[Class::Int]);
         assert_eq!(held[0], Some(m.args[0]), "{}", m.name);
     }
@@ -245,7 +245,7 @@ fn nothing_in_a_frame_overlaps_the_registers_saved_above_it() {
          \x20   let h = a * b\n    let i = c * d\n    let j = e * g\n\
          \x20   let k = h + i\n    let l = i + j\n    h + i + j + k + l\n}\n",
     );
-    for m in [X86_64, AARCH64] {
+    for m in [X86_64, AARCH64, RISCV64] {
         let body = &p.bodies[0];
         let mut held = super::super::linear::linearise(body);
         let at = super::super::regalloc::allocate(&mut held, m);
@@ -263,7 +263,7 @@ fn nothing_in_a_frame_overlaps_the_registers_saved_above_it() {
 
 #[test]
 fn a_frame_is_a_whole_number_of_what_the_stack_stays_aligned_to() {
-    for m in [X86_64, AARCH64] {
+    for m in [X86_64, AARCH64, RISCV64] {
         let p = lowered("fn f(): i32 {\n    var x = 1\n    x\n}\n");
         let body = &p.bodies[0];
         let mut held = super::super::linear::linearise(body);
@@ -290,7 +290,7 @@ fn a_body_saves_only_the_registers_it_writes() {
 // Every body has a block one, and in one file they cannot all be `.L1`.
 #[test]
 fn two_bodies_do_not_share_a_label() {
-    for m in [X86_64, AARCH64] {
+    for m in [X86_64, AARCH64, RISCV64] {
         let (text, _) = framed(
             "fn f(a: i32): i32 { if a > 0 { 1 } else { 2 } }\n\
              fn g(a: i32): i32 { if a > 0 { 3 } else { 4 } }\n",
@@ -313,7 +313,7 @@ fn two_bodies_do_not_share_a_label() {
 // A body with no vectors in it has nothing to say.
 #[test]
 fn an_ordinary_body_is_not_refused() {
-    for m in [X86_64, AARCH64] {
+    for m in [X86_64, AARCH64, RISCV64] {
         let (_, said) = framed("fn f(a: i32, b: i32): i32 { a + b }\n", m);
         assert!(said.is_empty(), "{}: {:?}", m.name, said);
     }
