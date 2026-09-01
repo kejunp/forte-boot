@@ -39,8 +39,8 @@
 // use. That is short of an assembler and well past a graph, and it is the
 // thing the choice of a machine can be checked against by reading.
 //
-// The parts, as far as they go: the whole of the first shape. The passes that
-// turn it into the second come after.
+// The parts. The first four are what the graph is and what it needs to be
+// built; the last three are the second shape.
 //
 //   `machine`    what the machine is: how wide a pointer is, which registers
 //                there are, and which of them a call may keep.
@@ -59,7 +59,8 @@
 //                register or in the frame, every release a call.
 //   `verify`     the rules that make it a graph worth reading, checked rather
 //                than assumed.
-
+//
+//   `linear`     the edges made into an order and the phis into moves.
 //
 // What consumes a MIR is the listing, and after that nothing does: there is no
 // assembler and no object file. So parts of this are built for a reader rather
@@ -77,6 +78,7 @@
 pub mod fixture;
 
 pub mod layout;
+pub mod linear;
 pub mod lower;
 pub mod machine;
 pub mod mir_nodes;
