@@ -1,0 +1,35 @@
+// `Result`: an answer, or why there is none.
+//
+// The other half of what `Option` says. `Option` is for a value that may not be
+// there and has nothing to say about why; this is for one that may have failed
+// and does. Two parameters and not one: what went wrong is a type the caller
+// chose, so a routine that fails in several ways says which in its signature
+// rather than in a number.
+//
+// Free functions rather than methods, for the reason `option.ft` gives.
+
+pub enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+pub fn is_ok<T, E>(r: Result<T, E>): bool {
+    match r {
+        Result::Ok(_) => true,
+        Result::Err(_) => false,
+    }
+}
+
+pub fn is_err<T, E>(r: Result<T, E>): bool {
+    match r {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+}
+
+pub fn unwrap_or<T, E>(r: Result<T, E>, fallback: T): T {
+    match r {
+        Result::Ok(v) => v,
+        Result::Err(_) => fallback,
+    }
+}

@@ -1,0 +1,14 @@
+// `Drop`: what happens to a value when it goes.
+//
+// The compiler knows this trait by its name too, and the body of `drop` is what
+// `mir::lower::glue` calls before it releases the value's fields. So the order
+// is: this, and then the parts -- which is why `self` is taken whole and by
+// value, and why nothing releases the receiver inside the body (`gir::drops`
+// says why: it would be this routine again).
+//
+// A type with this has something to release, and so does anything holding one.
+// That is not written anywhere: `Copies::drops` works it out by looking.
+
+pub trait Drop {
+    fn drop(self)
+}

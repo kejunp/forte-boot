@@ -1,0 +1,12 @@
+// `Copy`: the values that are duplicated where they are handed over.
+//
+// The compiler knows this trait by its name and by nothing else. Section 2 says
+// so, and `sema::borrows::copies` is where it is looked for: an `impl Copy for
+// T` is what makes a `let b = a` a copy rather than a move. A type may not have
+// both this and `Drop` -- one says nothing happens when a value goes and the
+// other says something does.
+//
+// It carries no members. There is nothing for one to do: what it says is not
+// how to copy a value but that copying it is what the bytes already are.
+
+pub trait Copy {}

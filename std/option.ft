@@ -1,0 +1,41 @@
+// `Option`: a value, or none.
+//
+// The enum the language reaches for wherever a thing may not be there. There is
+// no null and no absent reference -- section 3 is explicit that a `ptr` admits
+// no absent address and a reference admits none -- so a missing value is said
+// with this and nowhere else.
+//
+// The routines below are free functions and not methods, and that is not a
+// preference: a method on a generic type wants an `impl<T>`, and the parameter
+// an `impl` introduces is not yet in scope inside its own members. Until it is,
+// `is_some(o)` is what `o.is_some()` would have been.
+
+pub enum Option<T> {
+    None,
+    Some(T),
+}
+
+// Whether there is one.
+pub fn is_some<T>(o: Option<T>): bool {
+    match o {
+        Option::Some(_) => true,
+        Option::None => false,
+    }
+}
+
+pub fn is_none<T>(o: Option<T>): bool {
+    match o {
+        Option::Some(_) => false,
+        Option::None => true,
+    }
+}
+
+// What is in it, or what to use instead. There is no routine that takes the
+// value out without being told what to do when there is none: that would be a
+// routine with nothing to answer with, and the language has no way to stop.
+pub fn unwrap_or<T>(o: Option<T>, fallback: T): T {
+    match o {
+        Option::Some(v) => v,
+        Option::None => fallback,
+    }
+}

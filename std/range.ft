@@ -1,0 +1,26 @@
+// `Range`: the values from one bound to another.
+//
+// What `1..10` builds. Section 8 leaves open whether the four shapes a range
+// can be written in -- both bounds, one, the other, neither -- are one type or
+// four; this is the one-type answer, with the bounds in the value rather than
+// in the type, which is what `sema::lower::containers` already assumes when it
+// looks this name up.
+//
+// The two fields are the two halves `mir::lower::calls` reads when it works out
+// how many turns a `for` over one has, so their order is not free: `start` is
+// first because that is the half it loads first.
+
+pub struct Range<T> {
+    pub start: T,
+    pub end:   T,
+}
+
+// How many turns a walk over one has. Written out because the lowering counts
+// it the same way and a reader should be able to see what it counts.
+pub fn len(r: Range<i64>): i64 {
+    r.end - r.start
+}
+
+pub fn holds(r: Range<i64>, n: i64): bool {
+    n >= r.start && n < r.end
+}
