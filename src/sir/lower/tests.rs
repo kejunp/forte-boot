@@ -375,3 +375,76 @@ fn a_closure_still_points_at_the_body_it_pointed_at() {
     let SIRInstKind::Closure { body, .. } = closure.kind else { unreachable!() };
     assert_eq!(body, held, "the same number the GIR gave it");
 }
+
+// ---- Reaching into something ------------------------------------------------
+
+// The two walks over a place have to agree about where it is.
+//
+// Reading `a.n` where `a` is a pointer goes through `a`; writing it has to go
+// through `a` as well. They did not: the write took the address of the *slot*
+// holding the pointer and offset from that, so `a.n = 1` wrote into the frame
+// -- a store to the wrong address, and nothing downstream in a position to
+// notice.
+#[test]
+fn writing_a_field_through_a_pointer_goes_through_it() {
+    let mut f = Fixture::new();
+    let int = f.int;
+    let held = f.structure("Node", &[int]);
+    let ptr = f.pointer(held);
+    let a = f.param("a", ptr);
+    let at = f.block();
+    let base = f.read(a);
+    let place = f.field(base, 0, int);
+    let one = f.int(1);
+    f.store(at, place, TIRAssignOp::Set, one);
+    f.term(at, GIRTerm::Return(None));
+    f.body(at);
+
+    let p = built(f);
+    let body = &p.bodies[0];
+    let (_, held) = find(body, |k| matches!(k, SIRInstKind::FieldAddr { .. }));
+    let SIRInstKind::FieldAddr { base, .. } = held.kind else { unreachable!() };
+    let made = insts(body)
+        .into_iter()
+        .find(|(_, inst)| inst.def == Some(base))
+        .map(|(_, inst)| inst.kind)
+        .expect("something made it");
+    assert!(
+        matches!(made, SIRInstKind::Load { .. }),
+        "the field hangs off {:?}, not off what the pointer holds",
+        made
+    );
+}
+
+// And the other half of the agreement: a structure held by value is reached
+// *at* its slot and not through it, or every field of every local would be
+// read out of whatever the first word of it happened to be.
+#[test]
+fn writing_a_field_of_a_local_goes_to_its_slot() {
+    let mut f = Fixture::new();
+    let int = f.int;
+    let held = f.structure("Pair", &[int]);
+    let p = f.local("p", held);
+    let at = f.block();
+    let base = f.read(p);
+    let place = f.field(base, 0, int);
+    let one = f.int(1);
+    f.store(at, place, TIRAssignOp::Set, one);
+    f.term(at, GIRTerm::Return(None));
+    f.body(at);
+
+    let out = built(f);
+    let body = &out.bodies[0];
+    let (_, held) = find(body, |k| matches!(k, SIRInstKind::FieldAddr { .. }));
+    let SIRInstKind::FieldAddr { base, .. } = held.kind else { unreachable!() };
+    let made = insts(body)
+        .into_iter()
+        .find(|(_, inst)| inst.def == Some(base))
+        .map(|(_, inst)| inst.kind)
+        .expect("something made it");
+    assert!(
+        matches!(made, SIRInstKind::Addr(_)),
+        "a local is reached at its slot, not through it: {:?}",
+        made
+    );
+}

@@ -657,15 +657,15 @@ impl<'a> Lowerer<'a> {
             GIRExprKind::Item(item) => SIRInstKind::ItemAddr(item),
             GIRExprKind::SelfExpr => SIRInstKind::SelfAddr,
             GIRExprKind::Field { base, index } => {
-                let base = self.address(base);
+                let base = self.base_of(base);
                 SIRInstKind::FieldAddr { base, index }
             }
             GIRExprKind::TupleIndex { base, index } => {
-                let base = self.address(base);
+                let base = self.base_of(base);
                 SIRInstKind::TupleAddr { base, index }
             }
             GIRExprKind::Index { base, index } => {
-                let base = self.address(base);
+                let base = self.base_of(base);
                 let index = self.value(index);
                 SIRInstKind::IndexAddr { base, index }
             }
@@ -682,6 +682,34 @@ impl<'a> Lowerer<'a> {
             }
         };
         self.push(kind, ty, line, col)
+    }
+
+    // What a projection hangs off: the address of the thing being reached
+    // into.
+    //
+    // For a structure or an array that is the address of the place itself, and
+    // `address` gives it. For a reference or a pointer it is the *value* --
+    // holding one already is holding an address, and taking the address of the
+    // place holding it would be one indirection too many. `p.a = 1` on a local
+    // writes into the local; `a.next = b` on an `*Node` writes through `a`,
+    // and the difference is entirely the type of the base.
+    //
+    // The reading side has this already and has always had it: `value` for a
+    // `Field` is `self.value(base)`, and the value of a reference is what it
+    // refers to. So this is the write side saying the same thing, and the two
+    // disagreeing is what made `a.next = b` write into the frame slot holding
+    // `a` rather than through it -- a store to the wrong address, with nothing
+    // downstream in a position to notice.
+    //
+    // One layer and no more, which is what the reading side does and what
+    // `mir::lower::places` assumes when it works out an offset. A `&&T` is
+    // reached into as the reference it is (§3).
+    fn base_of(&mut self, base: GIRExprId) -> SIRValueId {
+        let ty = self.gir.exprs[base].ty;
+        if matches!(self.ttir.types.get(ty), Some(Ty::Ref { .. }) | Some(Ty::Ptr(_))) {
+            return self.value(base);
+        }
+        self.address(base)
     }
 
     // ---- Building ---------------------------------------------------------

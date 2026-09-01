@@ -153,6 +153,53 @@ impl Fixture {
         self.expr(GIRExprKind::Binary { op: TIRBinOp::Add, lhs, rhs }, ty)
     }
 
+    // ---- Types the arena did not start with -------------------------------
+
+    // `*T`. A pointer and a reference are the same question here -- what makes
+    // a place reached *through* one rather than *at* one -- so one of the two
+    // is enough to ask it with.
+    pub fn pointer(&mut self, to: TyId) -> TyId {
+        self.ttir.types.push(Ty::Ptr(to));
+        self.ttir.types.len() - 1
+    }
+
+    // A structure of the types given, and the type that names it.
+    pub fn structure(&mut self, name: &str, fields: &[TyId]) -> TyId {
+        let fields = fields
+            .iter()
+            .enumerate()
+            .map(|(at, &ty)| TTIRFieldDecl {
+                vis:   TIRVis::Unwritten,
+                attrs: TIRAttrs::default(),
+                name:  format!("f{}", at),
+                ty,
+            })
+            .collect();
+        self.ttir.items.push(TTIRItem {
+            kind: TTIRItemKind::Struct {
+                vis: TIRVis::Unwritten,
+                attrs: TIRAttrs::default(),
+                name: name.to_string(),
+                generics: Vec::new(),
+                fields,
+            },
+            line: 1,
+            col:  1,
+        });
+        let item = self.ttir.items.len() - 1;
+        self.ttir.types.push(Ty::Named { item, args: Vec::new(), regions: Vec::new() });
+        self.ttir.types.len() - 1
+    }
+
+    // ---- Places -----------------------------------------------------------
+
+    // `base.f<index>`, of type `ty`. A place, so it may stand on either side
+    // of an assignment -- which is the whole of what the two walks over one
+    // have to agree about.
+    pub fn field(&mut self, base: GIRExprId, index: usize, ty: TyId) -> GIRExprId {
+        self.expr(GIRExprKind::Field { base, index }, ty)
+    }
+
     // `&x`, which is what makes a slot one no value can stand in.
     pub fn addr_of(&mut self, of: GIRExprId) -> GIRExprId {
         let ty = self.null;
