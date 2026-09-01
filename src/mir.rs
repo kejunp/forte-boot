@@ -62,6 +62,7 @@
 //
 //   `linear`     the edges made into an order and the phis into moves.
 //   `regalloc`   the registers a body wanted met with the ones there are.
+//   `text`       the listing.
 //
 // What consumes a MIR is the listing, and after that nothing does: there is no
 // assembler and no object file. So parts of this are built for a reader rather
@@ -87,4 +88,5 @@ pub mod mono;
 pub mod regalloc;
 pub mod runtime;
 pub mod shape;
+pub mod text;
 pub mod verify;
