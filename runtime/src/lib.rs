@@ -17,7 +17,7 @@
 //                  are "syntax for a type a library declares", and no library
 //                  exists to declare them -- so they are here, standing in for
 //                  one, and the day a library can be written they should move.
-//   the glue       the entry points themselves, which come after.
+//   the glue       the entry points themselves, in `abi`.
 //
 // **The collector is Go's, in shape and mostly in substance.** Non-moving
 // mark-and-sweep; a heap of size-classed spans under a two-level allocator; a
@@ -61,6 +61,7 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+pub mod abi;
 pub mod alloc;
 pub mod gc;
 pub mod heap;
