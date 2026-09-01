@@ -11,6 +11,13 @@
 // The heaps are built as linked lists, because a list is the shape where being
 // wrong is visible: a marker that stops one step early keeps the head and
 // loses the tail, and there is no way for that to look like an accident.
+//
+// Nothing here asserts on `phase()`. That is the flag the write barrier reads
+// outside the lock, and it is one flag for the whole process -- so a runtime
+// built by one test raises and lowers the same flag another test is looking
+// at. What a cycle is doing is `rt.gc.phase`, which belongs to the runtime it
+// is about; the flag is checked in `abi`, where the tests take each other in
+// turn.
 
 use super::super::shape::{Kind, Made};
 use super::super::{alloc, Runtime};
@@ -196,7 +203,6 @@ fn a_cycle_leaves_the_barrier_off_and_the_number_moved_on() {
     let before = rt.gc.cycle;
     cycle_from(&mut rt, &[]);
     assert_eq!(rt.gc.phase, Phase::Off);
-    assert_eq!(phase(), Phase::Off);
     assert!(!rt.gc.black);
     assert_eq!(rt.gc.cycle, before + 1);
     assert_eq!(rt.gc.cycles, 1);
@@ -207,10 +213,9 @@ fn the_barrier_is_on_for_as_long_as_the_marker_is_walking() {
     let mut rt = Runtime::new();
     start_from(&mut rt, &[]);
     assert_eq!(rt.gc.phase, Phase::Mark);
-    assert_eq!(phase(), Phase::Mark);
     assert!(rt.gc.black);
     finish(&mut rt);
-    assert_eq!(phase(), Phase::Off);
+    assert_eq!(rt.gc.phase, Phase::Off);
 }
 
 // Starting one while one is running does nothing, or the second would clear

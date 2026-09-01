@@ -368,3 +368,27 @@ fn a_program_that_throws_everything_away_does_not_grow_without_bound() {
     .join()
     .expect("a thread");
 }
+
+// ---- The flag the barrier reads ---------------------------------------------
+
+// The phase again, outside the lock. It is one flag for the whole process, so
+// this is the one place it can be asserted: these tests take each other in
+// turn and nothing else here raises it.
+#[test]
+fn the_flag_the_barrier_reads_follows_the_cycle() {
+    let _alone = alone();
+    assert_eq!(super::super::gc::phase(), super::super::gc::Phase::Off);
+    let stack = super::super::gc::roots::here();
+    {
+        let mut rt = runtime();
+        super::super::gc::roots::note();
+        super::super::gc::start(&mut rt, stack);
+    }
+    assert_eq!(
+        super::super::gc::phase(),
+        super::super::gc::Phase::Mark,
+        "a cycle is running and the barrier does not know"
+    );
+    __rt_collect();
+    assert_eq!(super::super::gc::phase(), super::super::gc::Phase::Off);
+}
