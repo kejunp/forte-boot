@@ -1,8 +1,7 @@
 // Where marking starts: the words that are reachable without going through
 // anything else.
 //
-// Three of them here, and they are not equally honest. A fourth -- the
-// contents of the maps and sets the runtime owns -- arrives with those.
+// Four of them here, and they are not equally honest.
 //
 //   the stack        every word between where the mutator is now and where its
 //                    stack began. Read **conservatively**: nothing says which
@@ -11,6 +10,8 @@
 //                    value can be sitting in across the call into the runtime.
 //                    Also conservative, and for the same reason.
 //   what is pinned   `__rt_alloc`'s objects, which nothing collects.
+//   the containers   the maps and sets the runtime owns, which it walks
+//                    knowingly because it wrote them.
 //
 // **The stack is the compromise in this whole runtime.** Go's collector is
 // precise here: the Go compiler emits, for every function and every point in
@@ -179,6 +180,29 @@ pub fn owned(rt: &mut Runtime) {
     for (id, index) in rt.pinned.clone() {
         if rt.heap.span_mut(id).mark(index) && rt.heap.span(id).scan {
             rt.gc.work.push((id, index));
+        }
+    }
+    containers(rt);
+}
+
+// The maps and sets the runtime made. Their keys and values are reachable
+// through the container however the container itself was reached, and the
+// runtime knows exactly where they are -- so these are walked knowingly rather
+// than guessed at.
+//
+// Written as a separate step and not as part of the heap scan because a
+// container's own storage is not an object the shape system describes: it was
+// made by this runtime, for this runtime, and there is no compiler-emitted
+// descriptor for a thing the compiler has never heard of.
+fn containers(rt: &mut Runtime) {
+    for at in 0..rt.tables.len() {
+        for held in rt.tables[at].roots() {
+            mark::shade(rt, held);
+        }
+    }
+    for at in 0..rt.sets.len() {
+        for held in rt.sets[at].roots() {
+            mark::shade(rt, held);
         }
     }
 }

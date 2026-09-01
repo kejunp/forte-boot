@@ -103,6 +103,46 @@ fn what_is_pinned_is_reached_through_as_well() {
     assert!(rt.heap.holding(inner).is_none(), "and nothing said what is in it");
 }
 
+// A key in a map is reachable through the map however the map was reached,
+// and the collector cannot see it any other way.
+#[test]
+fn what_is_in_a_map_is_a_root() {
+    let mut rt = Runtime::new();
+    let key = Made::new(24, 8, Kind::Opaque).indirect();
+    let value = Made::new(8, 8, Kind::Signed);
+    let table = super::super::super::map::Table::new(&mut rt, false, key.shape(), Some(value.shape()));
+    rt.tables.push(table);
+
+    let held: [u8; 24] = [7; 24];
+    super::super::super::map::insert(&mut rt, 0, held.as_ptr() as usize, 5);
+    let copied = rt.tables[0].get(held.as_ptr() as usize).map(|_| ());
+    assert!(copied.is_some(), "the key went in");
+
+    let roots = rt.tables[0].roots();
+    assert!(!roots.is_empty(), "a copied key is somewhere only the map knows");
+    cycle_from(&mut rt, &[]);
+    for at in roots {
+        assert!(rt.heap.holding(at).is_some(), "a map's own storage was collected");
+    }
+}
+
+#[test]
+fn what_is_in_a_set_is_a_root() {
+    let mut rt = Runtime::new();
+    let elem = Made::new(32, 8, Kind::Opaque).indirect();
+    let held = super::super::super::set::Held::new(&mut rt, true, elem.shape());
+    rt.sets.push(held);
+
+    let one: [u8; 32] = [3; 32];
+    super::super::super::set::Held::put(&mut rt, 0, one.as_ptr() as usize);
+    let roots = rt.sets[0].roots();
+    assert!(!roots.is_empty());
+    cycle_from(&mut rt, &[]);
+    for at in roots {
+        assert!(rt.heap.holding(at).is_some(), "a set's own storage was collected");
+    }
+}
+
 // ---- Together --------------------------------------------------------------
 
 #[test]

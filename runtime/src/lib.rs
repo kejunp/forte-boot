@@ -13,8 +13,11 @@
 //
 //   the heap       room that outlives the frame that asked for it, and a
 //                  collector that works out when it stops being wanted.
-//   the containers a map and a set, which come after.
-//   the glue       the entry points themselves, which come after too.
+//   the containers a map and a set, ordered and hashed. Section 8 says these
+//                  are "syntax for a type a library declares", and no library
+//                  exists to declare them -- so they are here, standing in for
+//                  one, and the day a library can be written they should move.
+//   the glue       the entry points themselves, which come after.
 //
 // **The collector is Go's, in shape and mostly in substance.** Non-moving
 // mark-and-sweep; a heap of size-classed spans under a two-level allocator; a
@@ -61,7 +64,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 pub mod alloc;
 pub mod gc;
 pub mod heap;
+pub mod map;
 pub mod mem;
+pub mod set;
 pub mod shape;
 
 use heap::cache::{Cache, Central};
@@ -80,6 +85,12 @@ pub struct Runtime {
     // out. A sweep clears every mark, so they are marked again at the end of
     // each cycle rather than once.
     pub pinned:  Vec<(SpanId, usize)>,
+    // The maps and sets the program has made. They are roots in their own
+    // right -- a key or a value in one is reachable however the container was
+    // reached -- and they are the one part of the heap the collector walks
+    // knowingly rather than through a shape.
+    pub tables:  Vec<map::Table>,
+    pub sets:    Vec<set::Held>,
 }
 
 impl Runtime {
@@ -94,6 +105,8 @@ impl Runtime {
             large: Large::new(),
             gc: gc::State::new(),
             pinned: Vec::new(),
+            tables: Vec::new(),
+            sets: Vec::new(),
         }
     }
 }
