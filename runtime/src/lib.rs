@@ -19,9 +19,10 @@
 //                  one, and the day a library can be written they should move.
 //   the glue       the entry points themselves, in `abi`.
 //
-// Built from the bottom up. What is here so far is where the pages come from
-// and what the compiler says a type is; the heap that carves those pages up,
-// the collector over it and the containers beside it come after.
+// Built from the bottom up. What is here so far is the heap: pages cut into
+// size-classed spans, with the bits that say what is going on in each. The
+// collector over it and the containers beside it come after.
 
+pub mod heap;
 pub mod mem;
 pub mod shape;
