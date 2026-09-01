@@ -237,6 +237,25 @@ pub fn count(body: &MIRBody, want: impl Fn(&MIRInstKind) -> bool) -> usize {
     kinds(body).iter().filter(|kind| want(kind)).count()
 }
 
+// ---- A source, run all the way to the MIR ----------------------------------
+
+// What the lowering makes of a program, held to every rule on the way out.
+//
+// Every test of the lowering goes through this rather than looking at one
+// instruction in isolation, for the reason `sir::opt`'s tests give: a test that
+// checks one instruction still says the rest of the body is well formed, and
+// this is the pass most able to leave a body that walks and is wrong.
+pub fn lowered(source: &str) -> MIRProgram {
+    let (ttir, sir) = compiled(source);
+    let made = super::mono::monomorphise(&ttir, &sir);
+    assert!(made.refused.is_empty(), "{:#?}", made.refused);
+    let mut lowerer = super::lower::Lowerer::new(&made, machine());
+    lowerer.lower();
+    let out = lowerer.finish();
+    sound(&out);
+    out
+}
+
 // The body whose symbol holds `name`. A symbol has the length of each part in
 // front of it, so `1f` is the fn called `f` and `2id` the one called `id`.
 pub fn body_of<'a>(p: &'a MIRProgram, name: &str) -> &'a MIRBody {

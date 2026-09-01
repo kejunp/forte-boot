@@ -39,8 +39,8 @@
 // use. That is short of an assembler and well past a graph, and it is the
 // thing the choice of a machine can be checked against by reading.
 //
-// The parts, as far as they go. The lowering itself and the passes that turn
-// the graph into the second shape come after.
+// The parts, as far as they go: the whole of the first shape. The passes that
+// turn it into the second come after.
 //
 //   `machine`    what the machine is: how wide a pointer is, which registers
 //                there are, and which of them a call may keep.
@@ -55,6 +55,8 @@
 //                of its words are pointers, which is the one thing a collector
 //                cannot work out for itself.
 //   `mir_nodes`  what the graph is made of.
+//   `lower`      the SIR turned into it: every type a number, every value in a
+//                register or in the frame, every release a call.
 //   `verify`     the rules that make it a graph worth reading, checked rather
 //                than assumed.
 
@@ -75,6 +77,7 @@
 pub mod fixture;
 
 pub mod layout;
+pub mod lower;
 pub mod machine;
 pub mod mir_nodes;
 pub mod mono;
