@@ -92,3 +92,96 @@ fn a_literal_with_no_type_behind_it_says_so() {
     let out = refused("fn f() {\n    let r = 1..2\n}\n");
     assert!(out.contains("no type is called `Range`"), "{}", out);
 }
+
+// ---- Generic types -----------------------------------------------------------
+
+// A generic built by a literal carries what it was built with. Without this a
+// `Held { v: 1 }` was typed as a bare `Held`, and the two do not unify -- so a
+// generic struct could not be handed to anything that asked for one, which is
+// to say a generic struct could not be used at all.
+#[test]
+fn a_generic_struct_carries_what_it_was_built_with() {
+    let with = "struct Held<T> {\n    pub v: T,\n}\n";
+    clean(&format!(
+        "{}fn f(): Held<i32> {{\n    Held {{ v: 1 }}\n}}\n",
+        with
+    ));
+}
+
+// And what comes out of it is what went in, not the declaration's `T`.
+#[test]
+fn reading_a_field_of_a_generic_gives_the_type_it_was_built_with() {
+    let with = "struct Held<T> {\n    pub v: T,\n}\n";
+    clean(&format!("{}fn f(h: Held<i32>): i32 {{\n    h.v\n}}\n", with));
+    let out = refused(&format!("{}fn f(h: Held<i32>): i64 {{\n    h.v\n}}\n", with));
+    assert!(out.contains("i32"), "{}", out);
+}
+
+#[test]
+fn two_uses_of_one_generic_are_two_types() {
+    let with = "struct Held<T> {\n    pub v: T,\n}\n";
+    let out = refused(&format!(
+        "{}fn f(a: Held<i32>): Held<i64> {{\n    a\n}}\n",
+        with
+    ));
+    assert!(out.contains("Held<i32>") && out.contains("Held<i64>"), "{}", out);
+}
+
+// The same omission was at every place a named type is made, and a variant is
+// one of them: `Option::Some(1)` has to be an `Option<i32>`.
+#[test]
+fn a_generic_variant_carries_what_it_was_built_with() {
+    let with = "enum Option<T> {\n    None,\n    Some(T),\n}\n";
+    clean(&format!(
+        "{}fn f(): Option<i64> {{\n    Option::Some(1)\n}}\n",
+        with
+    ));
+}
+
+// And a pattern that tests one binds what it really holds.
+#[test]
+fn matching_a_generic_variant_binds_the_type_it_holds() {
+    let with = "enum Option<T> {\n    None,\n    Some(T),\n}\n";
+    clean(&format!(
+        "{}fn f(o: Option<i64>): i64 {{\n    match o {{\n\
+         \x20       Option::Some(v) => v,\n        Option::None => 0,\n    }}\n}}\n",
+        with
+    ));
+    let out = refused(&format!(
+        "{}fn f(o: Option<i64>): i32 {{\n    match o {{\n\
+         \x20       Option::Some(v) => v,\n        Option::None => 0,\n    }}\n}}\n",
+        with
+    ));
+    assert!(!out.is_empty(), "an i64 is not an i32");
+}
+
+// A generic with two parameters keeps them apart and in order.
+#[test]
+fn two_parameters_stay_in_the_order_they_were_declared() {
+    let with = "enum Result<T, E> {\n    Ok(T),\n    Err(E),\n}\n";
+    clean(&format!(
+        "{}fn f(): Result<i32, i64> {{\n    Result::Ok(1)\n}}\n",
+        with
+    ));
+    // A literal would unify with either side, so the wrong-way case is put
+    // with a value that is already one of the two.
+    let out = refused(&format!(
+        "{}fn f(a: i32): Result<i32, i64> {{\n    Result::Err(a)\n}}\n",
+        with
+    ));
+    assert!(!out.is_empty(), "an i32 is not the error side");
+    clean(&format!(
+        "{}fn f(a: i32, b: i64): Result<i32, i64> {{\n    Result::Err(b)\n}}\n",
+        with
+    ));
+}
+
+// A struct pattern over a generic, which is the fourth of the six places.
+#[test]
+fn a_struct_pattern_over_a_generic_binds_what_it_holds() {
+    let with = "struct Held<T> {\n    pub v: T,\n}\n";
+    clean(&format!(
+        "{}fn f(h: Held<i64>): i64 {{\n    match h {{\n        Held {{ v }} => v,\n    }}\n}}\n",
+        with
+    ));
+}

@@ -528,15 +528,19 @@ impl<'a> Lowerer<'a> {
             Ty::Ref { inner, .. } => inner,
             _ => ty,
         };
-        let Ty::Named { item, .. } = self.types.get(held).clone() else { return None };
+        let Ty::Named { item, args, .. } = self.types.get(held).clone() else { return None };
         let TTIRItemKind::Struct { fields, .. } = &self.out.items[item].kind else {
             return None;
         };
-        fields
+        let (index, ty) = fields
             .iter()
             .enumerate()
             .find(|(_, f)| f.name == name)
-            .map(|(i, f)| (i, f.ty))
+            .map(|(i, f)| (i, f.ty))?;
+        // What the declaration calls the field's type is written in the
+        // declaration's own parameters: the `v` of a `Held<T>` is a `T`. What
+        // it is *here* is that with the arguments of this use put in.
+        Some((index, self.types.substitute(ty, &args)))
     }
 }
 

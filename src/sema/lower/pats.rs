@@ -102,7 +102,9 @@ impl<'a> Lowerer<'a> {
                 // Or a variant carrying nothing: `Color::Red`, reached through
                 // the enum that holds it.
                 if let Some((of, index)) = self.variant_path(&path) {
-                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
+                    let holes = self.holes_for(of);
+                    let ty =
+                        self.types.intern(Ty::Named { item: of, args: holes, regions: Vec::new() });
                     self.hold(ty, want, id);
                     return self.make_pat(
                         TTIRPatKind::Variant { item: of, variant: index, elems: Vec::new() },
@@ -181,9 +183,12 @@ impl<'a> Lowerer<'a> {
                     );
                     return self.errored_pat(id, want);
                 };
-                let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
+                let holes = self.holes_for(of);
+                let ty =
+                    self.types.intern(Ty::Named { item: of, args: holes.clone(), regions: Vec::new() });
                 self.hold(ty, want, id);
                 let carried = self.payload_tys(of, index);
+                let carried = self.filled(&carried, &holes);
                 let made: Vec<TTIRPatId> = elems
                     .iter()
                     .enumerate()
@@ -204,9 +209,17 @@ impl<'a> Lowerer<'a> {
                 // written like a struct and is a variant, and which it is is
                 // what the path names.
                 if let Some((of, index)) = self.variant_path(&path) {
-                    let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
+                    let holes = self.holes_for(of);
+                    let ty = self
+                        .types
+                        .intern(Ty::Named { item: of, args: holes.clone(), regions: Vec::new() });
                     self.hold(ty, want, id);
                     let named = self.payload_names(of, index);
+                    let named: Vec<(String, TyId)> = {
+                        let (ns, tys): (Vec<String>, Vec<TyId>) = named.into_iter().unzip();
+                        let tys = self.filled(&tys, &holes);
+                        ns.into_iter().zip(tys).collect()
+                    };
                     let mut placed: Vec<Option<TTIRPatId>> = vec![None; named.len()];
                     for field in &fields {
                         let Some(index) = named.iter().position(|(n, _)| *n == field.name) else {
@@ -273,8 +286,14 @@ impl<'a> Lowerer<'a> {
                 let held = name.clone();
                 let declared: Vec<(String, TyId)> =
                     declared.iter().map(|f| (f.name.clone(), f.ty)).collect();
+                let holes = self.holes_for(item);
+                let declared: Vec<(String, TyId)> = {
+                    let (ns, tys): (Vec<String>, Vec<TyId>) = declared.into_iter().unzip();
+                    let tys = self.filled(&tys, &holes);
+                    ns.into_iter().zip(tys).collect()
+                };
                 let regions = self.named_regions(item, &[], self.pat_at(id));
-                let ty = self.types.intern(Ty::Named { item, args: Vec::new(), regions });
+                let ty = self.types.intern(Ty::Named { item, args: holes, regions });
                 self.hold(ty, want, id);
 
                 // "Fields in declaration order, `None` where the pattern named

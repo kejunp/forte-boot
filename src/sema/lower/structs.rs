@@ -55,6 +55,14 @@ impl<'a> Lowerer<'a> {
             fields.iter().map(|f| (f.name.clone(), f.ty)).collect();
         let held = name.clone();
 
+        // A hole per type parameter, and the fields held to what they are once
+        // those are put in: the field of a `Held<T>` is a `T` in the
+        // declaration and is whatever the literal put there.
+        let args = self.holes_for(item);
+        let (names, tys): (Vec<String>, Vec<TyId>) = declared.into_iter().unzip();
+        let tys = self.filled(&tys, &args);
+        let declared: Vec<(String, TyId)> = names.into_iter().zip(tys).collect();
+
         // Each written field put where its declaration stands.
         let mut placed: Vec<Option<TTIRExprId>> = vec![None; declared.len()];
         for field in written {
@@ -112,7 +120,7 @@ impl<'a> Lowerer<'a> {
 
         let fields: Vec<TTIRExprId> = placed.into_iter().flatten().collect();
         let regions = self.named_regions(item, &[], self.at(at));
-        let ty = self.types.intern(Ty::Named { item, args: Vec::new(), regions });
+        let ty = self.types.intern(Ty::Named { item, args, regions });
         self.make(TTIRExprKind::StructLit { item, fields }, ty, at)
     }
 

@@ -69,7 +69,9 @@ impl<'a> Lowerer<'a> {
         args: &[TIRExprId],
         at: TIRExprId,
     ) -> TTIRExprId {
+        let holes = self.holes_for(of);
         let carried = self.payload_tys(of, index);
+        let carried = self.filled(&carried, &holes);
         let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
         let name = match &self.out.items[of].kind {
             TTIRItemKind::Enum { variants, .. } => variants[index].name.clone(),
@@ -100,8 +102,45 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let ty = self.types.intern(Ty::Named { item: of, args: Vec::new(), regions: Vec::new() });
+        let ty = self.types.intern(Ty::Named { item: of, args: holes, regions: Vec::new() });
         self.make(TTIRExprKind::VariantLit { item: of, variant: index, fields: made }, ty, at)
+    }
+
+    // One hole per type parameter a *type* declaration takes.
+    //
+    // `instantiate` below does this for a fn, where the arguments may also be
+    // written out. A type is never given its arguments at a literal -- nobody
+    // writes `Held::<i32> { v: 1 }` -- so every one of them is a hole, and what
+    // fills it is what the fields turn out to hold.
+    //
+    // Without this a literal was typed as the bare declaration: `Held { v: 1 }`
+    // came out as `Held` and not as `Held<i32>`, and the two do not unify. That
+    // is why a generic struct could not be built at all, and it is the same
+    // omission at all six places a named type is made -- a struct literal, a
+    // variant, and the four patterns that test one.
+    //
+    // A bound on a type parameter is not held to anything here, because it is
+    // held to nothing anywhere: `instantiate` registers them for a fn and
+    // nothing does for a type. That is unchanged and is its own piece of work.
+    pub(super) fn holes_for(&mut self, item: TTIRItemId) -> Vec<TyId> {
+        let generics = match &self.out.items[item].kind {
+            TTIRItemKind::Struct { generics, .. } | TTIRItemKind::Enum { generics, .. } => {
+                generics.clone()
+            }
+            _ => Vec::new(),
+        };
+        generics
+            .iter()
+            .filter(|g| matches!(g, TTIRGeneric::Type { .. }))
+            .map(|_| self.types.fresh())
+            .collect()
+    }
+
+    // Every one of a declaration's types with the arguments put in place of its
+    // parameters -- a field's, a variant's payload's -- so that what a literal
+    // is held to is what it really carries.
+    pub(super) fn filled(&mut self, tys: &[TyId], args: &[TyId]) -> Vec<TyId> {
+        tys.iter().map(|&ty| self.types.substitute(ty, args)).collect()
     }
 
     // What a declaration's type comes to at one use of it. A generic is written
