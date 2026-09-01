@@ -10,9 +10,12 @@
 // -- so what is left is the difference between writing `copy.24` and writing
 // the instructions a machine has that come to the same thing.
 //
-// One machine so far, and the shape is built for three: the parts that are the
-// same for all of them are here, and the parts that are not go in a file each,
-// because they are not nearly the same. x86-64 has an instruction
+// Two machines so far, and the parts that are the same for both are here; the
+// parts that are not are in a file each, because they are not nearly the same.
+// x86-64 has an instruction that adds a value in memory to a register and
+// aarch64 has nothing of the kind; one of them writes the destination first
+// and the other writes it last. A single emitter parameterised over that would
+// be a file about the differences rather than a file about either machine. x86-64 has an instruction
 // that adds a value in memory to a register and RISC-V has no instruction that
 // touches memory except a load and a store; aarch64 writes the destination
 // first and x86-64 writes it last; one of the three has a link register and two
@@ -47,6 +50,7 @@ use super::mir_nodes::*;
 use super::regalloc::{allocate, Allocation, Where};
 use super::text;
 
+pub mod aarch64;
 pub mod x86_64;
 
 // Where a virtual register turned out to live.
@@ -271,6 +275,7 @@ pub fn render(p: &MIRProgram, m: Machine) -> (String, Vec<String>) {
         let one = Body::new(&held, &at, m, index);
         let (text, complaints) = match m.name {
             "x86-64" => x86_64::body(&one),
+            "aarch64" => aarch64::body(&one),
             // A machine with no file of its own. Emitting one machine's
             // instructions under another's name would assemble and would not
             // run, so what comes out is nothing and a line saying so.
@@ -288,8 +293,12 @@ pub fn render(p: &MIRProgram, m: Machine) -> (String, Vec<String>) {
     // about.
     let _ = writeln!(out, "\t.section\t.note.GNU-stack, \"\", @progbits");
 
-    if !p.pool.is_empty() && m.name == "x86-64" {
-        out.push_str(&x86_64::pool(&p.pool));
+    if !p.pool.is_empty() {
+        let text = match m.name {
+            "aarch64" => aarch64::pool(&p.pool),
+            _ => x86_64::pool(&p.pool),
+        };
+        out.push_str(&text);
     }
     (out, said)
 }

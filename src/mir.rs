@@ -67,7 +67,7 @@
 //   `text`       the listing, for a person to read.
 //   `asm`        the same decisions for an assembler, with the prologue, the
 //                epilogue and the calling convention that everything above
-//                here left for it. x86-64 so far.
+//                here left for it. x86-64 and aarch64 so far.
 //
 // Two things consume a MIR, and they are the same decisions written for two
 // readers. `text` is the listing, which is for a person; `asm` is assembly,
