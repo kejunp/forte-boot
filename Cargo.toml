@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[workspace]
+members = ["runtime"]
+# So that a plain `cargo test` runs both. A root package with members is
+# otherwise the one shape where the members are skipped unless asked for.
+default-members = [".", "runtime"]

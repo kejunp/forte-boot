@@ -1,0 +1,13 @@
+[package]
+name = "fortec-rt"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "fortec_rt"
+# The first is what `cargo test` compiles against, the second is what a link
+# step would want. Neither is written yet on the far side, but the `.a` is the
+# thing the far side would ask for.
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
