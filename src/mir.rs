@@ -39,9 +39,8 @@
 // use. That is short of an assembler and well past a graph, and it is the
 // thing the choice of a machine can be checked against by reading.
 //
-// The parts, as far as they go: what a machine is, what a type takes on one,
-// what the graph is made of, and the names of the things a machine cannot do.
-// The passes over it come after.
+// The parts, as far as they go. The passes that build the graph and the ones
+// that turn it into the second shape come after.
 //
 //   `machine`    what the machine is: how wide a pointer is, which registers
 //                there are, and which of them a call may keep.
@@ -51,6 +50,9 @@
 //   `runtime`    the symbols the lowering calls for the things the language
 //                has and a machine does not.
 //   `mir_nodes`  what the graph is made of.
+//   `verify`     the rules that make it a graph worth reading, checked rather
+//                than assumed.
+
 //
 // What consumes a MIR is the listing, and after that nothing does: there is no
 // assembler and no object file. So parts of this are built for a reader rather
@@ -64,7 +66,11 @@
 // together.
 #![allow(dead_code)]
 
+#[cfg(test)]
+pub mod fixture;
+
 pub mod layout;
 pub mod machine;
 pub mod mir_nodes;
 pub mod runtime;
+pub mod verify;
