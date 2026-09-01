@@ -51,6 +51,9 @@
 //                which is what leaves no `T` for `layout` to fail on.
 //   `runtime`    the symbols the lowering calls for the things the language
 //                has and a machine does not.
+//   `shape`      what a type is, written down for the runtime to read: which
+//                of its words are pointers, which is the one thing a collector
+//                cannot work out for itself.
 //   `mir_nodes`  what the graph is made of.
 //   `verify`     the rules that make it a graph worth reading, checked rather
 //                than assumed.
@@ -76,4 +79,5 @@ pub mod machine;
 pub mod mir_nodes;
 pub mod mono;
 pub mod runtime;
+pub mod shape;
 pub mod verify;
