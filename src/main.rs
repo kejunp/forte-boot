@@ -1,9 +1,9 @@
 mod gir;
+mod mir;
 mod sir;
 mod error;
 mod expand;
 mod lex;
-mod mir;
 mod parse;
 mod prep;
 mod tir;
@@ -124,6 +124,7 @@ fn compile(
     search_paths: Vec<PathBuf>,
     level: sir::opt::Level,
     target: sir::target::Target,
+    emit: bool,
 ) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
@@ -198,12 +199,49 @@ fn compile(
         let insts = instructions(&ssa);
         let worked = sir::opt::optimize(&mut ssa, &ttir, level, target);
 
+        // And the machine's, which is what the SSA was for: every generic made
+        // once per set of types it is used with, every type turned into a
+        // number of bytes, and every register the body wanted met with the
+        // ones a machine has.
+        let made = mir::mono::monomorphise(&ttir, &ssa);
+        for said in &made.refused {
+            eprintln!("{}: {}", name.display(), said);
+        }
+        if !made.refused.is_empty() {
+            stopped = true;
+            continue;
+        }
+        let m = mir::machine::Machine::of(target);
+        let mut lowerer = mir::lower::Lowerer::new(&made, m);
+        lowerer.lower();
+        let machine_ir = lowerer.finish();
+
+        // How many types the runtime was told about. Every one of them is a
+        // type the collector will read a map of rather than guess at, so the
+        // number is what says how much of the heap is scanned precisely.
+        let described =
+            machine_ir.pool.iter().filter(|held| held.symbol.starts_with("__T")).count();
+
+        // What the allocation came to, which is the one thing about a body that
+        // is a fact about the machine rather than about the program.
+        let (mut spills, mut frame, mut most) = (0usize, 0usize, 0usize);
+        for body in &machine_ir.bodies {
+            let mut held = mir::linear::linearise(body);
+            let out = mir::regalloc::allocate(&mut held, m);
+            spills += out.spills;
+            most = most.max(out.most);
+            frame += mir::text::frame(&held.frame, m).1;
+        }
+
         println!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
              {} instructions ({} after {:?} for {}: {} calls written out, {} loops unrolled, \
              {} lifted out of a loop, {} widened, {} folded, {} shared, {} forwarded, \
-             {} dead)",
+             {} dead), \
+             then {} machine bodies ({} made from a generic) on {}: \
+             {} bytes of frame, {} spilled, {} registers wanted at once, \
+             {} types described for the runtime",
             name.display(),
             ttir.items.len(),
             symbols.len(),
@@ -225,8 +263,18 @@ fn compile(
             worked.folded,
             worked.shared,
             worked.forwarded,
-            worked.dead
+            worked.dead,
+            machine_ir.bodies.len(),
+            made.instances,
+            m.name,
+            frame,
+            spills,
+            most,
+            described
         );
+        if emit {
+            print!("{}", mir::text::render(&machine_ir, m));
+        }
         for (symbol, _) in symbols.sorted() {
             println!("    {}", symbol);
         }
@@ -281,6 +329,10 @@ fn run(args: &[String]) -> bool {
     // another. See `sir::target`, which is the only thing in this compiler
     // that has an opinion about where the program will end up.
     let mut target = sir::target::Target::default();
+    // Whether to write the listing out. Off by default: what a build prints is
+    // one line per file, and a back end's own page is something to be asked
+    // for.
+    let mut emit = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -306,6 +358,21 @@ fn run(args: &[String]) -> bool {
                     },
                 };
             }
+            // `--emit mir` writes the machine IR out as a listing: the
+            // program in the order it would run, with the registers it would
+            // use. There is one thing to emit, and it takes a name anyway so
+            // that a second one does not need a second flag.
+            "--emit" => match rest.next() {
+                Some(what) if what == "mir" => emit = true,
+                Some(what) => {
+                    eprintln!("nothing to emit called `{}` (there is mir)", what);
+                    return false;
+                }
+                None => {
+                    eprintln!("--emit wants a name after it");
+                    return false;
+                }
+            },
             "--target" => match rest.next() {
                 Some(name) => match sir::target::of(name) {
                     Some(held) => target = held,
@@ -335,9 +402,12 @@ fn run(args: &[String]) -> bool {
         }
     }
     match root {
-        Some(root) => compile(&root, search_paths, level, target),
+        Some(root) => compile(&root, search_paths, level, target, emit),
         None => {
-            eprintln!("usage: fortec <root.fc> [-O<0-3>] [--target <name>] [-I <dir>]...");
+            eprintln!(
+                "usage: fortec <root.fc> [-O<0-3>] [--target <name>] [--emit mir] \
+                 [-I <dir>]..."
+            );
             false
         }
     }

@@ -1714,9 +1714,21 @@ answer is not obvious from the rules alone.
     A generic parameter is written by its place and not by its name, so
     "f<T>(x: T)" and "f<U>(x: U)" are one symbol -- as they are one function
     written twice.
-    What is not settled is what happens when a generic fn is compiled. If
-    nothing monomorphises, one symbol is right; if something does, each
-    instance wants its own and the arguments have to reach the name.
+    What happens when a generic fn is compiled is settled, and it is the
+    second of the two: something monomorphises, so each instance wants its
+    own symbol and the arguments reach the name. An instance is the
+    declaration's symbol with one further part for each type it was made
+    with, written the way every other part is -- so "id<i32>" is the symbol
+    of "id" and then "3i32".
+    It is settled that way because a machine reaches a field by counting
+    bytes, and how many bytes a "T" takes is not a question with an answer.
+    Either every use is compiled separately with the types filled in, or
+    every generic value goes behind a pointer so that they are all one
+    width -- and the second is a decision about the language rather than
+    about a back end. See src/mir/mono.rs, which is where it happens.
+    A "%symbol" name is not added to. Nothing outside the language can
+    predict a mangling, which is the whole of why a call out to C is
+    written with one, so a generic given an exact name keeps it.
   - Every loop takes a "break x" and yields "null" where none is given
     (section 5.1), and "null" belongs to every type, so the operand of a
     break and the "null" of a loop that ended by itself always agree. Settled

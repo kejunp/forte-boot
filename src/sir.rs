@@ -11,6 +11,10 @@
 //                                                                    lower
 //                                                                      |
 //                                                                     SIR
+//                                                                      |
+//                                                                    lower
+//                                                                      |
+//                                                                     MIR
 //
 // The GIR drew the control flow as edges and stopped there. A name in it is
 // still a name -- written as many times as the source writes it -- and an
@@ -55,9 +59,10 @@
 // addresses may be the same address, which is the question a load, a store and
 // a loop that holds either all turn on.
 //
-// Nothing consumes a SIR yet -- there is no backend -- so most of what is
-// built here is built for the pass after, and the warning about that would be
-// on every build rather than about anything.
+// `mir` is what consumes a SIR, and it is the first thing in this compiler
+// that is about a machine rather than about the program. Parts of what is built
+// here are still built for a pass that has not reached them, and the warning
+// about that would be on every build rather than about anything.
 #![allow(dead_code)]
 
 #[cfg(test)]
