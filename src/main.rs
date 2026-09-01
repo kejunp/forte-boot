@@ -124,7 +124,7 @@ fn compile(
     search_paths: Vec<PathBuf>,
     level: sir::opt::Level,
     target: sir::target::Target,
-    emit: bool,
+    emit: Option<What>,
 ) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
@@ -246,7 +246,14 @@ fn compile(
             frame += mir::text::frame(&held.frame, m).1;
         }
 
-        println!(
+        // The stats and the names go to the error stream where something is
+        // being emitted, so that what comes out of the compiler is the thing
+        // and not the thing with a paragraph in front of it.
+        let said = |line: String| match emit {
+            Some(_) => eprintln!("{}", line),
+            None => println!("{}", line),
+        };
+        said(format!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
              {} instructions ({} after {:?} for {}: {} calls written out, {} loops unrolled, \
@@ -285,12 +292,20 @@ fn compile(
             spills,
             most,
             described
-        );
-        if emit {
-            print!("{}", mir::text::render(&machine_ir, m));
+        ));
+        match emit {
+            Some(What::Mir) => print!("{}", mir::text::render(&machine_ir, m)),
+            Some(What::Asm) => {
+                let (text, said) = mir::asm::render(&machine_ir, m);
+                for one in said {
+                    eprintln!("{}: {}", name.display(), one);
+                }
+                print!("{}", text);
+            }
+            None => {}
         }
         for (symbol, _) in symbols.sorted() {
-            println!("    {}", symbol);
+            said(format!("    {}", symbol));
         }
         let _ = scopes;
     }
@@ -322,6 +337,14 @@ fn instructions(ssa: &sir::sir_nodes::SIRProgram) -> usize {
 // The declaration a body belongs to, for the parts of `gir` that answer a
 // `Ty::Param` -- what a type parameter comes to is the declaration's and not
 // the body's.
+// What `--emit` may be asked for. Two things and they are two different
+// readers: the listing is for a person and the assembly is for `as`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum What {
+    Mir,
+    Asm,
+}
+
 fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_nodes::TTIRGeneric> {
     for item in &p.items {
         if let tir::ttir_nodes::TTIRItemKind::Fn(f) = &item.kind {
@@ -346,7 +369,7 @@ fn run(args: &[String]) -> bool {
     // Whether to write the listing out. Off by default: what a build prints is
     // one line per file, and a back end's own page is something to be asked
     // for.
-    let mut emit = false;
+    let mut emit: Option<What> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -372,14 +395,16 @@ fn run(args: &[String]) -> bool {
                     },
                 };
             }
-            // `--emit mir` writes the machine IR out as a listing: the
+            // `--emit mir` writes the machine IR out as a listing and
+            // `--emit asm` writes assembly for the target. The first is the
             // program in the order it would run, with the registers it would
             // use. There is one thing to emit, and it takes a name anyway so
             // that a second one does not need a second flag.
             "--emit" => match rest.next() {
-                Some(what) if what == "mir" => emit = true,
+                Some(what) if what == "mir" => emit = Some(What::Mir),
+                Some(what) if what == "asm" => emit = Some(What::Asm),
                 Some(what) => {
-                    eprintln!("nothing to emit called `{}` (there is mir)", what);
+                    eprintln!("nothing to emit called `{}` (there is mir and asm)", what);
                     return false;
                 }
                 None => {
@@ -419,7 +444,7 @@ fn run(args: &[String]) -> bool {
         Some(root) => compile(&root, search_paths, level, target, emit),
         None => {
             eprintln!(
-                "usage: fortec <root.fc> [-O<0-3>] [--target <name>] [--emit mir] \
+                "usage: fortec <root.fc> [-O<0-3>] [--target <name>] [--emit mir|asm] \
                  [-I <dir>]..."
             );
             false

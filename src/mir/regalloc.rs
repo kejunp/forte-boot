@@ -32,7 +32,19 @@
 // callee-saved register before using it. Both are real and neither changes
 // where anything goes -- they are instructions around the body rather than
 // decisions about it -- so they belong with whatever turns a listing into an
-// object file, which is the piece after this one.
+// object file. That is `mir::asm`, and it writes both out of what this
+// decided: the callee-saved registers it has to put back are the ones this
+// handed out, and where an argument goes is where this said the parameter
+// lives.
+//
+// What this also does not do is model a register an *instruction* insists on.
+// x86-64 has two -- a division writes `rdx:rax` and a shift counts in `cl` --
+// and neither is a register this knows to keep clear, so `mir::asm::x86_64`
+// pushes whatever is in the way and puts it back. That is three or four
+// instructions on every division and every shift, and taking them away is a
+// change here rather than there: an allocator would have to be able to say
+// "not this register, across this instruction", which is a thing linear scan
+// can be taught and this one has not been.
 
 use std::collections::HashMap;
 

@@ -13,10 +13,10 @@
 // one day declare them. So a listing that mentions `__rt_map_new` names
 // something that exists, which was not true when this file was written.
 //
-// What is still not true is that the two can be put together: there is no
-// assembler and no object file, so nothing links a compiled program to that
-// library. What these calls are checked against is the contract, at both ends,
-// and not a program that runs.
+// And the two can now be put together. `mir::asm` writes assembly an assembler
+// takes, and a program assembled out of it links against that library and
+// calls these symbols for real: a store through the write barrier reaches the
+// collector, and a collection finds what the program is holding.
 //
 // The names are deliberately in one file. A name spelled in the lowering would
 // be a name spelled in five files, and the first time one of them differed by a
@@ -46,9 +46,11 @@ use crate::sema::names::part;
 // now, and what has to be scanned is everything above that. A program that
 // never calls it never collects.
 //
-// **Nothing emits this yet**, because nothing emits an entry point: there is no
-// `main` in the MIR and no object file for one to be in. It is named here
-// because the day something does emit one, this is the first call it makes.
+// **Nothing emits this yet**, because nothing emits an entry point: there is
+// no `main` in the MIR for the call to stand in. Whatever links a program has
+// to make it, and until then a program that means to collect calls it itself.
+// It is named here because the day something does emit an entry point, this is
+// the first call it makes.
 pub const INIT: &str = "__rt_init";
 
 // ---- Getting room ----------------------------------------------------------

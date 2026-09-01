@@ -15,6 +15,13 @@
 // field turned out to be. Those are the things that are wrong silently, and a
 // page is the cheapest place to catch them.
 //
+// `mir::asm` is the other reader of the same decisions, and what it writes an
+// assembler takes. Neither is derived from the other: this one is shorter than
+// assembly because it leaves out everything a machine needs and a person does
+// not, and leaving those out is what it is for. Where the two disagree about a
+// body one of them is wrong, and they are meant to be read side by side --
+// which is why both number a block the same way.
+//
 // The registers are the allocated ones. A listing over `%0` and `%1` would be
 // the graph again with the edges flattened, and the whole reason for the second
 // stage is what happens when there are not enough registers -- so what it shows

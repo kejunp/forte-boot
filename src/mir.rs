@@ -64,12 +64,18 @@
 //
 //   `linear`     the edges made into an order and the phis into moves.
 //   `regalloc`   the registers a body wanted met with the ones there are.
-//   `text`       the listing.
+//   `text`       the listing, for a person to read.
+//   `asm`        the same decisions for an assembler, with the prologue, the
+//                epilogue and the calling convention that everything above
+//                here left for it. x86-64 so far.
 //
-// What consumes a MIR is the listing, and after that nothing does: there is no
-// assembler and no object file. So parts of this are built for a reader rather
-// than for a pass, and the warning about that would be on every build rather
-// than about anything.
+// Two things consume a MIR, and they are the same decisions written for two
+// readers. `text` is the listing, which is for a person; `asm` is assembly,
+// which is for an assembler. A program that comes out of the second can be
+// assembled, linked against `runtime/`, and run.
+//
+// Parts of this are still built for a reader rather than for a pass, and the
+// warning about that would be on every build rather than about anything.
 //
 // The calls it emits do have somewhere to land. `runtime/` is the other member
 // of this workspace and defines every `__rt_` symbol named here -- a heap, a
@@ -81,6 +87,7 @@
 #[cfg(test)]
 pub mod fixture;
 
+pub mod asm;
 pub mod layout;
 pub mod linear;
 pub mod lower;
