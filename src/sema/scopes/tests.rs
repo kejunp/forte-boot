@@ -334,7 +334,7 @@ fn an_imported_name_stands_in_the_scope_that_imported_it() {
         at,
         &[Binding {
             name: "circle".to_string(),
-            home: std::path::PathBuf::from("shapes.fc"),
+            home: std::path::PathBuf::from("shapes.ft"),
             path: vec!["circle".to_string()],
             glob: false,
             via:  0,
@@ -346,7 +346,7 @@ fn an_imported_name_stands_in_the_scope_that_imported_it() {
     let found = scopes.look_up(at, "circle");
     assert_eq!(found.len(), 1);
     let Info::Import { home, path } = &found[0].info else { panic!("{:?}", found) };
-    assert!(home.ends_with("shapes.fc"));
+    assert!(home.ends_with("shapes.ft"));
     assert_eq!(path, &vec!["circle".to_string()]);
     // The name here has no symbol; what it names may have one of its own.
     assert!(found[0].symbol.is_none());
@@ -721,7 +721,7 @@ fn every_kind_of_info_is_built_by_something() {
         module,
         &[Binding {
             name: "circle".to_string(),
-            home: std::path::PathBuf::from("shapes.fc"),
+            home: std::path::PathBuf::from("shapes.ft"),
             path: vec!["circle".to_string()],
             glob: false,
             via:  0,

@@ -1,8 +1,9 @@
 ==============================================================================
-fortec grammar — commentary
+Forte grammar — commentary
 ------------------------------------------------------------------------------
-The productions live in docs/grammar.bnf, which holds nothing but rules. This
-file holds everything else: the notation, the reasoning behind the rules, the
+The language is Forte; its files end in ".ft"; the compiler is "fortec". The
+productions live in docs/grammar.bnf, which holds nothing but rules. This file
+holds everything else: the notation, the reasoning behind the rules, the
 lexer's separator insertion, and the open questions. Section numbers here are
 what the cross-references inside this file mean; the rules are named, so a
 mention of <foo> is found in grammar.bnf by searching for it.
@@ -1692,7 +1693,7 @@ answer is not obvious from the rules alone.
     one part per segment; its own name; and one part for each parameter's
     type. A file is a module and a namespace nests another inside it
     (section 1), so both are segments and the file's come first — "area" at
-    the top of "shapes.fc" is "__F6shapes4area", or two files could not each
+    the top of "shapes.ft" is "__F6shapes4area", or two files could not each
     hold one. The two underscores are what nothing written in the language may
     begin with, so a mangled name collides with nothing a "%symbol" gave and
     with nothing on the other side of a foreign declaration; the "F" says a

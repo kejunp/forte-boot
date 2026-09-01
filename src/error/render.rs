@@ -2,7 +2,7 @@
 // it found, this decides the gutter, the carets and the order.
 //
 //     error: expected `,`, `[` or `}`, found `;`
-//      --> input.fc:2:11
+//      --> input.ft:2:11
 //       |
 //     2 |     x: i32;
 //       |           ^ while parsing a field
@@ -10,7 +10,7 @@
 //       = help: use `,` to separate entries
 //
 //     note: unclosed `{` opened here
-//      --> input.fc:1:10
+//      --> input.ft:1:10
 //       |
 //     1 | struct P {
 //       |          ^
@@ -135,10 +135,10 @@ mod tests {
         let d = Diagnostic::error("expected `;`, found `let`".to_string(), Span::new(2, 5, 3))
             .with_label("while parsing a block");
         assert_eq!(
-            d.render(&Source::new("input.fc", &text)),
+            d.render(&Source::new("input.ft", &text)),
             "\
 error: expected `;`, found `let`
- --> input.fc:2:5
+ --> input.ft:2:5
   |
 2 |     let x = 1
   |     ^~~ while parsing a block"
@@ -151,10 +151,10 @@ error: expected `;`, found `let`
         let text = chars("let unused = 1\n");
         let d = Diagnostic::warning("`unused` is never read".to_string(), Span::new(1, 5, 6));
         assert_eq!(
-            d.render(&Source::new("w.fc", &text)),
+            d.render(&Source::new("w.ft", &text)),
             "\
 warning: `unused` is never read
- --> w.fc:1:5
+ --> w.ft:1:5
   |
 1 | let unused = 1
   |     ^~~~~~"
@@ -169,16 +169,16 @@ warning: `unused` is never read
         let d = Diagnostic::error("expected `,` or `)`, found `}`".to_string(), Span::new(3, 1, 1))
             .with_secondary(Span::new(2, 6, 1), "unclosed `(` opened");
         assert_eq!(
-            d.render(&Source::new("input.fc", &text)),
+            d.render(&Source::new("input.ft", &text)),
             "\
 error: expected `,` or `)`, found `}`
- --> input.fc:3:1
+ --> input.ft:3:1
   |
 3 | }
   | ^
 
 note: unclosed `(` opened here
- --> input.fc:2:6
+ --> input.ft:2:6
   |
 2 |     f(1, 2
   |      ^"
@@ -194,10 +194,10 @@ note: unclosed `(` opened here
             .with_help("use `,` to separate entries")
             .with_note("a struct's fields are entries, not statements");
         assert_eq!(
-            d.render(&Source::new("p.fc", &text)),
+            d.render(&Source::new("p.ft", &text)),
             "\
 error: expected `,`, found `;`
- --> p.fc:2:11
+ --> p.ft:2:11
   |
 2 |     x: i32;
   |           ^
@@ -216,22 +216,22 @@ error: expected `,`, found `;`
             .with_secondary(Span::new(1, 4, 1), "first defined")
             .with_secondary(Span::new(2, 4, 1), "defined again");
         assert_eq!(
-            d.render(&Source::new("d.fc", &text)),
+            d.render(&Source::new("d.ft", &text)),
             "\
 error: `f` is defined three times
- --> d.fc:3:4
+ --> d.ft:3:4
   |
 3 | fn f() {}
   |    ^
 
 note: first defined here
- --> d.fc:1:4
+ --> d.ft:1:4
   |
 1 | fn f() {}
   |    ^
 
 note: defined again here
- --> d.fc:2:4
+ --> d.ft:2:4
   |
 2 | fn f() {}
   |    ^"
@@ -248,10 +248,10 @@ note: defined again here
             Span::new(2, 10, 1),
         );
         assert_eq!(
-            d.render(&Source::new("t.fc", &text)),
+            d.render(&Source::new("t.ft", &text)),
             "\
 error: expected an expression, found `;`
- --> t.fc:2:10
+ --> t.ft:2:10
   |
 2 |     let x = ;
   |             ^"
@@ -265,10 +265,10 @@ error: expected an expression, found `;`
         let text = chars("let s = \"oops\n");
         let d = Diagnostic::error("Unterminated string".to_string(), Span::new(1, 9, 99));
         assert_eq!(
-            d.render(&Source::new("s.fc", &text)),
+            d.render(&Source::new("s.ft", &text)),
             "\
 error: Unterminated string
- --> s.fc:1:9
+ --> s.ft:1:9
   |
 1 | let s = \"oops
   |         ^~~~~"
@@ -282,10 +282,10 @@ error: Unterminated string
         let text = chars("fn main() {\n    let x = 1\n");
         let d = Diagnostic::error("expected `}`, found end of file".to_string(), Span::at(3, 1));
         assert_eq!(
-            d.render(&Source::new("e.fc", &text)),
+            d.render(&Source::new("e.ft", &text)),
             "\
 error: expected `}`, found end of file
- --> e.fc:3:1
+ --> e.ft:3:1
   |
 3 |
   | ^"
@@ -298,10 +298,10 @@ error: expected `}`, found end of file
         let text = chars("fn f() {}\n");
         let d = Diagnostic::error("nowhere".to_string(), Span::at(9, 1));
         assert_eq!(
-            d.render(&Source::new("o.fc", &text)),
+            d.render(&Source::new("o.ft", &text)),
             "\
 error: nowhere
- --> o.fc:9:1"
+ --> o.ft:9:1"
         );
     }
 }

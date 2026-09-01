@@ -266,7 +266,7 @@ pub enum Payload {
 //
 //   - where it is declared, one part per segment. A file is a module and a
 //     namespace nests another inside it (section 1), so both are segments and
-//     the file's come first: `area` at the top of `shapes.fc` is `6shapes4area`
+//     the file's come first: `area` at the top of `shapes.ft` is `6shapes4area`
 //     and not `4area`, or two files could not each hold one. A method's segments
 //     are the impl it is written in -- the type it is for, and the trait where
 //     there is one, since `impl Buf` and `impl Show for Buf` may both hold a

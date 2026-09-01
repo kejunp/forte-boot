@@ -200,7 +200,7 @@ impl Suite {
             .collect::<String>()
             .chars()
             .collect();
-        c.errors().render(&Source::new("t.fc", &text))
+        c.errors().render(&Source::new("t.ft", &text))
     }
 }
 

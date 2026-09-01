@@ -544,7 +544,7 @@ mod tests {
     // on the page, so all of it is asserted as it will be read.
     fn errors_in(source: &str) -> Vec<String> {
         let text: Vec<char> = source.chars().collect();
-        let quoted = crate::error::Source::new("input.fc", &text);
+        let quoted = crate::error::Source::new("input.ft", &text);
         parsed(source).errors().iter().map(|e| e.render(&quoted)).collect()
     }
 
@@ -570,12 +570,12 @@ mod tests {
         p.parse();
 
         let text: Vec<char> = written.chars().collect();
-        let quoted = crate::error::Source::new("input.fc", &text);
+        let quoted = crate::error::Source::new("input.ft", &text);
         assert_eq!(
             p.errors().render(&quoted),
             "\
 error: expected an expression, found `;`
- --> input.fc:2:23
+ --> input.ft:2:23
   |
 2 |     let x = /* huh */ ;  // why
   |                       ^ while parsing a variable declaration"
@@ -585,7 +585,7 @@ error: expected an expression, found `;`
         // the same column, under a line nobody wrote. That the caller chooses
         // is the whole of the difference.
         let lexed: Vec<char> = prepped.chars().collect();
-        let other = crate::error::Source::new("input.fc", &lexed);
+        let other = crate::error::Source::new("input.ft", &lexed);
         assert!(
             p.errors().render(&other).contains("2 |     let x =           ;"),
             "{}",
@@ -609,7 +609,7 @@ error: expected an expression, found `;`
             error_in("fn f(x: ) {}\n"),
             "\
 error: expected a type, found `)`
- --> input.fc:1:9
+ --> input.ft:1:9
   |
 1 | fn f(x: ) {}
   |         ^ while parsing a parameter"
@@ -618,7 +618,7 @@ error: expected a type, found `)`
             error_in("struct P {\n    x: i32\n    y i32,\n}\n"),
             "\
 error: expected `,`, `[` or `}`, found an identifier
- --> input.fc:3:5
+ --> input.ft:3:5
   |
 3 |     y i32,
   |     ^ while parsing a field"
@@ -627,7 +627,7 @@ error: expected `,`, `[` or `}`, found an identifier
             error_in("fn main() {\n    match x {\n        1 => ,\n    }\n}\n"),
             "\
 error: expected an expression, found `,`
- --> input.fc:3:14
+ --> input.ft:3:14
   |
 3 |         1 => ,
   |              ^ while parsing a match arm"
@@ -636,7 +636,7 @@ error: expected an expression, found `,`
             error_in("impl<T> Stack<T> where {\n}\n"),
             "\
 error: expected a type or a lifetime, found a block `{`
- --> input.fc:1:24
+ --> input.ft:1:24
   |
 1 | impl<T> Stack<T> where {
   |                        ^ while parsing a `where` clause"
@@ -645,7 +645,7 @@ error: expected a type or a lifetime, found a block `{`
             error_in("fn main() {\n    let x: = 5\n}\n"),
             "\
 error: expected a type, found `=`
- --> input.fc:2:12
+ --> input.ft:2:12
   |
 2 |     let x: = 5
   |            ^ while parsing a variable declaration"
@@ -656,7 +656,7 @@ error: expected a type, found `=`
             error_in("fn f(): (i32, ) {}\n"),
             "\
 error: expected a type, found `)`
- --> input.fc:1:15
+ --> input.ft:1:15
   |
 1 | fn f(): (i32, ) {}
   |               ^ while parsing a tuple type"
@@ -665,7 +665,7 @@ error: expected a type, found `)`
             error_in("fn main() {\n    g((1, ))\n}\n"),
             "\
 error: expected an expression, found `)`
- --> input.fc:2:11
+ --> input.ft:2:11
   |
 2 |     g((1, ))
   |           ^ while parsing a tuple"
@@ -674,7 +674,7 @@ error: expected an expression, found `)`
             error_in("fn main() {\n    match p {\n        (1, ) => a,\n    }\n}\n"),
             "\
 error: expected a pattern, found `)`
- --> input.fc:3:13
+ --> input.ft:3:13
   |
 3 |         (1, ) => a,
   |             ^ while parsing a tuple pattern"
@@ -690,13 +690,13 @@ error: expected a pattern, found `)`
             error_in("fn main() {\n    f(1, 2\n}\n"),
             "\
 error: expected an operator, `,` or `)`, found `}`
- --> input.fc:3:1
+ --> input.ft:3:1
   |
 3 | }
   | ^ while parsing an argument list
 
 note: unclosed `(` opened here
- --> input.fc:2:6
+ --> input.ft:2:6
   |
 2 |     f(1, 2
   |      ^"
@@ -707,13 +707,13 @@ note: unclosed `(` opened here
             error_in("fn main() {\n    let x = 1\n"),
             "\
 error: expected a statement or `}`, found end of file
- --> input.fc:3:1
+ --> input.ft:3:1
   |
 3 |
   | ^ while parsing a variable declaration
 
 note: unclosed `{` opened here
- --> input.fc:1:11
+ --> input.ft:1:11
   |
 1 | fn main() {
   |           ^"
@@ -724,13 +724,13 @@ note: unclosed `{` opened here
             error_in("fn main() {\n    f([1, 2]\n}\n"),
             "\
 error: expected an operator, `,` or `)`, found `}`
- --> input.fc:3:1
+ --> input.ft:3:1
   |
 3 | }
   | ^ while parsing an array literal
 
 note: unclosed `(` opened here
- --> input.fc:2:6
+ --> input.ft:2:6
   |
 2 |     f([1, 2]
   |      ^"
@@ -741,7 +741,7 @@ note: unclosed `(` opened here
             error_in("fn main() {\n    let x = ;\n}\n"),
             "\
 error: expected an expression, found `;`
- --> input.fc:2:13
+ --> input.ft:2:13
   |
 2 |     let x = ;
   |             ^ while parsing a variable declaration"
@@ -757,7 +757,7 @@ error: expected an expression, found `;`
             error_in("fn fn() {}\n"),
             "\
 error: expected an identifier, found `fn`
- --> input.fc:1:4
+ --> input.ft:1:4
   |
 1 | fn fn() {}
   |    ^~ while parsing a function's signature
@@ -768,7 +768,7 @@ error: expected an identifier, found `fn`
             error_in("struct P {\n    x: i32;\n}\n"),
             "\
 error: expected `,`, `[` or `}`, found `;`
- --> input.fc:2:11
+ --> input.ft:2:11
   |
 2 |     x: i32;
   |           ^ while parsing a field
@@ -781,7 +781,7 @@ error: expected `,`, `[` or `}`, found `;`
             error_in("fn f(): i32 {1: 2}\n"),
             "\
 error: expected `[`, a block `{`, `;` or `where`, found a value `{`
- --> input.fc:1:13
+ --> input.ft:1:13
   |
 1 | fn f(): i32 {1: 2}
   |             ^ while parsing a return type
@@ -802,25 +802,25 @@ error: expected `[`, a block `{`, `;` or `where`, found a value `{`
             errors_in(source).join("\n\n"),
             "\
 error: expected an expression, found `;`
- --> input.fc:1:18
+ --> input.ft:1:18
   |
 1 | fn a() { let x = ; }
   |                  ^ while parsing a variable declaration
 
 error: expected an expression, found `;`
- --> input.fc:2:18
+ --> input.ft:2:18
   |
 2 | fn b() { let y = ; }
   |                  ^ while parsing a variable declaration
 
 error: expected an expression or `)`, found `]`
- --> input.fc:3:12
+ --> input.ft:3:12
   |
 3 | fn c() { g(] }
   |            ^ while parsing a function
 
 note: unclosed `(` opened here
- --> input.fc:3:11
+ --> input.ft:3:11
   |
 3 | fn c() { g(] }
   |           ^"
@@ -837,7 +837,7 @@ note: unclosed `(` opened here
             error_in("fn main() {\n    if x {1: 2}\n}\n"),
             "\
 error: expected an identifier or `}`, found an integer literal
- --> input.fc:2:11
+ --> input.ft:2:11
   |
 2 |     if x {1: 2}
   |           ^ while parsing a struct literal"
@@ -852,7 +852,7 @@ error: expected an identifier or `}`, found an integer literal
             error_in("fn a(((((\n"),
             "\
 error: expected `&`, an identifier, `)`, `self`, `*` or `_`, found `(`
- --> input.fc:1:6
+ --> input.ft:1:6
   |
 1 | fn a(((((
   |      ^ while parsing a function's signature"
@@ -868,7 +868,7 @@ error: expected `&`, an identifier, `)`, `self`, `*` or `_`, found `(`
             error_in("fn main() {\n    let s = \"unclosed\n}\n"),
             "\
 error: Unterminated string
- --> input.fc:2:13
+ --> input.ft:2:13
   |
 2 |     let s = \"unclosed
   |             ^~~~~~~~~ while parsing a variable declaration"

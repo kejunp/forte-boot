@@ -34,7 +34,7 @@ fn clean(source: &str) -> TIRProgram {
 fn errors_in(source: &str) -> Vec<String> {
     let (_, errors) = lowered(source);
     let text: Vec<char> = source.chars().collect();
-    let quoted = crate::error::Source::new("input.fc", &text);
+    let quoted = crate::error::Source::new("input.ft", &text);
     errors.iter().map(|e| e.render(&quoted)).collect()
 }
 

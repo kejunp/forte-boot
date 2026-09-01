@@ -60,7 +60,7 @@ pub struct TTIRProgram {
 // One file, and what it declared.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TTIRModule {
-    // Its path from the suite root: `a/b/deep.fc` is `["a", "b", "deep"]`.
+    // Its path from the suite root: `a/b/deep.ft` is `["a", "b", "deep"]`.
     // What `ImportResolver::module_of` works out, and what stands in front of
     // every symbol the file compiles to.
     pub path:  Vec<String>,

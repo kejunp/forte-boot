@@ -21,8 +21,8 @@
 // being nowhere else they could be settled:
 //
 //   - Where a path is looked up. A module is a file: `shapes::circle` is
-//     `shapes/circle.fc`, or where that is not a file, `circle` inside
-//     `shapes.fc`. The longest prefix that names a file is the module and the
+//     `shapes/circle.ft`, or where that is not a file, `circle` inside
+//     `shapes.ft`. The longest prefix that names a file is the module and the
 //     rest is what to find in it, which is what lets a namespace be reached by
 //     the same path -- `suite::limits::MAX` is `MAX` in the namespace `limits`,
 //     wherever `limits` happens to be written.
@@ -55,7 +55,7 @@ use crate::tir::tir_nodes::{
 
 // What a module is written in. A path names a module and not a file, and this
 // is the whole of the difference between the two.
-const EXT: &str = "fc";
+const EXT: &str = "ft";
 
 // The three words that say where a path starts (section 1). They are segments
 // like any other to the parser, which is what lets `super` repeat; making them
@@ -192,12 +192,12 @@ impl ImportResolver {
         }
     }
 
-    // The module path a file is reached by, from the suite root: `a/b/deep.fc`
+    // The module path a file is reached by, from the suite root: `a/b/deep.ft`
     // is `a::b::deep`. A file is a module (section 1), so this is what stands
     // in front of everything the file declares -- in a path a reader writes,
     // and in the symbol a fn is compiled to (`sema::names::Mangler`).
     //
-    // The stem and not the file name: `.fc` is how the file is stored and no
+    // The stem and not the file name: `.ft` is how the file is stored and no
     // part of what the module is called, which is the same answer `find_module`
     // gives when it goes the other way.
     pub fn module_of(&self, file: &Path) -> Vec<String> {
@@ -750,8 +750,8 @@ fn exported(vis: TIRVis) -> bool {
 // ---- Finding the file -----------------------------------------------------
 
 // The longest prefix of `rest` that names a file, and what is left over to
-// find inside it. `a::b::c` is `a/b/c.fc` where there is one, then `c` inside
-// `a/b.fc`, then `b::c` inside `a.fc` -- so a namespace is reached by the same
+// find inside it. `a::b::c` is `a/b/c.ft` where there is one, then `c` inside
+// `a/b.ft`, then `b::c` inside `a.ft` -- so a namespace is reached by the same
 // path a nested file is, which is what section 1 means by a namespace nesting
 // a module inside the one it is written in.
 fn find_module(bases: &[PathBuf], rest: &[String]) -> Option<(PathBuf, Vec<String>)> {
@@ -906,7 +906,7 @@ fn quoted(names: &[&str]) -> String {
 // in different files.
 //
 // So a report belongs to the file it is written in, and a place in another file
-// is put in words -- `it is declared at shapes.fc:1:1` -- rather than quoted.
+// is put in words -- `it is declared at shapes.ft:1:1` -- rather than quoted.
 // The alternative is a `Label` that carries its own `Source`, which would let
 // `with_secondary` reach across a file and quote the declaration properly. That
 // is a change to `error` and not to this pass, and it is worth making the first

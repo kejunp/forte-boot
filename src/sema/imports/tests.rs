@@ -20,13 +20,13 @@ fn suite(files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
-// Resolves the suite rooted at `main.fc` and hands back the resolver. The
+// Resolves the suite rooted at `main.ft` and hands back the resolver. The
 // directory goes as soon as `resolve` returns: every file it read is held in
 // the resolver by then -- the text among it, since a report quotes it -- and
 // nothing below touches the disk again.
 fn resolved(files: &[(&str, &str)]) -> (ImportResolver, PathBuf) {
     let dir = suite(files);
-    let root = dir.join("main.fc");
+    let root = dir.join("main.ft");
     let mut r = ImportResolver::new(Vec::new());
     r.resolve(&root).expect("the root file");
     fs::remove_dir_all(&dir).expect("the directory to go");
@@ -56,16 +56,16 @@ fn errors(files: &[(&str, &str)]) -> String {
 fn a_path_names_a_file_then_what_is_in_it() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import shapes::circle;\n"),
-            ("shapes.fc", "pub fn circle(): i32 { 1 }\n"),
+            ("main.ft", "import shapes::circle;\n"),
+            ("shapes.ft", "pub fn circle(): i32 { 1 }\n"),
         ]),
         vec!["circle"]
     );
     // The same import, where the deeper file exists instead.
     assert_eq!(
         bound(&[
-            ("main.fc", "import shapes::circle;\n"),
-            ("shapes/circle.fc", "pub fn area(): i32 { 1 }\n"),
+            ("main.ft", "import shapes::circle;\n"),
+            ("shapes/circle.ft", "pub fn area(): i32 { 1 }\n"),
         ]),
         vec!["circle"]
     );
@@ -77,15 +77,15 @@ fn a_path_names_a_file_then_what_is_in_it() {
 fn a_namespace_is_reached_like_a_file() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import suite::limits::MAX;\n"),
-            ("limits.fc", "pub const MAX: i32 = 255;\n"),
+            ("main.ft", "import suite::limits::MAX;\n"),
+            ("limits.ft", "pub const MAX: i32 = 255;\n"),
         ]),
         vec!["MAX"]
     );
     assert_eq!(
         bound(&[
-            ("main.fc", "import helpers::limits::MAX;\n"),
-            ("helpers.fc", "pub namespace limits {\n    pub const MAX: i32 = 255;\n}\n"),
+            ("main.ft", "import helpers::limits::MAX;\n"),
+            ("helpers.ft", "pub namespace limits {\n    pub const MAX: i32 = 255;\n}\n"),
         ]),
         vec!["MAX"]
     );
@@ -97,8 +97,8 @@ fn a_namespace_is_reached_like_a_file() {
 fn a_group_is_spelling_and_an_alias_is_the_leaf_s() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import shapes::{circle, square as sq, poly::tri};\n"),
-            ("shapes.fc", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\npub namespace poly {\n    pub fn tri(): i32 { 3 }\n}\n"),
+            ("main.ft", "import shapes::{circle, square as sq, poly::tri};\n"),
+            ("shapes.ft", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\npub namespace poly {\n    pub fn tri(): i32 { 3 }\n}\n"),
         ]),
         vec!["circle", "sq", "tri"]
     );
@@ -109,8 +109,8 @@ fn a_group_is_spelling_and_an_alias_is_the_leaf_s() {
 fn a_glob_takes_what_is_exported_and_no_more() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import shapes::*;\n"),
-            ("shapes.fc", "pub fn circle(): i32 { 1 }\nfn helper(): i32 { 2 }\npub(suite) fn square(): i32 { 3 }\n"),
+            ("main.ft", "import shapes::*;\n"),
+            ("shapes.ft", "pub fn circle(): i32 { 1 }\nfn helper(): i32 { 2 }\npub(suite) fn square(): i32 { 3 }\n"),
         ]),
         vec!["circle", "square"]
     );
@@ -121,9 +121,9 @@ fn a_glob_takes_what_is_exported_and_no_more() {
 fn super_climbs_once_per_word() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import a::b::deep;\n"),
-            ("a/b/deep.fc", "import super::super::helpers::trim as t;\npub fn go(): i32 { 1 }\n"),
-            ("helpers.fc", "pub fn trim(): i32 { 1 }\n"),
+            ("main.ft", "import a::b::deep;\n"),
+            ("a/b/deep.ft", "import super::super::helpers::trim as t;\npub fn go(): i32 { 1 }\n"),
+            ("helpers.ft", "pub fn trim(): i32 { 1 }\n"),
         ]),
         vec!["deep"]
     );
@@ -133,10 +133,10 @@ fn super_climbs_once_per_word() {
 #[test]
 fn a_file_reached_twice_is_read_once() {
     let (r, _) = resolved(&[
-        ("main.fc", "import a::f;\nimport b::g;\n"),
-        ("a.fc", "import shared::k;\npub fn f(): i32 { 1 }\n"),
-        ("b.fc", "import shared::k;\npub fn g(): i32 { 1 }\n"),
-        ("shared.fc", "pub fn k(): i32 { 1 }\n"),
+        ("main.ft", "import a::f;\nimport b::g;\n"),
+        ("a.ft", "import shared::k;\npub fn f(): i32 { 1 }\n"),
+        ("b.ft", "import shared::k;\npub fn g(): i32 { 1 }\n"),
+        ("shared.ft", "pub fn k(): i32 { 1 }\n"),
     ]);
     assert_eq!(r.render(), "");
     assert_eq!(r.suites().count(), 4);
@@ -146,19 +146,19 @@ fn a_file_reached_twice_is_read_once() {
 
 #[test]
 fn a_module_that_is_not_there_says_what_was_looked_for() {
-    let out = errors(&[("main.fc", "import shapes::circle;\n")]);
+    let out = errors(&[("main.ft", "import shapes::circle;\n")]);
     assert!(out.starts_with("error: no module answers to `shapes::circle`"), "{}", out);
-    assert!(out.contains("shapes/circle.fc"), "{}", out);
-    assert!(out.contains("shapes.fc"), "{}", out);
+    assert!(out.contains("shapes/circle.ft"), "{}", out);
+    assert!(out.contains("shapes.ft"), "{}", out);
 }
 
 #[test]
 fn a_name_the_module_does_not_have_says_what_was_probably_meant() {
     let out = errors(&[
-        ("main.fc", "import shapes::circel;\n"),
-        ("shapes.fc", "pub fn circle(): i32 { 1 }\n"),
+        ("main.ft", "import shapes::circel;\n"),
+        ("shapes.ft", "pub fn circle(): i32 { 1 }\n"),
     ]);
-    assert!(out.contains("error: `circel` is not in `shapes.fc`"), "{}", out);
+    assert!(out.contains("error: `circel` is not in `shapes.ft`"), "{}", out);
     assert!(out.contains("did you mean `circle`?"), "{}", out);
 }
 
@@ -167,8 +167,8 @@ fn a_name_the_module_does_not_have_says_what_was_probably_meant() {
 #[test]
 fn a_name_with_no_near_miss_gets_the_list() {
     let out = errors(&[
-        ("main.fc", "import shapes::wobble;\n"),
-        ("shapes.fc", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\n"),
+        ("main.ft", "import shapes::wobble;\n"),
+        ("shapes.ft", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\n"),
     ]);
     assert!(out.contains("it exports `circle`, `square`"), "{}", out);
 }
@@ -178,26 +178,26 @@ fn a_name_with_no_near_miss_gets_the_list() {
 #[test]
 fn a_private_name_is_refused_and_the_declaration_is_shown() {
     let out = errors(&[
-        ("main.fc", "import shapes::helper;\n"),
-        ("shapes.fc", "fn helper(): i32 { 1 }\n"),
+        ("main.ft", "import shapes::helper;\n"),
+        ("shapes.ft", "fn helper(): i32 { 1 }\n"),
     ]);
-    assert!(out.contains("error: `helper` is private to `shapes.fc`"), "{}", out);
+    assert!(out.contains("error: `helper` is private to `shapes.ft`"), "{}", out);
     // In words and not quoted: the declaration is in another file, and one
     // `Diagnostic` renders against one `Source`.
-    assert!(out.contains("= note: it is declared at shapes.fc:1:1"), "{}", out);
+    assert!(out.contains("= note: it is declared at shapes.ft:1:1"), "{}", out);
     assert!(out.contains("write `pub` on it"), "{}", out);
 }
 
 #[test]
 fn a_circle_is_reported_where_it_closes() {
     let out = errors(&[
-        ("main.fc", "import a::f;\n"),
-        ("a.fc", "import b::g;\npub fn f(): i32 { 1 }\n"),
-        ("b.fc", "import a::f;\npub fn g(): i32 { 1 }\n"),
+        ("main.ft", "import a::f;\n"),
+        ("a.ft", "import b::g;\npub fn f(): i32 { 1 }\n"),
+        ("b.ft", "import a::f;\npub fn g(): i32 { 1 }\n"),
     ]);
     assert!(out.contains("is imported in a circle"), "{}", out);
-    assert!(out.contains("a.fc"), "{}", out);
-    assert!(out.contains("b.fc"), "{}", out);
+    assert!(out.contains("a.ft"), "{}", out);
+    assert!(out.contains("b.ft"), "{}", out);
 }
 
 // A root is a segment like any other to the parser, which is what lets `super`
@@ -206,8 +206,8 @@ fn a_circle_is_reported_where_it_closes() {
 #[test]
 fn a_root_in_the_middle_of_a_path_is_refused() {
     let out = errors(&[
-        ("main.fc", "import a::super::b;\n"),
-        ("a.fc", "pub fn f(): i32 { 1 }\n"),
+        ("main.ft", "import a::super::b;\n"),
+        ("a.ft", "pub fn f(): i32 { 1 }\n"),
     ]);
     assert!(out.contains("error: `super` is not the start of this path"), "{}", out);
 }
@@ -215,7 +215,7 @@ fn a_root_in_the_middle_of_a_path_is_refused() {
 // Nothing above the suite is nameable, there being nothing above it to name.
 #[test]
 fn super_may_not_climb_out_of_the_suite() {
-    let out = errors(&[("main.fc", "import super::escape;\n")]);
+    let out = errors(&[("main.ft", "import super::escape;\n")]);
     assert!(out.contains("error: `super` climbs out of the suite"), "{}", out);
 }
 
@@ -223,9 +223,9 @@ fn super_may_not_climb_out_of_the_suite() {
 #[test]
 fn one_name_imported_twice_is_refused() {
     let out = errors(&[
-        ("main.fc", "import a::f;\nimport b::f;\n"),
-        ("a.fc", "pub fn f(): i32 { 1 }\n"),
-        ("b.fc", "pub fn f(): i32 { 2 }\n"),
+        ("main.ft", "import a::f;\nimport b::f;\n"),
+        ("a.ft", "pub fn f(): i32 { 1 }\n"),
+        ("b.ft", "pub fn f(): i32 { 2 }\n"),
     ]);
     assert!(out.contains("error: `f` is imported twice"), "{}", out);
     assert!(out.contains("write `as` on one of them"), "{}", out);
@@ -237,15 +237,15 @@ fn one_name_imported_twice_is_refused() {
 fn a_name_written_by_hand_beats_a_glob() {
     for main in ["import a::*;\nimport b::f;\n", "import b::f;\nimport a::*;\n"] {
         let (r, root) = resolved(&[
-            ("main.fc", main),
-            ("a.fc", "pub fn f(): i32 { 1 }\n"),
-            ("b.fc", "pub fn f(): i32 { 2 }\n"),
+            ("main.ft", main),
+            ("a.ft", "pub fn f(): i32 { 1 }\n"),
+            ("b.ft", "pub fn f(): i32 { 2 }\n"),
         ]);
         assert_eq!(r.render(), "", "{}", main);
         let bindings = &r.suite(&root).expect("the root").bindings;
         let f = bindings.iter().find(|b| b.name == "f").expect("f");
         assert!(!f.glob, "the glob won in {:?}", main);
-        assert!(f.home.ends_with("b.fc"), "{:?}", f.home);
+        assert!(f.home.ends_with("b.ft"), "{:?}", f.home);
     }
 }
 
@@ -253,9 +253,9 @@ fn a_name_written_by_hand_beats_a_glob() {
 #[test]
 fn two_globs_offering_one_name_is_refused() {
     let out = errors(&[
-        ("main.fc", "import a::*;\nimport b::*;\n"),
-        ("a.fc", "pub fn f(): i32 { 1 }\n"),
-        ("b.fc", "pub fn f(): i32 { 2 }\n"),
+        ("main.ft", "import a::*;\nimport b::*;\n"),
+        ("a.ft", "pub fn f(): i32 { 1 }\n"),
+        ("b.ft", "pub fn f(): i32 { 2 }\n"),
     ]);
     assert!(out.contains("error: two globs both offer `f`"), "{}", out);
 }
@@ -267,12 +267,12 @@ fn two_globs_offering_one_name_is_refused() {
 #[test]
 fn a_report_is_quoted_against_the_file_it_is_about() {
     let (r, _) = resolved(&[
-        ("main.fc", "import shapes::circle;\n"),
-        ("shapes.fc", "%inlien\npub fn circle(): i32 { 1 }\n"),
+        ("main.ft", "import shapes::circle;\n"),
+        ("shapes.ft", "%inlien\npub fn circle(): i32 { 1 }\n"),
     ]);
     let out = r.render();
     assert!(out.contains("error: unknown attribute `%inlien`"), "{}", out);
-    assert!(out.contains("shapes.fc:1:1"), "{}", out);
+    assert!(out.contains("shapes.ft:1:1"), "{}", out);
     // The line quoted is the one in that file, not the importer's.
     assert!(out.contains("1 | %inlien"), "{}", out);
 }
@@ -282,13 +282,13 @@ fn a_report_is_quoted_against_the_file_it_is_about() {
 #[test]
 fn a_module_that_would_not_parse_costs_the_importer_nothing() {
     let (r, _) = resolved(&[
-        ("main.fc", "import shapes::circle;\n"),
-        ("shapes.fc", "pub fn circle(: i32 { 1 }\n"),
+        ("main.ft", "import shapes::circle;\n"),
+        ("shapes.ft", "pub fn circle(: i32 { 1 }\n"),
     ]);
     let out = r.render();
     assert!(r.has_errors());
     // The parse error is reported where it was written...
-    assert!(out.contains("shapes.fc:1"), "{}", out);
+    assert!(out.contains("shapes.ft:1"), "{}", out);
     // ...and nothing is said about the import that reached it.
     assert!(!out.contains("is not in"), "{}", out);
 }
@@ -298,20 +298,20 @@ fn a_module_that_would_not_parse_costs_the_importer_nothing() {
 fn a_pub_import_re_exports() {
     assert_eq!(
         bound(&[
-            ("main.fc", "import middle::deep;\n"),
-            ("middle.fc", "pub import inner::deep;\n"),
-            ("inner.fc", "pub fn deep(): i32 { 1 }\n"),
+            ("main.ft", "import middle::deep;\n"),
+            ("middle.ft", "pub import inner::deep;\n"),
+            ("inner.ft", "pub fn deep(): i32 { 1 }\n"),
         ]),
         vec!["deep"]
     );
     // Written without the "pub" it stays where it was, and reaching for it
     // through the middle module is refused.
     let out = errors(&[
-        ("main.fc", "import middle::deep;\n"),
-        ("middle.fc", "import inner::deep;\n"),
-        ("inner.fc", "pub fn deep(): i32 { 1 }\n"),
+        ("main.ft", "import middle::deep;\n"),
+        ("middle.ft", "import inner::deep;\n"),
+        ("inner.ft", "pub fn deep(): i32 { 1 }\n"),
     ]);
-    assert!(out.contains("`deep` is not in `middle.fc`"), "{}", out);
+    assert!(out.contains("`deep` is not in `middle.ft`"), "{}", out);
 }
 
 
@@ -320,11 +320,11 @@ fn a_pub_import_re_exports() {
 #[test]
 fn each_leaf_of_a_group_is_reported_where_it_stands() {
     let out = errors(&[
-        ("main.fc", "import shapes::{circle, wobble, square};\n"),
-        ("shapes.fc", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\n"),
+        ("main.ft", "import shapes::{circle, wobble, square};\n"),
+        ("shapes.ft", "pub fn circle(): i32 { 1 }\npub fn square(): i32 { 2 }\n"),
     ]);
     // `wobble` begins at column 25 of the line the group is written on.
-    assert!(out.contains("main.fc:1:25"), "{}", out);
+    assert!(out.contains("main.ft:1:25"), "{}", out);
     assert!(out.contains("^ no such name there"), "{}", out);
     // Only the one leaf is turned down; the two beside it are fine.
     assert_eq!(out.matches("error:").count(), 1, "{}", out);
@@ -336,11 +336,11 @@ fn each_leaf_of_a_group_is_reported_where_it_stands() {
 #[test]
 fn a_file_knows_the_module_it_is() {
     let (r, root) = resolved(&[
-        ("main.fc", "import a::b::deep;\n"),
-        ("a/b/deep.fc", "pub fn go(): i32 { 1 }\n"),
+        ("main.ft", "import a::b::deep;\n"),
+        ("a/b/deep.ft", "pub fn go(): i32 { 1 }\n"),
     ]);
     assert_eq!(r.render(), "");
     let dir = root.parent().expect("a parent");
     assert_eq!(r.module_of(&root), vec!["main"]);
-    assert_eq!(r.module_of(&dir.join("a/b/deep.fc")), vec!["a", "b", "deep"]);
+    assert_eq!(r.module_of(&dir.join("a/b/deep.ft")), vec!["a", "b", "deep"]);
 }

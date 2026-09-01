@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn reads_a_line_by_number() {
         let text = chars("one\ntwo\nthree\n");
-        let source = Source::new("t.fc", &text);
+        let source = Source::new("t.ft", &text);
         assert_eq!(source.line(1).as_deref(), Some("one"));
         assert_eq!(source.line(2).as_deref(), Some("two"));
         assert_eq!(source.line(3).as_deref(), Some("three"));
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn a_file_that_ends_without_a_newline_still_ends_somewhere() {
         let text = chars("one\ntwo");
-        let source = Source::new("t.fc", &text);
+        let source = Source::new("t.ft", &text);
         assert_eq!(source.line(2).as_deref(), Some("two"));
         assert_eq!(source.line(3), None);
     }

@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn one_report_takes_on_another() {
         let text: Vec<char> = "let x = 1\nlet y = 2\n".chars().collect();
-        let source = Source::new("t.fc", &text);
+        let source = Source::new("t.ft", &text);
 
         let mut first = Diagnostics::new();
         first.push(Diagnostic::error("the first".to_string(), Span::new(1, 5, 1)));
@@ -93,13 +93,13 @@ mod tests {
             first.render(&source),
             "\
 error: the first
- --> t.fc:1:5
+ --> t.ft:1:5
   |
 1 | let x = 1
   |     ^
 
 error: the second
- --> t.fc:2:5
+ --> t.ft:2:5
   |
 2 | let y = 2
   |     ^"

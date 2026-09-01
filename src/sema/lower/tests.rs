@@ -50,7 +50,7 @@ fn typed(source: &str) -> (TTIRProgram, Vec<String>) {
 
     let (ttir, errors) = Lowerer::new(&tir).lower(vec!["t".to_string()]);
     let text: Vec<char> = source.chars().collect();
-    let quoted = crate::error::Source::new("t.fc", &text);
+    let quoted = crate::error::Source::new("t.ft", &text);
     let said = errors.iter().map(|e| e.render(&quoted)).collect();
     (ttir, said)
 }

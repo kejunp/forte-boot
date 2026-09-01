@@ -29,7 +29,7 @@ fn items(root: &ASTNode) -> Vec<ASTNodeId> {
 fn errors_in(source: &str) -> Vec<String> {
     let (_, _, errors) = expanded(source);
     let text: Vec<char> = source.chars().collect();
-    let quoted = crate::error::Source::new("input.fc", &text);
+    let quoted = crate::error::Source::new("input.ft", &text);
     errors.iter().map(|e| e.render(&quoted)).collect()
 }
 
@@ -145,7 +145,7 @@ fn an_unknown_macro_is_an_error_where_it_is_written() {
         vec![
             "\
 error: unknown macro `@nope`
- --> input.fc:2:5
+ --> input.ft:2:5
   |
 2 |     @nope(1)
   |     ^ no macro of this name

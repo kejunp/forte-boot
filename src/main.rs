@@ -331,7 +331,7 @@ fn instructions(ssa: &sir::sir_nodes::SIRProgram) -> usize {
         .sum()
 }
 
-// `fortec <root.fc> [-I <dir>]...`. A `-I` adds somewhere else to look for a
+// `fortec <root.ft> [-I <dir>]...`. A `-I` adds somewhere else to look for a
 // module whose path starts at no root; the file's own directory is looked in
 // first either way, and is what `suite` names.
 // The declaration a body belongs to, for the parts of `gir` that answer a
@@ -444,7 +444,7 @@ fn run(args: &[String]) -> bool {
         Some(root) => compile(&root, search_paths, level, target, emit),
         None => {
             eprintln!(
-                "usage: fortec <root.fc> [-O<0-3>] [--target <name>] [--emit mir|asm] \
+                "usage: fortec <root.ft> [-O<0-3>] [--target <name>] [--emit mir|asm] \
                  [-I <dir>]..."
             );
             false
@@ -651,47 +651,47 @@ fn demos() {
 
     // What the parser makes of a source it can take, and of five it cannot.
     // Each mistake is shown against the line it was written on.
-    dump_parse("ok.fc", "fn main() {\n    let x = 1  // fine\n    g(x)\n}\n");
+    dump_parse("ok.ft", "fn main() {\n    let x = 1  // fine\n    g(x)\n}\n");
 
     // A comment on the line a mistake is on. The parse never sees it -- it was
     // blanked out before the lexer ran -- and the quoted line has it back.
-    dump_parse("note.fc", "fn main() {\n    let x = /* huh */ ;  // why\n}\n");
+    dump_parse("note.ft", "fn main() {\n    let x = /* huh */ ;  // why\n}\n");
 
     // A type is wanted and an `=` is written: the caret sits on the token the
     // tables turned down, and the margin says what was being written.
-    dump_parse("annot.fc", "fn main() {\n    let x: = 5\n}\n");
+    dump_parse("annot.ft", "fn main() {\n    let x: = 5\n}\n");
 
     // A near-miss the language has a rule about, rather than a slip: `;` where
     // the entries of a struct are separated by `,`.
-    dump_parse("field.fc", "struct P {\n    x: i32,\n    y: i32;\n}\n");
+    dump_parse("field.ft", "struct P {\n    x: i32,\n    y: i32;\n}\n");
 
     // The `}` that gave it away is two lines from the `(` that caused it, so
     // the opener gets a snippet of its own.
-    dump_parse("args.fc", "fn main() {\n    f(1, 2\n}\n");
+    dump_parse("args.ft", "fn main() {\n    f(1, 2\n}\n");
 
     // A token the lexer gave up inside of: the caret runs to the end of the
     // line, which is as far as the reader can see it.
-    dump_parse("string.fc", "fn main() {\n    let s = \"unclosed\n}\n");
+    dump_parse("string.ft", "fn main() {\n    let s = \"unclosed\n}\n");
 
     // Another it gave up inside of: a word glued to a number that names no
     // type. The twelve that would have are spelled out, the set being closed.
-    dump_parse("suffix.fc", "fn main() {\n    let n = 5_u9\n}\n");
+    dump_parse("suffix.ft", "fn main() {\n    let n = 5_u9\n}\n");
 
     // One mistake does not hide the next: the parse recovers and goes on, and
     // both are reported against their own lines.
-    dump_parse("two.fc", "fn a() { let x = ; }\nfn b() { let y = ; }\n");
+    dump_parse("two.ft", "fn a() { let x = ; }\nfn b() { let y = ; }\n");
 
     // A macro is spent before anything else sees the tree, and what it says
     // when it cannot be is a diagnostic like any other.
-    dump_parse("macro.fc", "macro twice($x:expr) {\n    $x\n    $x\n}\nfn main() {\n    @twice(f());\n}\n");
-    dump_parse("nomacro.fc", "fn main() {\n    @nope(1);\n}\n");
-    dump_parse("arity.fc", "macro one($x:expr) {\n    $x\n}\nfn main() {\n    @one(1, 2);\n}\n");
-    dump_parse("frag.fc", "macro n($x:ident) {\n    $x\n}\nfn main() {\n    @n(1 + 2);\n}\n");
+    dump_parse("macro.ft", "macro twice($x:expr) {\n    $x\n    $x\n}\nfn main() {\n    @twice(f());\n}\n");
+    dump_parse("nomacro.ft", "fn main() {\n    @nope(1);\n}\n");
+    dump_parse("arity.ft", "macro one($x:expr) {\n    $x\n}\nfn main() {\n    @one(1, 2);\n}\n");
+    dump_parse("frag.ft", "macro n($x:ident) {\n    $x\n}\nfn main() {\n    @n(1 + 2);\n}\n");
 
     // An import is a tree of the names it reaches, and lowering flattens it: a
     // group is spelling, and what comes out is one leaf for each name.
     dump_parse(
-        "import.fc",
+        "import.ft",
         "pub import shapes::{circle, square::*, poly::{tri, quad}};\n\
          import super::super::helpers::trim as t;\n\
          import suite::limits::MAX;\n\
@@ -706,27 +706,27 @@ fn demos() {
 
     // The closed set of attributes is checked while the GIR is built: a name
     // the compiler does not know is an error naming what was probably meant.
-    dump_parse("attr.fc", "%inlien\nfn f();\n");
-    dump_parse("target.fc", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");
+    dump_parse("attr.ft", "%inlien\nfn f();\n");
+    dump_parse("target.ft", "%symbol(\"s\")\nstruct P {\n    x: i32,\n}\n");
 
     // `gc` says the collector owns what the binding holds, so what stands under
     // one has to be something to collect: a map, a set, or a pointer to one.
-    dump_parse("gc.fc", "let gc table = #{1: 2, 3: 4}\nfn main() {\n    let gc seen = {1, 2}\n}\n");
+    dump_parse("gc.ft", "let gc table = #{1: 2, 3: 4}\nfn main() {\n    let gc seen = {1, 2}\n}\n");
 
     // A number is not collected, and the caret sits on what was written where
     // the value should have been.
-    dump_parse("gcnum.fc", "fn main() {\n    let gc n = 1\n}\n");
-    dump_parse("gcref.fc", "fn main() {\n    let gc r: &i32 = f()\n}\n");
+    dump_parse("gcnum.ft", "fn main() {\n    let gc n = 1\n}\n");
+    dump_parse("gcref.ft", "fn main() {\n    let gc r: &i32 = f()\n}\n");
 
     // A pointer is the other thing it holds, and `addr` still answers to the
     // `unsafe` around it: the two words are about the same statement and say
     // different things.
-    dump_parse("gcaddr.fc", "fn f(b: Buf) {\n    let gc p = addr b.p\n}\n");
-    dump_parse("gcok.fc", "fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n");
+    dump_parse("gcaddr.ft", "fn f(b: Buf) {\n    let gc p = addr b.p\n}\n");
+    dump_parse("gcok.ft", "fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n");
 
     // Simplification: the arithmetic folds, the fold settles the branch, the
     // branch leaves one value, and the value lands where the name was.
-    dump_parse("opt.fc", "fn main() {\n    let n = if 2 * 3 > 5 { 10 + 1 } else { 0 }\n    g(n);\n    return;\n    h();\n}\n");
+    dump_parse("opt.ft", "fn main() {\n    let n = if 2 * 3 > 5 { 10 + 1 } else { 0 }\n    g(n);\n    return;\n    h();\n}\n");
 }
 
 
