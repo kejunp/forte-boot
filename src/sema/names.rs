@@ -502,7 +502,7 @@ impl Mangler {
 }
 
 // One part: how long it is, and then it.
-fn part(text: &str, out: &mut String) {
+pub(crate) fn part(text: &str, out: &mut String) {
     out.push_str(&text.chars().count().to_string());
     out.push_str(text);
 }

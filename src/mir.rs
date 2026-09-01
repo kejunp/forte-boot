@@ -39,14 +39,16 @@
 // use. That is short of an assembler and well past a graph, and it is the
 // thing the choice of a machine can be checked against by reading.
 //
-// The parts, as far as they go. The passes that build the graph and the ones
-// that turn it into the second shape come after.
+// The parts, as far as they go. The lowering itself and the passes that turn
+// the graph into the second shape come after.
 //
 //   `machine`    what the machine is: how wide a pointer is, which registers
 //                there are, and which of them a call may keep.
 //   `layout`     what a type takes and where each of its parts sits -- the
 //                question `sir::target` says out loud that nothing had
 //                answered.
+//   `mono`       a generic made once for each set of types it is used with,
+//                which is what leaves no `T` for `layout` to fail on.
 //   `runtime`    the symbols the lowering calls for the things the language
 //                has and a machine does not.
 //   `mir_nodes`  what the graph is made of.
@@ -72,5 +74,6 @@ pub mod fixture;
 pub mod layout;
 pub mod machine;
 pub mod mir_nodes;
+pub mod mono;
 pub mod runtime;
 pub mod verify;
