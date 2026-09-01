@@ -183,6 +183,29 @@ fn a_parameter_is_released_like_any_other_slot() {
     assert_eq!(releases(&body), vec![p]);
 }
 
+// Except in the one body that *is* a release. `drop(self)` takes its receiver
+// by value, so the end of the body is the end of the receiver -- and releasing
+// it there is this body again, which is a routine that calls itself for ever
+// the moment anything emits a body for `__D`. Nothing is left unreleased by
+// leaving it out: whatever writes those bodies runs the receiver's fields
+// after the call returns.
+#[test]
+fn the_receiver_of_a_written_drop_is_not_released() {
+    let mut f = Fixture::new();
+    let buf = f.dropper("Buf");
+    let p = f.slot("self", buf);
+    let block = f.block(Vec::new(), None);
+    let body = f.body(block);
+    f.releasing(buf, body, vec![p]);
+
+    let body = placed(f);
+    assert_eq!(body.params, vec![p], "it is still the receiver");
+    assert!(
+        releases(&body).is_empty(),
+        "the release of a receiver inside a release is the release again"
+    );
+}
+
 // And a parameter handed on is a parameter moved away, so it is not released
 // twice.
 #[test]

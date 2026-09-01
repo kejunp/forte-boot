@@ -189,6 +189,24 @@ impl Fixture {
         }))
     }
 
+    // The same, for the `drop` of the `impl Drop` written for `ty` -- which
+    // `dropper` made and left with no members. A release *is* this body, so it
+    // is the one body in a program whose receiver gets no release of its own,
+    // and that rule cannot be tested without a way to write one.
+    pub fn releasing(&mut self, ty: TyId, body: TTIRBodyId, params: Vec<TTIRLocalId>) {
+        let held = self.owns(body, params);
+        if let TTIRItemKind::Fn(f) = &mut self.p.items[held].kind {
+            f.name = "drop".to_string();
+        }
+        for item in &mut self.p.items {
+            if let TTIRItemKind::Impl { ty: of, members, .. } = &mut item.kind {
+                if *of == ty {
+                    members.push(held);
+                }
+            }
+        }
+    }
+
     // Closes the body being built and hands back its handle.
     pub fn body(&mut self, value: TTIRExprId) -> TTIRBodyId {
         let locals = std::mem::take(&mut self.locals);

@@ -52,6 +52,34 @@ impl Copies {
         Copies { copy, drop }
     }
 
+    // The body of every `Drop::drop`, by the id the graph gave it.
+    //
+    // A release inside one of these is what makes the glue recurse: the glue
+    // for `T` calls `Drop::drop`, and `drop(self)` taking its receiver by
+    // value means the receiver goes out of scope at the end of the body --
+    // which places a release, which is the glue again. Nothing is left to
+    // release there in any case: the glue runs the fields after the call, so
+    // the receiver's parts are already accounted for.
+    pub fn drop_bodies(p: &TTIRProgram) -> Vec<usize> {
+        let mut out = Vec::new();
+        for item in &p.items {
+            let TTIRItemKind::Impl { of: Some(held), members, .. } = &item.kind else {
+                continue;
+            };
+            if name_of(*held, p) != "Drop" {
+                continue;
+            }
+            for &member in members {
+                if let TTIRItemKind::Fn(f) = &p.items[member].kind {
+                    if f.name == "drop" {
+                        out.extend(f.body);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     // Whether a value of this type has anything to release. An `impl Drop`
     // says so outright; a struct or an enum holding one says so because its
     // fields go when it does -- "a field when the value holding it goes" (§2).

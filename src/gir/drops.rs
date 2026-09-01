@@ -22,6 +22,13 @@
 // nobody filled, and so is every temporary before the statement that fills it.
 // A `Set` fills one, a move empties it, and a parameter is filled by the caller
 // before the entry block is reached.
+//
+// With one exception, and it is the receiver of `Drop::drop`. That body is what
+// releasing the type *is*, so a release of its own receiver at the end of it is
+// the same release again -- a routine that calls itself for ever, the moment
+// anything emits a body for `__D`. Nothing is left unreleased by leaving it
+// out: whatever writes those bodies runs the receiver's fields after the call
+// returns, which is where they were always going to be run.
 
 use std::collections::HashMap;
 
@@ -57,6 +64,10 @@ pub struct Drops<'a> {
     // What a flag is typed. `sema` interns it whether a program mentions one or
     // not, so that this pass always has one to hand.
     bool:    TyId,
+    // The bodies that *are* a release: the `drop` of every `impl Drop`. Their
+    // receiver is the one slot in the program a release is not placed for --
+    // see the header.
+    releasing: Vec<GIRBodyId>,
 }
 
 impl<'a> Drops<'a> {
@@ -66,7 +77,8 @@ impl<'a> Drops<'a> {
             .iter()
             .position(|ty| *ty == Ty::Prim(TIRPrim::Bool))
             .unwrap_or(0);
-        Drops { p, copies, generic: Vec::new(), bool }
+        let releasing = Copies::drop_bodies(p);
+        Drops { p, copies, generic: Vec::new(), bool, releasing }
     }
 
     // Every body of the graph, each with the generics of the declaration it
@@ -85,6 +97,15 @@ impl<'a> Drops<'a> {
             // "a caller did": a parameter is filled before the entry block is.
             for &slot in &body.params {
                 state[slot] = Held::Value;
+            }
+            // Except the receiver of a release, which is left reading as a
+            // slot nobody filled. That is not what is true of it -- the caller
+            // did fill it -- it is how this pass is told not to place the one
+            // release that would be this body again.
+            if self.releasing.contains(&id) {
+                if let Some(&held) = body.params.first() {
+                    state[held] = Held::Nothing;
+                }
             }
             state
         };
