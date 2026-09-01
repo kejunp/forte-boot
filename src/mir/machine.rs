@@ -20,10 +20,18 @@
 // of a body, and an allocator handed one would eventually give it away. They
 // are named separately, because the frame has to be written about.
 //
-// Two machines, and they are the two `sir::target` already knows. Every
-// `--target` name maps onto one of them: the vector variants of x86-64 differ
-// in what a vector register holds and not at all in what an integer one is, so
-// they are one machine here carrying a different `Target`.
+// Nor are the **scratch** registers in them, and they are here for the same
+// reason from the other end. An emitter needs somewhere to put a value for the
+// length of one instruction -- a spilled operand has to be read into
+// *something* before it can be added to anything -- and a register the
+// allocator might have handed to a live value is not somewhere. Two of them per
+// file is what the widest expansion in `mir::asm` wants: a copy reads through
+// one and writes through the other.
+//
+// Three machines. The two vector variants of x86-64 are one machine here
+// carrying a different `Target`, because they differ in what a vector register
+// holds and not at all in what an integer one is; RISC-V has no vectors at its
+// baseline and carries a `Target` that says so.
 
 use crate::sir::target::{self, Target};
 
@@ -81,6 +89,14 @@ pub struct Machine {
     // call, and one in both is a contradiction.
     pub saved:     &'static [Reg],
     pub clobbered: &'static [Reg],
+    // What the stack pointer is called. The frame pointer is `frame` above;
+    // this is the other one an emitter has to name and never allocate.
+    pub sp:        Reg,
+    // Registers no allocator hands out, kept for an emitter to work through --
+    // see the header. Every one of them is caller-saved, which is what makes
+    // using one inside a single expansion cost nothing to say.
+    pub scratch:   &'static [Reg],
+    pub fscratch:  &'static [Reg],
     // What a vector holds here, which is the one machine question that was
     // already answered.
     pub vectors:   Target,
@@ -91,15 +107,21 @@ pub struct Machine {
 // The System V order. `rsp` and `rbp` are missing on purpose -- see the header.
 const X86_INTS: &[Reg] = &[
     int("rax"), int("rcx"), int("rdx"), int("rsi"), int("rdi"),
-    int("r8"), int("r9"), int("r10"), int("r11"),
+    int("r8"), int("r9"),
     int("rbx"), int("r12"), int("r13"), int("r14"), int("r15"),
 ];
+
+// `r10` and `r11` are held back for the emitter, and `xmm14` and `xmm15` with
+// them. Both pairs are caller-saved, so nothing has to be said about what
+// happens to them across a call.
+const X86_SCRATCH: &[Reg] = &[int("r10"), int("r11")];
+const X86_FSCRATCH: &[Reg] = &[float("xmm14"), float("xmm15")];
 
 const X86_FLOATS: &[Reg] = &[
     float("xmm0"), float("xmm1"), float("xmm2"), float("xmm3"),
     float("xmm4"), float("xmm5"), float("xmm6"), float("xmm7"),
     float("xmm8"), float("xmm9"), float("xmm10"), float("xmm11"),
-    float("xmm12"), float("xmm13"), float("xmm14"), float("xmm15"),
+    float("xmm12"), float("xmm13"),
 ];
 
 const X86_ARGS: &[Reg] =
@@ -132,7 +154,7 @@ const X86_CLOBBERED: &[Reg] = &[
 const ARM_INTS: &[Reg] = &[
     int("x0"), int("x1"), int("x2"), int("x3"), int("x4"), int("x5"),
     int("x6"), int("x7"), int("x9"), int("x10"), int("x11"), int("x12"),
-    int("x13"), int("x14"), int("x15"), int("x19"), int("x20"), int("x21"),
+    int("x13"), int("x14"), int("x19"), int("x20"), int("x21"),
     int("x22"), int("x23"), int("x24"), int("x25"), int("x26"), int("x27"),
     int("x28"),
 ];
@@ -154,6 +176,17 @@ const ARM_FARGS: &[Reg] = &[
     float("d4"), float("d5"), float("d6"), float("d7"),
 ];
 
+// `x16` and `x17` are the two the ABI already calls scratch -- a linker may
+// write over either at a call boundary -- so holding them back costs nothing
+// that was not already gone. The float pair is out of the top half, which this
+// does not allocate from at all.
+// Three, where x86-64 wants two. That machine has an instruction that adds a
+// value in memory to a register, so a spilled operand often needs no register
+// at all; this one has nothing of the kind, so an addition of two spilled
+// values into a third spilled place is three registers at once.
+const ARM_SCRATCH: &[Reg] = &[int("x15"), int("x16"), int("x17")];
+const ARM_FSCRATCH: &[Reg] = &[float("d16"), float("d17"), float("d18")];
+
 // `x19` through `x28`, and the bottom half of each of `d8` through `d15` --
 // which this does not model, so they are counted as saved whole. That is the
 // safe direction to be wrong in: a value kept across a call is kept.
@@ -167,9 +200,76 @@ const ARM_SAVED: &[Reg] = &[
 const ARM_CLOBBERED: &[Reg] = &[
     int("x0"), int("x1"), int("x2"), int("x3"), int("x4"), int("x5"),
     int("x6"), int("x7"), int("x9"), int("x10"), int("x11"), int("x12"),
-    int("x13"), int("x14"), int("x15"),
+    int("x13"), int("x14"), int("x15"), int("x16"), int("x17"),
     float("d0"), float("d1"), float("d2"), float("d3"),
     float("d4"), float("d5"), float("d6"), float("d7"),
+];
+
+// ---- riscv64 ---------------------------------------------------------------
+
+// RV64GC under the LP64D calling convention, which is what a Linux userland is
+// built for. Registers are named by their ABI names and not by their numbers:
+// `a0` and `x10` are the same register and only one of the two says what it is
+// for.
+//
+// What is not here is most of the file. `zero` holds nought and cannot be
+// written; `ra` is the return address and `sp` the stack; `gp` and `tp` belong
+// to the platform; `s0` is the frame pointer. That leaves the arguments, the
+// temporaries and the saved registers, which is what is below.
+const RV_INTS: &[Reg] = &[
+    int("a0"), int("a1"), int("a2"), int("a3"),
+    int("a4"), int("a5"), int("a6"), int("a7"),
+    int("t3"), int("t4"), int("t5"), int("t6"),
+    int("s1"), int("s2"), int("s3"), int("s4"), int("s5"),
+    int("s6"), int("s7"), int("s8"), int("s9"), int("s10"), int("s11"),
+];
+
+// `t0` and `t1` for the emitter. This machine needs them more than the other
+// two do: it has no instruction that takes a memory operand, so every load and
+// every store works through a register that held the address a moment ago.
+const RV_SCRATCH: &[Reg] = &[int("t0"), int("t1"), int("t2")];
+const RV_FSCRATCH: &[Reg] = &[float("ft0"), float("ft1"), float("ft2")];
+
+const RV_FLOATS: &[Reg] = &[
+    float("fa0"), float("fa1"), float("fa2"), float("fa3"),
+    float("fa4"), float("fa5"), float("fa6"), float("fa7"),
+    float("ft3"), float("ft4"), float("ft5"),
+    float("ft6"), float("ft7"), float("ft8"), float("ft9"),
+    float("ft10"), float("ft11"),
+    float("fs0"), float("fs1"), float("fs2"), float("fs3"),
+    float("fs4"), float("fs5"), float("fs6"), float("fs7"),
+    float("fs8"), float("fs9"), float("fs10"), float("fs11"),
+];
+
+const RV_ARGS: &[Reg] = &[
+    int("a0"), int("a1"), int("a2"), int("a3"),
+    int("a4"), int("a5"), int("a6"), int("a7"),
+];
+
+const RV_FARGS: &[Reg] = &[
+    float("fa0"), float("fa1"), float("fa2"), float("fa3"),
+    float("fa4"), float("fa5"), float("fa6"), float("fa7"),
+];
+
+// `s1` through `s11` -- `s0` is the frame pointer and is not handed out -- and
+// `fs0` through `fs11`, which unlike aarch64's are saved whole.
+const RV_SAVED: &[Reg] = &[
+    int("s1"), int("s2"), int("s3"), int("s4"), int("s5"), int("s6"),
+    int("s7"), int("s8"), int("s9"), int("s10"), int("s11"),
+    float("fs0"), float("fs1"), float("fs2"), float("fs3"),
+    float("fs4"), float("fs5"), float("fs6"), float("fs7"),
+    float("fs8"), float("fs9"), float("fs10"), float("fs11"),
+];
+
+const RV_CLOBBERED: &[Reg] = &[
+    int("a0"), int("a1"), int("a2"), int("a3"),
+    int("a4"), int("a5"), int("a6"), int("a7"),
+    int("t0"), int("t1"), int("t2"), int("t3"), int("t4"), int("t5"), int("t6"),
+    float("fa0"), float("fa1"), float("fa2"), float("fa3"),
+    float("fa4"), float("fa5"), float("fa6"), float("fa7"),
+    float("ft0"), float("ft1"), float("ft2"), float("ft3"),
+    float("ft4"), float("ft5"), float("ft6"), float("ft7"),
+    float("ft8"), float("ft9"), float("ft10"), float("ft11"),
 ];
 
 // ---- The machines ----------------------------------------------------------
@@ -187,6 +287,9 @@ pub const X86_64: Machine = Machine {
     fret:      float("xmm0"),
     saved:     X86_SAVED,
     clobbered: X86_CLOBBERED,
+    sp:        int("rsp"),
+    scratch:   X86_SCRATCH,
+    fscratch:  X86_FSCRATCH,
     vectors:   target::X86_64,
 };
 
@@ -203,7 +306,29 @@ pub const AARCH64: Machine = Machine {
     fret:      float("d0"),
     saved:     ARM_SAVED,
     clobbered: ARM_CLOBBERED,
+    sp:        int("sp"),
+    scratch:   ARM_SCRATCH,
+    fscratch:  ARM_FSCRATCH,
     vectors:   target::AARCH64,
+};
+
+pub const RISCV64: Machine = Machine {
+    name:      "riscv64",
+    word:      8,
+    stack:     16,
+    frame:     int("s0"),
+    ints:      RV_INTS,
+    floats:    RV_FLOATS,
+    args:      RV_ARGS,
+    fargs:     RV_FARGS,
+    ret:       int("a0"),
+    fret:      float("fa0"),
+    saved:     RV_SAVED,
+    clobbered: RV_CLOBBERED,
+    sp:        int("sp"),
+    scratch:   RV_SCRATCH,
+    fscratch:  RV_FSCRATCH,
+    vectors:   target::RISCV64,
 };
 
 impl Machine {
@@ -219,6 +344,7 @@ impl Machine {
     pub fn of(t: Target) -> Machine {
         let mut held = match t.name {
             "aarch64" => AARCH64,
+            "riscv64" => RISCV64,
             "none" => host(),
             _ => X86_64,
         };

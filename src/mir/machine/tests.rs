@@ -11,7 +11,7 @@
 use super::*;
 
 fn machines() -> Vec<Machine> {
-    vec![X86_64, AARCH64]
+    vec![X86_64, AARCH64, RISCV64]
 }
 
 fn allocatable(m: &Machine) -> Vec<Reg> {
@@ -151,4 +151,82 @@ fn a_target_with_no_vectors_falls_back_to_the_host() {
     let m = Machine::of(target::NONE);
     assert_eq!(m.name, host().name);
     assert_eq!(m.vectors.bytes, 0, "and still widens nothing");
+}
+
+// ---- What an emitter is allowed to work through ----------------------------
+
+// A scratch register the allocator might also hand out is not scratch: the
+// emitter would put a spilled operand in a register that was holding something
+// else, and the something else would be gone.
+#[test]
+fn no_scratch_register_is_also_allocatable() {
+    for m in machines() {
+        for held in m.scratch.iter().chain(m.fscratch.iter()) {
+            assert!(
+                !allocatable(&m).contains(held),
+                "{}: {} is both scratch and allocatable",
+                m.name,
+                held.name
+            );
+        }
+    }
+}
+
+// Two of each, which is what the widest expansion wants: a copy reads through
+// one and writes through the other.
+#[test]
+fn there_are_two_scratch_registers_in_each_file() {
+    for m in machines() {
+        assert!(m.scratch.len() >= 2, "{}: {} integer", m.name, m.scratch.len());
+        assert!(m.fscratch.len() >= 2, "{}: {} float", m.name, m.fscratch.len());
+    }
+}
+
+// Using one across a call would be using a register a call may write, so every
+// one of them has to be one a call was already going to write.
+#[test]
+fn no_scratch_register_is_one_a_call_keeps() {
+    for m in machines() {
+        for held in m.scratch.iter().chain(m.fscratch.iter()) {
+            assert!(!m.keeps(*held), "{}: {} is callee-saved", m.name, held.name);
+        }
+    }
+}
+
+// The two an emitter names and never hands out. A stack pointer in the
+// allocatable list is a stack pointer that will one day hold an integer.
+#[test]
+fn neither_the_stack_pointer_nor_the_frame_pointer_is_allocatable() {
+    for m in machines() {
+        assert!(!allocatable(&m).contains(&m.sp), "{}: {}", m.name, m.sp.name);
+        assert!(!allocatable(&m).contains(&m.frame), "{}: {}", m.name, m.frame.name);
+        assert_ne!(m.sp, m.frame, "{}", m.name);
+    }
+}
+
+// ---- riscv64 ---------------------------------------------------------------
+
+#[test]
+fn every_target_name_reaches_a_machine_of_its_own() {
+    assert_eq!(Machine::of(target::RISCV64).name, "riscv64");
+    assert_eq!(Machine::of(target::AARCH64).name, "aarch64");
+    assert_eq!(Machine::of(target::X86_64).name, "x86-64");
+    // The wide variants are the same registers with a different vector answer.
+    assert_eq!(Machine::of(target::X86_64_V4).name, "x86-64");
+    assert_eq!(Machine::of(target::X86_64_V4).vectors.bytes, 64);
+}
+
+// The baseline has none, and saying so is what keeps `sir::opt` from widening
+// anything for a machine that could not run it.
+#[test]
+fn riscv_says_it_has_no_vectors() {
+    assert_eq!(RISCV64.vectors.bytes, 0);
+}
+
+// `a0` is where the first argument arrives and where the answer goes back,
+// which is one register doing two jobs and is what the ABI says.
+#[test]
+fn riscv_answers_where_its_first_argument_arrived() {
+    assert_eq!(RISCV64.ret, RISCV64.args[0]);
+    assert_eq!(RISCV64.fret, RISCV64.fargs[0]);
 }

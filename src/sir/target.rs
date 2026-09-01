@@ -64,6 +64,14 @@ pub const X86_64: Target =
 pub const AARCH64: Target =
     Target { name: "aarch64", bytes: 16, mul8: false, shifts: true, insert: 1 };
 
+// RV64GC, which is what a Linux userland is built for and has no vectors at
+// all. The vector extension is a separate one, it is optional, and it is not
+// the fixed-width kind either of the other two are -- so a target that assumed
+// sixteen bytes here would be assuming something about an extension that may
+// not be there and does not work that way when it is.
+pub const RISCV64: Target =
+    Target { name: "riscv64", bytes: 0, mul8: false, shifts: false, insert: 1 };
+
 // Thirty-two, which is AVX2: twice as wide, and shifts that may differ by lane.
 pub const X86_64_V3: Target =
     Target { name: "x86-64-v3", bytes: 32, mul8: false, shifts: true, insert: 2 };
@@ -100,13 +108,14 @@ pub fn of(name: &str) -> Option<Target> {
         "x86-64-v3" => Some(X86_64_V3),
         "x86-64-v4" => Some(X86_64_V4),
         "aarch64" => Some(AARCH64),
+        "riscv64" | "riscv" => Some(RISCV64),
         _ => None,
     }
 }
 
 // Every name `of` answers to, for a message that has to list them.
 pub const NAMES: &[&str] =
-    &["none", "host", "x86-64", "x86-64-v3", "x86-64-v4", "aarch64"];
+    &["none", "host", "x86-64", "x86-64-v3", "x86-64-v4", "aarch64", "riscv64"];
 
 impl Target {
     // How many of a thing that size fit in one register. One -- meaning "no
