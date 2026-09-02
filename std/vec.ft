@@ -1,0 +1,147 @@
+// `Vec`: a run of values that grows.
+//
+// Section 3 says an owned array is fixed and "anything else is a library's to
+// provide", and names this as the one the language assumes exists. It is the
+// first thing here that manages its own room, and it is written the way the
+// language gives for that: `ptr T` for where the values are, `p[i]` to reach
+// one, and an `unsafe` around every line that does -- because what is at the
+// far end of a pointer is exactly what the checker stopped answering for.
+//
+// The room comes from the runtime. `%symbol` is what puts a Forte declaration
+// under a name something else defines, and `__rt_alloc` is `mir::runtime`'s
+// name for room that outlives the frame asking. It is deliberately *not*
+// `__rt_gc_alloc`: that one takes a type descriptor beside the size so the
+// collector can scan what it hands back, and nothing in the language can spell
+// one. So a `Vec` is room the collector does not walk into, and a `Vec` of
+// something holding a pointer keeps nothing alive. Nothing here frees either:
+// a `Vec` that had to be told when to would be the only thing in the language
+// that did.
+//
+// The routines are free functions and not methods, for the reason `option.ft`
+// gives: a method on a generic type wants an `impl<T>`, and the parameter an
+// `impl` introduces is not yet in scope inside its own members.
+//
+// Each takes a reference and not a value. A vector is not a `Copy` type, so
+// handing one over by value hands it away -- a routine that read a length
+// would have taken the vector to do it. Which reference is which is the usual
+// rule: `&` to read, `*` to write, and `push` is the only one that writes the
+// vector itself rather than what it points at.
+//
+// There is no auto-reference, so a caller writes the `&` or the `*`:
+//
+//     var v: Vec<i32> = empty()
+//     push(*v, 1)
+//     let one = at(&v, 0)
+
+%symbol("__rt_alloc")
+fn room(bytes: i64): ptr u8
+
+pub struct Vec<T> {
+    // Where the values are. Nothing outside this file reads it: it is `pub`
+    // because the language has no other visibility that lets the routines
+    // below reach it, and not because anybody else should.
+    pub at:  ptr T,
+    pub len: i64,
+    pub cap: i64,
+}
+
+// ---- How wide a `T` is ------------------------------------------------------
+
+// The one thing a container needs that the language has no word for. There is
+// no `size_of`, so it is measured rather than asked for: two adjacent elements
+// of a `ptr T` are a stride apart, and §3 says a pointer is indexed by the
+// stride of what it points at, so the difference between their addresses *is*
+// the stride. It costs three instructions and it is right for every `T` a
+// monomorphisation ever produces, which is more than a hand-written table of
+// widths would be.
+//
+// A size and a stride are not the same number -- a three-byte element with a
+// four-byte alignment strides four -- and a stride is the one this wants: it
+// is what `room` below has to multiply by for element `i` to land where `p[i]`
+// will look for it.
+pub fn stride<T>(p: ptr T): i64 {
+    unsafe let a = addr p[0] as i64
+    unsafe let b = addr p[1] as i64
+    b - a
+}
+
+// ---- Making one -------------------------------------------------------------
+
+// One with no room at all, which asks the runtime for nothing until something
+// is put in it. The `T` comes from what the caller is assigning to:
+// `let v: Vec<i32> = empty()` fixes it, there being no way to write it at the
+// call.
+pub fn empty<T>(): Vec<T> {
+    unsafe let none = 0 as ptr T
+    Vec { at: none, len: 0, cap: 0 }
+}
+
+// ---- What is in one ---------------------------------------------------------
+
+pub fn len<T>(v: &Vec<T>): i64 {
+    v.len
+}
+
+pub fn is_empty<T>(v: &Vec<T>): bool {
+    v.len == 0
+}
+
+// What is at a place. Nothing here checks the index against the length: that
+// is the one thing a caller can check and this cannot answer for, there being
+// no way yet to stop a program that asked for what is not there.
+pub fn at<T>(v: &Vec<T>, i: i64): T {
+    unsafe let out = v.at[i]
+    out
+}
+
+pub fn put<T>(v: &Vec<T>, i: i64, x: T) {
+    unsafe v.at[i] = x
+}
+
+// ---- Growing ----------------------------------------------------------------
+
+// Room for `want` of them, and nothing if there is that much already. The
+// doubling is what makes a run of `push`es cost a constant each on average
+// rather than a copy each: every element moved is paid for by the ones that
+// went in without moving since the last time.
+//
+// Four to begin with because a vector that grew 1, 2, 4 would ask the runtime
+// three times for what most vectors want at once, and the size classes
+// (`runtime::heap::classes`) round anything smaller up to the same span
+// regardless.
+pub fn grow<T>(v: *Vec<T>, want: i64) {
+    if want <= v.cap {
+        return
+    }
+    var cap = 4
+    while cap < want {
+        cap = cap * 2
+    }
+    unsafe let held = room(cap * stride(v.at))
+    unsafe let base = held as ptr T
+    // Element by element rather than by bytes: there is no `memcpy` here that
+    // is not the runtime's, and a loop the optimiser can see is worth more
+    // than a call it cannot.
+    var i = 0
+    while i < v.len {
+        unsafe base[i] = v.at[i]
+        i = i + 1
+    }
+    v.at = base
+    v.cap = cap
+}
+
+// One more on the end.
+pub fn push<T>(v: *Vec<T>, x: T) {
+    grow(v, v.len + 1)
+    unsafe v.at[v.len] = x
+    v.len = v.len + 1
+}
+
+// And one fewer. What it hands back is a copy of the last element; the room
+// stays, because giving it up is the collector's decision and not this one's.
+pub fn pop<T>(v: *Vec<T>): T {
+    unsafe let out = v.at[v.len - 1]
+    v.len = v.len - 1
+    out
+}
