@@ -305,6 +305,30 @@ impl<'a> Lowerer<'a> {
                 let bt = self.out.exprs[b].ty;
                 let ty = match self.types.get(bt).clone() {
                     Ty::Array { elem, .. } | Ty::Run(elem) => elem,
+                    // A pointer is indexed like the run it stands at the front
+                    // of, which is what makes a container that manages its own
+                    // room writable without a spelling for the arithmetic: the
+                    // stride is the element's and `mir::layout` already knows
+                    // it, so nothing here has to say how wide a `T` is.
+                    //
+                    // Like `deref`, it wants the word: it is a read through an
+                    // address the checker stopped answering for, and §4 counts
+                    // it among the three things an `unsafe` is for.
+                    Ty::Ptr(elem) => {
+                        if self.guarded == 0 {
+                            self.errors.push(
+                                Diagnostic::error(
+                                    "indexing a `ptr` needs an `unsafe`".to_string(),
+                                    self.at(id),
+                                )
+                                .with_label("this reads through a pointer")
+                                .with_note(
+                                    "write `unsafe` in front of the statement it is in",
+                                ),
+                            );
+                        }
+                        elem
+                    }
                     Ty::Ref { inner, .. } => match self.types.get(inner).clone() {
                         Ty::Array { elem, .. } | Ty::Run(elem) => elem,
                         _ => self.types.error(),
@@ -430,7 +454,9 @@ impl<'a> Lowerer<'a> {
         for stmt in stmts {
             match stmt {
                 TIRStmt::Let { is_unsafe, intro, name, ty, init, .. } => {
+                    self.guarded += usize::from(*is_unsafe);
                     let init = init.map(|i| self.expr(i));
+                    self.guarded -= usize::from(*is_unsafe);
                     let written = ty.map(|t| self.ty(t));
                     let ty = match (written, init) {
                         (Some(want), Some(got)) => {
@@ -467,7 +493,9 @@ impl<'a> Lowerer<'a> {
                     made.push(TTIRStmt::Let { is_unsafe: *is_unsafe, local, init });
                 }
                 TIRStmt::Expr { is_unsafe, expr } => {
+                    self.guarded += usize::from(*is_unsafe);
                     let expr = self.expr(*expr);
+                    self.guarded -= usize::from(*is_unsafe);
                     made.push(TTIRStmt::Expr { is_unsafe: *is_unsafe, expr });
                 }
                 TIRStmt::Item(item) => {

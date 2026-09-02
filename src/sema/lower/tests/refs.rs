@@ -271,3 +271,30 @@ fn deref_carries_the_type_through() {
 fn deref_is_a_place_and_may_be_assigned_to() {
     clean("fn f(p: ptr i32, v: i32) {\n    unsafe deref p = v\n}\n");
 }
+
+// ---- Indexing one -----------------------------------------------------------
+
+// `p[i]` is `deref (p + i)` written the way a run is indexed, and it is what a
+// `Vec` is made of: the values are behind a `ptr T` and there is no other way
+// to reach the second of them (§3).
+
+#[test]
+fn a_pointer_may_be_indexed_and_gives_what_it_points_at() {
+    clean("fn f(p: ptr i32, i: i64): i32 {\n    unsafe let v = p[i]\n    v\n}\n");
+    clean("fn f(p: ptr i32, i: i64, v: i32) {\n    unsafe p[i] = v\n}\n");
+}
+
+#[test]
+fn indexing_a_pointer_carries_the_element_type_through() {
+    let out = refused("fn f(p: ptr i32, i: i64): i64 {\n    unsafe let v = p[i]\n    v\n}\n");
+    assert!(!out.is_empty(), "an i32 out of a `ptr i32` is not an i64");
+    clean("fn f(p: ptr i64, i: i64): i64 {\n    unsafe let v = p[i]\n    v\n}\n");
+}
+
+// The same rule `deref` is under, for the same reason: what is at the far end
+// of a pointer is what the checker stopped answering for.
+#[test]
+fn indexing_a_pointer_outside_an_unsafe_is_refused() {
+    let out = refused("fn f(p: ptr i32, i: i64): i32 {\n    let v = p[i]\n    v\n}\n");
+    assert!(out.contains("needs an `unsafe`"), "{}", out);
+}

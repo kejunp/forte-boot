@@ -115,6 +115,15 @@ pub struct Lowerer<'a> {
     frames: Vec<Frame>,
     // The parameters of the declaration being walked, for a `Ty::Param`.
     params: Vec<String>,
+    // How many `unsafe` statements are open around what is being walked.
+    //
+    // `tir::lower` answers the same question for `addr` and `deref`, which it
+    // can because both are words: it sees one and looks at the statement it is
+    // in. `p[i]` is not a word -- whether it reads through a pointer or into
+    // an array is a fact about the *type* of `p`, and nothing before this pass
+    // knows it. So the count is kept here as well, and this is the only thing
+    // that reads it.
+    guarded: usize,
     // Which types answer each trait: the `impl Trait for T` of the suite, by
     // the trait they answer. Built once, between resolving and the bodies --
     // every impl is in by then, and nothing before the bodies asks.
@@ -195,6 +204,7 @@ impl<'a> Lowerer<'a> {
             made: vec![None; tir.items.len()],
             frames: Vec::new(),
             params: Vec::new(),
+            guarded: 0,
             answers: HashMap::new(),
             regions: 0,
             lifetimes: HashMap::new(),
