@@ -292,6 +292,32 @@ impl<'a> Lowerer<'a> {
         self.effect(MIRInstKind::Store { to: second, value: env, bytes: word }, line, col);
     }
 
+    // The same pair for a fn that captured nothing: where the code is, and a
+    // second word that is no environment. Split out of `closure` above rather
+    // than written twice, because the two disagreeing about which word is
+    // which is exactly the kind of thing that runs and gives an answer.
+    pub(super) fn paired(
+        &mut self,
+        def: MIRRegId,
+        name: String,
+        line: usize,
+        col: usize,
+    ) {
+        let word = self.word();
+        let room = format!("${}", self.frame_len());
+        let slot = self.slot(room, word * 2, word);
+        self.making(def, MIRInstKind::Frame(slot), line, col);
+        let code = self.push(MIRInstKind::Symbol(name), line, col);
+        self.effect(MIRInstKind::Store { to: def, value: code, bytes: word }, line, col);
+        // Nothing captured, so nothing to point at. It is written rather than
+        // left as it was found: a fn value is copied whole, and a word of
+        // whatever the frame held last is a word the collector would follow.
+        let none = self.push(MIRInstKind::Const(MIRConst::Int(0)), line, col);
+        let second =
+            self.push(MIRInstKind::Offset { base: def, bytes: word as i64 }, line, col);
+        self.effect(MIRInstKind::Store { to: second, value: none, bytes: word }, line, col);
+    }
+
     // ---- What a container was made of --------------------------------------
 
     // The type arguments of a `Map<K, V>` or a `Set<T>`. Taken from the type

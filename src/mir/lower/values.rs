@@ -10,6 +10,7 @@
 
 use crate::sir::sir_nodes::*;
 use crate::tir::tir_nodes::{TIRBinOp, TIRLit, TIRRefOp, TIRUnaryOp};
+use crate::tir::ttir_nodes::Ty;
 
 use super::super::mir_nodes::*;
 use super::Lowerer;
@@ -36,6 +37,25 @@ impl<'a> Lowerer<'a> {
                     return;
                 }
                 let name = self.symbol_at(at, i).unwrap_or_default();
+                // A fn named as a value is the *pair* a fn value is, and not
+                // the address of its code. `mir::layout` calls a `fn` fat --
+                // where the code is, and where the captures are -- and a
+                // closure builds both words (`calls::closure`). A plain fn has
+                // no captures, so its second word is nothing, but the pair
+                // still has to be there: everything that reads a fn value
+                // reads the first word out of it, and a bare code address read
+                // that way hands back the first eight bytes of the *machine
+                // code* and calls them.
+                //
+                // Nothing caught it because a call of a fn known here is
+                // inlined or named directly; it takes a fn value that reached
+                // its caller through a parameter or a field, which is what a
+                // comparator is.
+                if matches!(self.made.ttir.types.get(self.ty_of(value)), Some(Ty::Fn { .. }))
+                {
+                    self.paired(def, name, line, col);
+                    return;
+                }
                 self.making(def, MIRInstKind::Symbol(name), line, col);
             }
 

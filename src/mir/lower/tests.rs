@@ -671,6 +671,33 @@ fn a_register_made_to_hold_an_address_is_a_whole_address_wide() {
     }
 }
 
+// ---- A fn named as a value -----------------------------------------------
+
+// A `fn` is fat: where the code is, and where the captures are
+// (`mir::layout`). A closure builds both words, and a plain fn named as a
+// value has to build them too -- everything that reads a fn value reads the
+// first word *out* of it, so a bare code address read that way hands back the
+// first eight bytes of the machine code and calls them.
+//
+// Nothing caught it because a call of a fn known here names the symbol
+// directly. It takes a fn value that reached its caller through a parameter or
+// a field, which is what a comparator is.
+#[test]
+fn a_fn_named_as_a_value_is_built_as_the_pair_a_fn_value_is() {
+    let p = lowered(
+        "fn inc(x: i64): i64 {\n    x + 1\n}\n         fn dec(x: i64): i64 {\n    x - 1\n}\n         fn pick(b: bool): fn(i64): i64 {\n    if b { inc } else { dec }\n}\n",
+    );
+    let kinds = held(&p, "4pick");
+    assert!(
+        kinds.iter().any(|k| matches!(k, MIRInstKind::Frame(_))),
+        "no room was taken for the pair: {:#?}",
+        kinds
+    );
+    // Both words written: the code, and the environment there is none of.
+    let stores = kinds.iter().filter(|k| matches!(k, MIRInstKind::Store { .. })).count();
+    assert!(stores >= 4, "the two arms write two words each: {:#?}", kinds);
+}
+
 // ---- Answering with something too big for a register -------------------------
 
 // A value held by its address is held in somebody's frame, and a body that
