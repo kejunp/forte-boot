@@ -580,7 +580,14 @@ parameter, a reference to a place that exists only once the program runs.
 
 A constant is not a place. Nothing assigns to it, and "*" of one is therefore
 an error where "&" of one is not — a constant has no single home, being free
-to be copied into each use.
+to be copied into each use. That is what the compiler does with one today,
+and it does it in the checker: a name standing for a constant becomes the
+constant's value there and then. What is folded is a constant whose value is
+a literal, which is all of them the standard library writes; the rest of what
+<const_expr> is meant to accept — the operators, the cast, the "const fn" —
+wants an evaluator, and there is none, so one of those is still a name for
+somewhere. Which matters more than it reads, because there is nowhere: a
+global "var" has no data emitted for it either, and both are section 8's.
 
 <enum_variant>. A variant is a case of a sum type: the types it carries are
 its payload, got at by destructuring it in a match (<variant_pattern>,
@@ -651,6 +658,24 @@ read, called, indexed and reached into exactly as that place is, so "&" and
 "*" decide one thing only — whether writing through it is allowed. It is the
 distinction "let" and "var" draw over a binding, drawn instead over a
 borrowed place.
+
+"Exactly as that place is" reaches operators too. "a + b" over two "&i64" is
+the addition of the two i64 they refer to and comes to an i64, and so is
+"a + b" where only one of them is a reference. A "&&T" is read through twice,
+one layer at a time, as everything about a reference to a reference goes.
+There is no operator anywhere that compares two references as references:
+what a reference *is* is not a thing the language talks about, and a program
+that wants to know whether two names reach one place is asking a question
+"ptr" is for.
+
+And because "*" is everything "&" is and a licence besides, a "*" stands
+wherever a "&" is wanted:
+
+    fn read(p: &P): i64 { p.a }
+    fn write(p: *P) { p.a = read(p) + 1 }
+
+That goes one way only. A "&" handed where a "*" is wanted would be a write
+licence made out of nothing, and is refused.
 
 How many of each may stand at once is the other half of what the two say. A
 place is reached either through one "*" and nothing else, or through any
@@ -2006,6 +2031,17 @@ answer is not obvious from the rules alone.
     So none of the three is open, and the one answer given in advance still
     holds: none of them will be null. A "ptr" admits no absent address, as a
     reference admits none.
+  - Nothing at file scope has anywhere to live. A global "var" and a
+    constant the checker could not fold are both a name the back end writes
+    a reference to, and the back end emits no data for either — there is a
+    constant pool for literals and descriptors and no segment for anything a
+    declaration named. So a program with a global links against a symbol
+    nobody defined. What is wanted is small and is two things rather than
+    one: an evaluator for <const_expr>, so a constant folds whatever it was
+    written as; and a segment for the globals that are left, which have to
+    be somewhere because a global is a place and may be assigned to. The
+    second is also where the collector will have to be told to look, there
+    being no other root outside a stack.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it
