@@ -305,3 +305,34 @@ fn indexing_something_that_is_neither_an_array_nor_a_pointer_is_refused() {
     let out = refused("fn f(n: i32, i: i64): i32 {\n    unsafe let v = n[i]\n    v\n}\n");
     assert!(!out.is_empty(), "an i32 is not indexable");
 }
+
+// ---- An operator over a reference reaches through it -------------------------
+
+// "A reference stands for the place it refers to and is read and written as
+// that place" (§3), so an operator over one is an operator over what it refers
+// to. Three quarters of this used to be refusals and the last quarter was
+// worse: `&T` against `&T` unified, so it compiled and compared the two
+// addresses.
+
+#[test]
+fn an_operator_over_two_references_gives_back_what_they_refer_to() {
+    // Not `&i64`, which is what it used to come to -- the signature is what
+    // catches it.
+    clean("fn f(a: &i64, b: &i64): i64 {\n    a + b\n}\n");
+    clean("fn f(a: &i64, b: &i64): bool {\n    a < b\n}\n");
+}
+
+#[test]
+fn a_reference_and_a_value_are_one_type_under_an_operator() {
+    clean("fn f(a: &i64, b: i64): i64 {\n    a + b\n}\n");
+    clean("fn f(a: &i64, b: i64): bool {\n    a == b\n}\n");
+    clean("fn f(a: &i64): bool {\n    a == 3\n}\n");
+    clean("fn f(a: &i64): i64 {\n    a * 2\n}\n");
+}
+
+// Both layers, one at a time, which is how §3 says everything about a
+// reference to a reference goes.
+#[test]
+fn a_reference_to_a_reference_is_read_through_twice() {
+    clean("fn f(a: &&i64, b: i64): i64 {\n    a + b\n}\n");
+}

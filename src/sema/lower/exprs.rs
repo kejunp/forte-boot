@@ -87,6 +87,20 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::Binary { op, lhs, rhs } => {
                 let (l, r) = (self.expr(lhs), self.expr(rhs));
+                // "A reference stands for the place it refers to and is read
+                // and written as that place" (§3), so an operator over one is
+                // an operator over what it refers to. Read through both sides
+                // before anything else looks at them: what comes out is the
+                // referred type, which is what has to unify, what decides
+                // whether the comparison is signed, and what the answer is.
+                //
+                // Without this a reference was opaque to every operator. Three
+                // sides of that were refusals -- "`&i64` and `i64` are not one
+                // type" for anything mixed -- and the fourth was worse: `&T`
+                // against `&T` unified, so it compiled, and compared the two
+                // *addresses*. A comparator over a key is exactly that shape,
+                // and it answered whether two keys were in the same place.
+                let (l, r) = (self.read_through(l), self.read_through(r));
                 let (lt, rt) = (self.out.exprs[l].ty, self.out.exprs[r].ty);
                 if self.types.unify(lt, rt).is_err() {
                     let (lt, rt) = (self.spell(lt), self.spell(rt));
@@ -597,6 +611,35 @@ impl<'a> Lowerer<'a> {
         // declaration's own parameters: the `v` of a `Held<T>` is a `T`. What
         // it is *here* is that with the arguments of this use put in.
         Some((index, self.types.substitute(ty, &args)))
+    }
+
+    // An expression with the references taken off it, which is one read out
+    // of the place each refers to. A `&&T` reads twice, one layer at a time,
+    // as §3 says everything about a reference to a reference goes.
+    //
+    // The node is a `Deref`, which is the same node `deref p` makes and lowers
+    // the same way -- `sir::lower` turns it into a `Load` of what the operand
+    // holds, and a reference held in a register holds an address just as a
+    // pointer does. What it does *not* go through is the checking `deref p`
+    // gets: no `unsafe` is asked for, because §4 wants the word for a read
+    // through a pointer and this is a read through a reference, which is the
+    // one kind of address the checker still answers for.
+    fn read_through(&mut self, expr: TTIRExprId) -> TTIRExprId {
+        let mut held = expr;
+        while let Ty::Ref { inner, .. } = self.types.get(self.out.exprs[held].ty).clone() {
+            // Built here rather than through `make`, which wants a place in
+            // the *source* to take a line from. There is none: nobody wrote
+            // this read. So it stands where the operand it reads stands.
+            let (line, col) = (self.out.exprs[held].line, self.out.exprs[held].col);
+            self.out.exprs.push(TTIRExpr {
+                kind: TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand: held },
+                ty: inner,
+                line,
+                col,
+            });
+            held = self.out.exprs.len() - 1;
+        }
+        held
     }
 
     // What indexing something that cannot be indexed comes to. It used to come
