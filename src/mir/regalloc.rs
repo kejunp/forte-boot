@@ -248,6 +248,44 @@ fn spans(held: &Linear, calls: &[usize]) -> Vec<Span> {
         }
     }
 
+    // And then every loop, which is what the lowest and the highest miss.
+    //
+    // A span from its lowest mention to its highest is only the truth where
+    // the lines run in the order they are written. Round a loop they do not: a
+    // value set before the loop and read at the *top* of the body is still
+    // wanted on the next turn, so it is live from that read to the back edge
+    // and past everything in between -- which may include a call. The linear
+    // range stops at the read, so the span comes out not crossing a call and
+    // is given a caller-saved register, and the call takes it.
+    //
+    // This is what put a loop's multiplier in `rcx` across a call to a body
+    // that used `rcx` as its own scratch, so the multiplier changed every
+    // turn. So: a span overlapping a back edge's arc is stretched over the
+    // whole of it, to a fixed point, which is what makes a nested loop stretch
+    // to the outer one as well.
+    for (from, to) in loops(held) {
+        loop {
+            let mut moved = false;
+            for reg in 0..held.regs.len() {
+                let (Some(one), Some(other)) = (low[reg], high[reg]) else { continue };
+                if one > to || other < from {
+                    continue;
+                }
+                if one > from {
+                    low[reg] = Some(from);
+                    moved = true;
+                }
+                if other < to {
+                    high[reg] = Some(to);
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+    }
+
     (0..held.regs.len())
         .filter_map(|reg| {
             let (from, to) = (low[reg]?, high[reg]?);
@@ -262,6 +300,29 @@ fn spans(held: &Linear, calls: &[usize]) -> Vec<Span> {
             })
         })
         .collect()
+}
+
+// Every backward jump, as the arc of lines it closes over: from the label it
+// lands on to the terminator that takes it. A loop in the listing is exactly
+// one of these, whatever it was written as in the source.
+fn loops(held: &Linear) -> Vec<(usize, usize)> {
+    let mut at: HashMap<MIRBlockId, usize> = HashMap::new();
+    for (line, one) in held.lines.iter().enumerate() {
+        if let Line::Label(block) = one {
+            at.insert(*block, line);
+        }
+    }
+    let mut out = Vec::new();
+    for (line, one) in held.lines.iter().enumerate() {
+        let Line::Term(term) = one else { continue };
+        for to in term.targets() {
+            match at.get(&to) {
+                Some(&back) if back <= line => out.push((back, line)),
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 // Room in the frame for one that could not have a register.

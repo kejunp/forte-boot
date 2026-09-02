@@ -273,3 +273,78 @@ fn the_worst_point_is_counted() {
     let (_, out) = run(body_of(&p, "1f"));
     assert!(out.most >= 2, "{:#?}", out);
 }
+
+// And round a loop, which is where the linear reading of a span is not the
+// truth. A value set before the loop and read at the *top* of the body is
+// wanted again on the next turn, so it is live over everything below that read
+// -- including a call. Reading the span as the lowest and the highest mention
+// stops it at the read, so it comes out not crossing the call and is given a
+// caller-saved register.
+//
+// That is not a shape it comes out in by accident: the multiplier of `i * 3`
+// below went into `rcx`, and the callee used `rcx` as its own scratch, so the
+// multiplier was a different number every turn and the loop wrote `i * (i - 1)`.
+#[test]
+fn a_value_live_round_a_loop_is_kept_across_a_call_inside_it() {
+    let p = lowered(
+        "fn g(x: i64): i64 { x }\n\
+         fn f(n: i64): i64 {\n\
+         \x20   let step = 3\n    var t = 0\n    var i = 0\n\
+         \x20   while i < n {\n        t = t + g(i * step)\n        i = i + 1\n    }\n\
+         \x20   t\n}\n",
+    );
+    let (held, out) = run(body_of(&p, "1f"));
+
+    // The arc a backward jump closes over, which is the loop.
+    let mut at: Vec<(MIRBlockId, usize)> = Vec::new();
+    for (line, one) in held.lines.iter().enumerate() {
+        if let Line::Label(block) = one {
+            at.push((*block, line));
+        }
+    }
+    let mut arcs: Vec<(usize, usize)> = Vec::new();
+    for (line, one) in held.lines.iter().enumerate() {
+        let Line::Term(term) = one else { continue };
+        for to in term.targets() {
+            match at.iter().find(|(block, _)| *block == to) {
+                Some((_, back)) if *back <= line => arcs.push((*back, line)),
+                _ => {}
+            }
+        }
+    }
+    assert!(!arcs.is_empty(), "there should be a loop: {:#?}", held.lines);
+
+    let live = live_at(&held);
+    for (from, to) in arcs {
+        let calls: Vec<usize> = (from..=to)
+            .filter(|&line| {
+                matches!(
+                    held.lines[line],
+                    Line::Inst(MIRInst { kind: MIRInstKind::Call { .. }, .. })
+                )
+            })
+            .collect();
+        if calls.is_empty() {
+            continue;
+        }
+        // Named inside the loop and also outside it, which is what being live
+        // round it means whatever the linear order says.
+        for reg in 0..held.regs.len() {
+            let inside = (from..=to).any(|line| live[line].contains(&reg));
+            let outside = (0..held.lines.len())
+                .filter(|line| *line < from || *line > to)
+                .any(|line| live[line].contains(&reg));
+            if !(inside && outside) {
+                continue;
+            }
+            if let Where::In(one) = out.of(reg) {
+                assert!(
+                    machine().keeps(one),
+                    "%{} is live round a loop with a call in it and is in {}",
+                    reg,
+                    one.name
+                );
+            }
+        }
+    }
+}
