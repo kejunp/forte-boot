@@ -200,9 +200,23 @@ impl<'a> Lowerer<'a> {
 
         // Then a register per value, before any instruction is written -- see
         // the header.
+        //
+        // A value the SIR made with one of the `*Addr` instructions is sized
+        // by the machine and not by its type. The type on one of those is the
+        // type of the place it addresses and not of what the register holds
+        // (`sir::lower::address`), so an `i32` element's address would be
+        // asked for in four bytes -- and a four-byte address is three quarters
+        // of an address. It never showed while every place with an address was
+        // a structure, because `indirect` gives those a word anyway; a `ptr
+        // i32` indexed for a store is the first place a *small* type is
+        // reached by address.
+        let addressed = addresses(source);
         let regs: Vec<MIRReg> = (0..source.values.len())
             .map(|value| {
                 let held = source.values[value].clone();
+                if addressed.contains(&value) {
+                    return MIRReg::one(Class::Int, self.machine.word, held.line, held.col);
+                }
                 self.holding(held.ty, held.lanes, held.line, held.col)
             })
             .collect();
@@ -778,6 +792,34 @@ impl<'a> Lowerer<'a> {
         self.out.pool.push(MIRConstant { symbol: symbol.clone(), bytes });
         symbol
     }
+}
+
+// Every value in a body that an `*Addr` instruction made, which is every value
+// holding an address rather than what is at one. Read off the instructions
+// because a `SIRValue` carries only a type, and the type of one of these is
+// the type of the place and not of the register.
+fn addresses(source: &SIRBody) -> HashSet<SIRValueId> {
+    let mut out = HashSet::new();
+    for block in &source.blocks {
+        for inst in &block.insts {
+            let held = match inst.def {
+                Some(held) => held,
+                None => continue,
+            };
+            if matches!(
+                inst.kind,
+                SIRInstKind::Addr(_)
+                    | SIRInstKind::ItemAddr(_)
+                    | SIRInstKind::SelfAddr
+                    | SIRInstKind::FieldAddr { .. }
+                    | SIRInstKind::TupleAddr { .. }
+                    | SIRInstKind::IndexAddr { .. }
+            ) {
+                out.insert(held);
+            }
+        }
+    }
+    out
 }
 
 // Whether the top bit of one of these means a sign. It decides which of two

@@ -640,6 +640,37 @@ fn indexing_a_pointer_reads_nothing_first() {
     );
 }
 
+// ---- A register holding an address is the width of one -----------------------
+
+// The type on an `*Addr` value is the type of the place it addresses, so
+// sizing its register by that type sizes it by the wrong thing. It went unseen
+// while every place with an address was a structure -- `indirect` gives those
+// a word anyway -- and `p[i] = v` on a `ptr i32` is the first place a *small*
+// type is reached by address. The register came out four bytes, and four bytes
+// is three quarters of an address.
+#[test]
+fn a_register_made_to_hold_an_address_is_a_whole_address_wide() {
+    let p = lowered(
+        "fn f(p: ptr i32, i: i64, v: i32) {\n    unsafe p[i] = v\n}\n",
+    );
+    let body = body_of(&p, "1f");
+    let word = crate::mir::machine::X86_64.word;
+    for (at, inst) in body.blocks.iter().flat_map(|b| b.insts.iter()).enumerate() {
+        let Some(def) = inst.def else { continue };
+        if !matches!(
+            inst.kind,
+            MIRInstKind::Frame(_) | MIRInstKind::Offset { .. } | MIRInstKind::Scaled { .. }
+        ) {
+            continue;
+        }
+        assert_eq!(
+            body.regs[def].bytes, word,
+            "instruction {} makes an address in {} bytes",
+            at, body.regs[def].bytes
+        );
+    }
+}
+
 // ---- Answering with something too big for a register -------------------------
 
 // A value held by its address is held in somebody's frame, and a body that
