@@ -331,9 +331,12 @@ impl<'a> Lowerer<'a> {
                     }
                     Ty::Ref { inner, .. } => match self.types.get(inner).clone() {
                         Ty::Array { elem, .. } | Ty::Run(elem) => elem,
-                        _ => self.types.error(),
+                        _ => self.not_indexable(bt, id),
                     },
-                    _ => self.types.error(),
+                    // Anything the checker already gave up on stays given up
+                    // on: one complaint about the same mistake is enough.
+                    Ty::Error => bt,
+                    _ => self.not_indexable(bt, id),
                 };
                 self.make(TTIRExprKind::Index { base: b, index: i }, ty, id)
             }
@@ -594,6 +597,20 @@ impl<'a> Lowerer<'a> {
         // declaration's own parameters: the `v` of a `Held<T>` is a `T`. What
         // it is *here* is that with the arguments of this use put in.
         Some((index, self.types.substitute(ty, &args)))
+    }
+
+    // What indexing something that cannot be indexed comes to. It used to come
+    // to `Ty::Error` with nothing said, which is a program accepted for a
+    // reason nobody was told -- the error type is what a *reported* mistake
+    // leaves behind and not a way of declining to report one.
+    fn not_indexable(&mut self, ty: TyId, id: TIRExprId) -> TyId {
+        let spelt = self.spell(ty);
+        self.errors.push(
+            Diagnostic::error(format!("`{}` cannot be indexed", spelt), self.at(id))
+                .with_label("this is indexed here")
+                .with_note("only an array, a run and a `ptr` may be"),
+        );
+        self.types.error()
     }
 }
 

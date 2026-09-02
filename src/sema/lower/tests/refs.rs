@@ -298,3 +298,10 @@ fn indexing_a_pointer_outside_an_unsafe_is_refused() {
     let out = refused("fn f(p: ptr i32, i: i64): i32 {\n    let v = p[i]\n    v\n}\n");
     assert!(out.contains("needs an `unsafe`"), "{}", out);
 }
+
+// An array still is not one, so nothing here has widened what may be indexed.
+#[test]
+fn indexing_something_that_is_neither_an_array_nor_a_pointer_is_refused() {
+    let out = refused("fn f(n: i32, i: i64): i32 {\n    unsafe let v = n[i]\n    v\n}\n");
+    assert!(!out.is_empty(), "an i32 is not indexable");
+}
