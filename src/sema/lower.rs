@@ -72,7 +72,8 @@ use std::collections::HashMap;
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::sema::types::Types;
 use crate::tir::tir_nodes::{
-    TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRPrim, TIRProgram, TIRVis,
+    TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
+    TIRProgram, TIRVis,
 };
 use crate::tir::ttir_nodes::{
     TTIRCapture, TTIRFn, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
@@ -124,6 +125,13 @@ pub struct Lowerer<'a> {
     // knows it. So the count is kept here as well, and this is the only thing
     // that reads it.
     guarded: usize,
+    // The value of every `const` whose value is a literal, by the declaration
+    // it belongs to. "A `<const_decl>` is the compile-time constant" (§2), so a
+    // name standing for one stands for its value; this is where the value is
+    // kept between resolving the declaration and reaching a use of it, there
+    // being nowhere on `TTIRItemKind::Const` that holds one -- its `value` is
+    // an expression id nothing ever fills in.
+    consts:  HashMap<TTIRItemId, TIRLit>,
     // Which types answer each trait: the `impl Trait for T` of the suite, by
     // the trait they answer. Built once, between resolving and the bodies --
     // every impl is in by then, and nothing before the bodies asks.
@@ -205,6 +213,7 @@ impl<'a> Lowerer<'a> {
             frames: Vec::new(),
             params: Vec::new(),
             guarded: 0,
+            consts: HashMap::new(),
             answers: HashMap::new(),
             regions: 0,
             lifetimes: HashMap::new(),

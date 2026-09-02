@@ -362,3 +362,28 @@ fn a_shared_reference_may_not_be_handed_to_something_that_writes() {
     );
     assert!(out.contains("and it takes"), "{}", out);
 }
+
+// ---- A const is its value ----------------------------------------------------
+
+// "A `<const_decl>` is the compile-time constant" (§2), so a name standing for
+// one stands for the value. It used to stand for a symbol, and there is no
+// data segment for a symbol to live in -- so a const read at run time was the
+// address of nothing.
+#[test]
+fn a_const_is_the_literal_it_was_declared_as() {
+    let (p, said) = typed("const N: i64 = 5\nfn f(): i64 {\n    N\n}\n");
+    assert!(said.is_empty(), "{:?}", said);
+    let held = p.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::Literal(_)));
+    assert!(held, "the const did not come through as its value");
+    assert!(
+        !p.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::Item(_))),
+        "the const is still a name for somewhere"
+    );
+}
+
+// The const's own type and not the literal's: that is the whole of what the
+// annotation on a const decides.
+#[test]
+fn a_const_carries_the_type_it_was_declared_with() {
+    clean("const B: u8 = 2\nfn f(p: ptr u8, i: i64) {\n    unsafe p[i] = B\n}\n");
+}

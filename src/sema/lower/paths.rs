@@ -45,6 +45,22 @@ impl<'a> Lowerer<'a> {
         }
         match self.names.get(&path.join("::")).copied() {
             Some(item) => {
+                // "A `<const_decl>` is the compile-time constant" (§2), so a
+                // name that stands for one stands for its value and not for
+                // anywhere the value is kept. Written out here rather than
+                // folded later: a const that survived to the back end is a
+                // symbol, and a symbol wants somewhere for the bytes to live
+                // -- which is a data segment this compiler does not emit, so
+                // every const in a program was a reference to nothing.
+                //
+                // Only a literal. A const whose value is worked out from other
+                // things needs an evaluator, and there is none; one of those
+                // still becomes an `Item` and still has nowhere to live, which
+                // is now a name the linker cannot find rather than an answer
+                // that was quietly the address of it.
+                if let Some(held) = self.const_lit(item, id) {
+                    return held;
+                }
                 let ty = self.item_ty(item);
                 self.make(TTIRExprKind::Item(item), ty, id)
             }
@@ -224,5 +240,18 @@ impl<'a> Lowerer<'a> {
         }
 
         self.types.substitute(held, &args)
+    }
+
+    // A `const` whose value is a literal, as that literal. The type is the
+    // const's declared one and not the literal's: `const B: u8 = 2` puts a `2`
+    // where `B` was written and it is a `u8` there, which is the whole of what
+    // the annotation on a const decides.
+    fn const_lit(&mut self, item: TTIRItemId, id: TIRExprId) -> Option<TTIRExprId> {
+        let TTIRItemKind::Const { ty, .. } = &self.out.items[item].kind else {
+            return None;
+        };
+        let ty = *ty;
+        let lit = self.consts.get(&item)?.clone();
+        Some(self.make(TTIRExprKind::Literal(lit), ty, id))
     }
 }

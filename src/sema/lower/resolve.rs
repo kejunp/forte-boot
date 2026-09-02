@@ -170,8 +170,19 @@ impl<'a> Lowerer<'a> {
                     self.params.clear();
                 }
 
-                TIRItemKind::Const { ty, .. } => {
+                TIRItemKind::Const { ty, value, .. } => {
                     let held = self.ty(ty);
+                    // What it is worth, where that is written plainly enough
+                    // to read off. A const is the compile-time constant, so a
+                    // use of the name is the value and not a place holding it
+                    // -- and this is the only place the value is still to
+                    // hand, `TTIRItemKind::Const`'s own `value` being an
+                    // expression id nothing fills in.
+                    if let TIRExprKind::Literal { value: lit, .. } =
+                        &self.tir.exprs[value].kind
+                    {
+                        self.consts.insert(made, lit.clone());
+                    }
                     let TTIRItemKind::Const { ty, .. } = &mut self.out.items[made].kind else {
                         continue;
                     };
