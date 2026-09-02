@@ -601,6 +601,45 @@ fn writing_through_a_pointer_is_a_store_to_what_it_holds() {
     );
 }
 
+// A pointer is indexed by the stride of what it points at. It is asked before
+// anything is stripped off the type, because stripping a `ptr T` leaves a `T`
+// and a `T` is not what the stride is of -- which gave every `Vec<T>` a stride
+// of a word, so a `Vec<i32>` read every other element and half of the one
+// after it.
+#[test]
+fn a_pointer_is_indexed_by_the_stride_of_what_it_points_at() {
+    let p = lowered("fn f(p: ptr i32, i: i64): i32 {\n    unsafe let v = p[i]\n    v\n}\n");
+    assert!(
+        has(&p, "1f", |k| matches!(k, MIRInstKind::Scaled { scale: 4, .. })),
+        "{:#?}",
+        held(&p, "1f")
+    );
+    let p = lowered("fn f(p: ptr i64, i: i64): i64 {\n    unsafe let v = p[i]\n    v\n}\n");
+    assert!(
+        has(&p, "1f", |k| matches!(k, MIRInstKind::Scaled { scale: 8, .. })),
+        "{:#?}",
+        held(&p, "1f")
+    );
+}
+
+// And it is indexed off what it holds rather than off where it is held, which
+// is the same thing being said as for a run: `p` *is* the address of element
+// zero.
+#[test]
+fn indexing_a_pointer_reads_nothing_first() {
+    let p = lowered("fn f(p: ptr i32, i: i64): i32 {\n    unsafe let v = p[i]\n    v\n}\n");
+    let kinds = held(&p, "1f");
+    let at = kinds
+        .iter()
+        .position(|k| matches!(k, MIRInstKind::Scaled { .. }))
+        .expect("an index");
+    assert!(
+        !kinds[..at].iter().any(|k| matches!(k, MIRInstKind::Load { .. })),
+        "a pointer already is where its elements are: {:#?}",
+        kinds
+    );
+}
+
 // ---- Answering with something too big for a register -------------------------
 
 // A value held by its address is held in somebody's frame, and a body that

@@ -155,7 +155,18 @@ impl<'a> Lowerer<'a> {
 
     // The stride of what a run holds, which is what an index is multiplied by.
     fn element_of(&mut self, base: SIRValueId) -> usize {
-        let ty = self.through(self.ty_of(base));
+        // A pointer is asked before anything is stripped off it. It is the
+        // front of a run of its own elements, so what an index steps by is the
+        // element's stride -- and `through` below would have taken the `ptr`
+        // away and left the element, which has no stride of its own and would
+        // have been stepped over a word at a time.
+        let held = self.ty_of(base);
+        if let Some(crate::tir::ttir_nodes::Ty::Ptr(elem)) =
+            self.made.ttir.types.get(held).cloned()
+        {
+            return self.stride_of(elem);
+        }
+        let ty = self.through(held);
         match self.laid(ty).shape {
             super::Shape::Elements { stride, .. } => stride,
             // A run and a string are a pointer and a length rather than the
