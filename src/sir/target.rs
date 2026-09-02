@@ -150,8 +150,9 @@ impl Target {
                 TIRUnaryOp::Not => integer(p) || p == TIRPrim::Bool,
                 TIRUnaryOp::Neg => integer(p) || floating(p),
                 // A reference is an address, and there is nothing to take the
-                // address of several values at once.
-                TIRUnaryOp::Ref(_) | TIRUnaryOp::Addr => false,
+                // address of several values at once -- nor to read through
+                // several at once, which is a gather and is not this.
+                TIRUnaryOp::Ref(_) | TIRUnaryOp::Addr | TIRUnaryOp::Deref => false,
             },
             SIRInstKind::Binary { op, .. } => match op {
                 TIRBinOp::Add | TIRBinOp::Sub => integer(p) || floating(p),

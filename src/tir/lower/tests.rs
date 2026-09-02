@@ -647,3 +647,27 @@ fn gc_does_not_answer_for_addr() {
     assert!(errors[0].starts_with("error: `addr` needs an `unsafe`"), "{}", errors[0]);
     assert!(errors_in("fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n").is_empty());
 }
+
+// `deref` is the other half of `addr` and wants the same guard. Of the two it
+// is the one that can fault: `addr` makes an address out of a place that is
+// certainly there, and this reads whatever the address turned out to be.
+#[test]
+fn a_deref_needs_an_unsafe() {
+    assert!(errors_in("fn main() {\n    unsafe {\n        let v = deref p;\n    }\n}\n")
+        .is_empty());
+
+    let errors = errors_in("fn main() {\n    let v = deref p;\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("`deref` needs an `unsafe`"), "{}", errors[0]);
+}
+
+// And it reaches the tree as its own operator, not as one of the two that take
+// a reference.
+#[test]
+fn a_deref_is_its_own_operator() {
+    let (tir, _) = lowered("fn main() {\n    unsafe {\n        let v = deref p;\n    }\n}\n");
+    let held = tir.exprs.iter().any(|e| {
+        matches!(e.kind, TIRExprKind::Unary { op: TIRUnaryOp::Deref, .. })
+    });
+    assert!(held, "nothing in the tree reads through a pointer");
+}

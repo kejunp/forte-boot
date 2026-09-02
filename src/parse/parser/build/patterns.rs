@@ -57,19 +57,19 @@ impl Parser {
 
             // ---- Variant patterns and payloads ---------------------------
             // <variant_pattern> -> <qualified_name> ( <pattern_list_opt> )
-            412 => self.at(
+            413 => self.at(
                 ASTNodeKind::VariantPat { path: self.path(c[0]), elems: self.list(c[2]) },
                 c[0],
             ),
             // <variant_pattern> -> <qualified_name> VALUE_LCURLY <field_pattern_list_opt> }
-            413 => self.at(
+            414 => self.at(
                 ASTNodeKind::StructPat { path: self.path(c[0]), fields: self.list(c[2]) },
                 c[0],
             ),
             // <variant_tail_opt> -> ε
-            414 => self.here(ASTNodeKind::Empty),
+            415 => self.here(ASTNodeKind::Empty),
             // <variant_tail_opt> -> <payload> | <named_payload> | <discriminant>
-            415 | 416 | 417 => self.pass(c[0]),
+            416 | 417 | 418 => self.pass(c[0]),
 
             // ---- Match ---------------------------------------------------
             // <match_arm> -> <pattern_alternatives> => <expression>

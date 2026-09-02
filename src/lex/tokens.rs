@@ -114,6 +114,12 @@ pub enum TokType {
     // references and neither had a spelling left over.
     Addr,
 
+    // Reads through an address, `deref p`, and is the only thing that reaches
+    // what a `ptr` points at. A word for the same reason `addr` is one, and the
+    // two are written as a pair: `addr` makes the address and this is what it
+    // is for.
+    Deref,
+
     // Arithmetic operators
     Plus,
     Minus,

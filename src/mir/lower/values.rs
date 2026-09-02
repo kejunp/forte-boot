@@ -174,6 +174,15 @@ impl<'a> Lowerer<'a> {
                 let _ = value;
                 self.making(def, MIRInstKind::Move(held), line, col);
             }
+
+            // `sir::lower` makes a `Load` of this and not a `Unary`, so
+            // nothing reaches here from a compiled program -- see that file
+            // for why it must not. A body built by hand still can, and what it
+            // means is the same read.
+            TIRUnaryOp::Deref => {
+                let want = self.ty_of(value);
+                self.take(def, held, want, line, col);
+            }
         }
     }
 

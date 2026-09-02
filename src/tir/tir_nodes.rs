@@ -678,6 +678,10 @@ pub enum TIRUnaryOp {
     Ref(TIRRefOp),
     // `addr x`: the address of a place, as a `ptr`.
     Addr,
+    // `deref p`: what a `ptr` points at. A *place*, unlike the other four --
+    // it may be assigned to and its address may be taken, which is what makes
+    // a pointer worth having.
+    Deref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -600,6 +600,11 @@ pub enum ASTUnaryOp {
     // `addr x`, which takes the address of a place as a `ptr`. The one
     // operator no safe statement may write.
     Addr,
+    // `deref p`, which reaches what a `ptr` points at. `addr` makes an address
+    // and this is what an address is for, so the two are a pair and are
+    // written as one -- and like `addr` it is not something a safe statement
+    // may write.
+    Deref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

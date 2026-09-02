@@ -578,6 +578,19 @@ impl<'a> Lowerer<'a> {
                 self.b.values[at].ty = ty;
                 return at;
             }
+            // Reading through a pointer is a *read*, and it has to be one here
+            // rather than an operator over a value.
+            //
+            // As a `Unary` it type-checked and ran and was wrong under `opt`:
+            // `share` folds two identical unary instructions into one, because
+            // an operator over the same operand gives the same answer twice --
+            // which is true of `-x` and false of what is at an address, since
+            // something may have been written there in between. A `Load` is
+            // what `alias`, `forward` and `share` all already understand, and
+            // it is what this is.
+            GIRExprKind::Unary { op: TIRUnaryOp::Deref, operand } => {
+                SIRInstKind::Load { from: self.value(operand) }
+            }
             GIRExprKind::Unary { op, operand } => {
                 let operand = self.value(operand);
                 SIRInstKind::Unary { op, operand }
@@ -668,6 +681,15 @@ impl<'a> Lowerer<'a> {
                 let base = self.base_of(base);
                 let index = self.value(index);
                 SIRInstKind::IndexAddr { base, index }
+            }
+            // `deref p` is a place and its address is what `p` holds. That is
+            // the whole of what a pointer is: `addr x` makes one out of a
+            // place and this turns one back into a place, so there is no
+            // instruction between the two -- the value already *is* the
+            // address, and asking for the address of the address would be the
+            // same mistake `base_of` above is about.
+            GIRExprKind::Unary { op: TIRUnaryOp::Deref, operand } => {
+                return self.value(operand);
             }
             // Not a place, so it has no address until it is given one. `&mk()`
             // is a reference to a value nothing named, and what it refers to is

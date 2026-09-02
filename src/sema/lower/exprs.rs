@@ -56,6 +56,31 @@ impl<'a> Lowerer<'a> {
                     crate::tir::tir_nodes::TIRUnaryOp::Addr => {
                         self.types.intern(Ty::Ptr(inner))
                     }
+                    // The other way: what the pointer points at. A `deref` of
+                    // anything else is the one shape here that is refused --
+                    // `addr` makes a pointer out of any place and this only
+                    // reads one back.
+                    crate::tir::tir_nodes::TIRUnaryOp::Deref => {
+                        match self.types.get(inner).clone() {
+                            Ty::Ptr(to) => to,
+                            Ty::Error => inner,
+                            _ => {
+                                let held = self.spell(inner);
+                                self.errors.push(
+                                    Diagnostic::error(
+                                        format!("`{}` is not a pointer", held),
+                                        self.at(id),
+                                    )
+                                    .with_label("this reads through one")
+                                    .with_help(
+                                        "only a `ptr` is read through; a reference \
+                                         already stands for what it refers to",
+                                    ),
+                                );
+                                self.types.error()
+                            }
+                        }
+                    }
                 };
                 self.make(TTIRExprKind::Unary { op, operand: held }, ty, id)
             }

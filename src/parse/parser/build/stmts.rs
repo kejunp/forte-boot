@@ -56,13 +56,13 @@ impl Parser {
 
             // ---- Loops, continued ----------------------------------------
             // <while_expr> -> while <header_expr> <block>
-            432 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
+            433 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
 
             // ---- unsafe --------------------------------------------------
             // <unsafe_stmt> -> unsafe <expr_stmt>
-            393 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
-            // <unsafe_stmt> -> unsafe <var_decl>
             394 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            // <unsafe_stmt> -> unsafe <var_decl>
+            395 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

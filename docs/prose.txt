@@ -1194,6 +1194,19 @@ knows something it does not.
     unsafe let p = addr buf[0]
     let q = addr buf[0]         // error: `addr` needs an `unsafe`
 
+"deref" is the other half and is a <unary_op> for the same reason: it is a
+fourth thing standing where "&" and "*" stand and is not a choice between
+them. What it makes is a *place* — the one operator here that does — so it may
+be assigned to as well as read, and "addr" and "deref" undo one another:
+
+    unsafe deref p = 1
+    unsafe let n = deref p
+
+It wants the same word, and of the two it is the one that can fault. An "addr"
+takes the address of a place that is certainly there; a "deref" reads whatever
+the address turned out to be, and whether it is still anything is exactly what
+the checker stopped answering for.
+
 A pointer that a call gave back needs no word of its own, the call having
 been answered for already — "unsafe let p = malloc(n)" is how one usually
 arrives, and the "unsafe" there is the call's.
@@ -1950,16 +1963,25 @@ answer is not obvious from the rules alone.
     any other, so an unsafe call inside one writes the word — the opposite
     convention, where the marking on the signature reaches the whole body, is
     the alternative that was not taken.
-  - "ptr T" is a raw pointer and "addr x" makes one, and both are section 3's.
-    Settled as far as the grammar goes: "ptr" is a type and not a third
-    <ref_op>, "addr" is a <unary_op> and not a sigil, and neither takes a
-    lifetime. What is not settled is what may be done with one. There is no
-    spelling here for a read or a write through a pointer, none for the
-    arithmetic C does on one, and none for the cast between a "ptr" and an
-    integer — each of the three is a thing the language will have to say
-    before anything can be written with these that could not be written
-    without them. The one answer given in advance is that none of them will
-    be null: a "ptr" admits no absent address, as a reference admits none.
+  - "ptr T" is a raw pointer, "addr x" makes one and "deref p" reads it back,
+    and all three are section 3's. Settled as far as the grammar goes: "ptr"
+    is a type and not a third <ref_op>, "addr" and "deref" are <unary_op>s and
+    not sigils, and none of them takes a lifetime.
+
+    "deref" settles the first of the three things this entry used to say were
+    open. It is a *place* and not merely a value — it may be written as well
+    as read, which is what section 4 already assumed when it named "a read or
+    a write through the ptr an addr gave back" among the three things an
+    "unsafe" answers for. So "addr" and "deref" are a pair: one turns a place
+    into an address and the other turns an address back into a place, and
+    neither may be written without the word.
+
+    Two of the three are still open. There is no spelling for the arithmetic C
+    does on a pointer, and none for the cast between a "ptr" and an integer;
+    each is a thing the language will have to say before a container can be
+    written that manages its own room. The one answer given in advance is that
+    none of them will be null: a "ptr" admits no absent address, as a
+    reference admits none.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it

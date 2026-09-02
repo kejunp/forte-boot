@@ -282,3 +282,58 @@ fn a_call_between_them_keeps_the_first_write_only_if_it_could_read_it() {
         kinds(&shut.bodies[0])
     );
 }
+
+// ---- Reading through a pointer ----------------------------------------------
+
+// A read, a write to the same address, and a read again. What the second read
+// answers with must be what the write put there -- not what the first read
+// found.
+//
+// The count of loads is not the property: forwarding the *stored* value to the
+// later read is exactly what this pass is for and is right. What would be
+// wrong is answering with the value from before the store, and that is what
+// `deref` lowered as a `Unary` did -- `share` folded the two reads into one
+// because an operator over the same operand gives the same answer twice, which
+// is true of `-x` and false of what is at an address.
+#[test]
+fn a_write_through_a_pointer_is_not_read_past() {
+    let (p, _) = compiled(
+        "fn f(p: ptr i64, by: i64): i64 {\n\
+         \x20   unsafe deref p = deref p + by\n\
+         \x20   unsafe let out = deref p\n    out\n}\n",
+    );
+    let body = &p.bodies[0];
+    let store = find(body, |k| matches!(k, SIRInstKind::Store { .. }));
+    let SIRInstKind::Store { value: written, .. } = store.kind else { unreachable!() };
+    let load = find(body, |k| matches!(k, SIRInstKind::Load { .. }));
+
+    let back = body
+        .blocks
+        .iter()
+        .find_map(|b| match b.term {
+            SIRTerm::Return(held) => held,
+            _ => None,
+        })
+        .expect("it answers with something");
+
+    assert_eq!(back, written, "it answers with something other than what it wrote");
+    assert_ne!(
+        Some(back),
+        load.def,
+        "it answers with what was there before the write: {:#?}",
+        kinds(body)
+    );
+}
+
+// And the other way: two reads with nothing between them are one read, which
+// is what the pass is for and what makes the case above worth asserting.
+#[test]
+fn two_reads_with_nothing_between_them_are_one() {
+    let (p, _) = compiled(
+        "fn f(p: ptr i64): i64 {\n\
+         \x20   unsafe let a = deref p\n\
+         \x20   unsafe let b = deref p\n    a + b\n}\n",
+    );
+    let body = &p.bodies[0];
+    assert_eq!(count(body, |k| matches!(k, SIRInstKind::Load { .. })), 1, "{:#?}", kinds(body));
+}

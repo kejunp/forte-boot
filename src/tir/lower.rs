@@ -777,11 +777,18 @@ impl<'a> Lowerer<'a> {
             },
 
             ASTNodeKind::Unary { op, operand } => {
-                if op == ASTUnaryOp::Addr && self.guarded == 0 {
+                // The two that reach outside what the checker answers for.
+                // `addr` makes an address the checker stopped following, and
+                // `deref` reads one back -- and of the two this is the one
+                // that can fault, so if either wants a guard both do.
+                if matches!(op, ASTUnaryOp::Addr | ASTUnaryOp::Deref) && self.guarded == 0 {
+                    let (what, said) = match op {
+                        ASTUnaryOp::Addr => ("`addr` needs an `unsafe`", "this makes a pointer"),
+                        _ => ("`deref` needs an `unsafe`", "this reads through a pointer"),
+                    };
                     self.errors.push(
-                        Diagnostic::error("`addr` needs an `unsafe`".to_string(),
-                                          self.span(id))
-                            .with_label("this makes a pointer")
+                        Diagnostic::error(what.to_string(), self.span(id))
+                            .with_label(said)
                             .with_note("write `unsafe` in front of the statement it is in"),
                     );
                 }
@@ -1007,6 +1014,7 @@ fn unary_op(op: ASTUnaryOp) -> TIRUnaryOp {
         ASTUnaryOp::Neg => TIRUnaryOp::Neg,
         ASTUnaryOp::Ref(r) => TIRUnaryOp::Ref(ref_op(r)),
         ASTUnaryOp::Addr => TIRUnaryOp::Addr,
+        ASTUnaryOp::Deref => TIRUnaryOp::Deref,
     }
 }
 

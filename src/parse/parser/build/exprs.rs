@@ -272,6 +272,8 @@ impl Parser {
             }
             // <unary_op> -> addr
             392 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Addr)), c[0]),
+            // <unary_op> -> deref
+            393 => self.at(ASTNodeKind::Mark(ASTMark::Unary(ASTUnaryOp::Deref)), c[0]),
 
             // ---- Postfix -------------------------------------------------
             // Each suffix was built around a HOLE; this is where it is given
@@ -399,7 +401,7 @@ impl Parser {
 
             // ---- Values --------------------------------------------------
             // <value_expr> -> <assignment> | <closure_expr> | <block_expr>
-            405 | 406 | 407 => self.pass(c[0]),
+            406 | 407 | 408 => self.pass(c[0]),
 
             // ---- Names ---------------------------------------------------
             // A segment is a name whatever spelled it, so a path stays a list of

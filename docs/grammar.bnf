@@ -573,11 +573,13 @@
 
 # "addr" is here and not among the <ref_op>s: what it makes is an address and
 # not a reference, and it is the only one of the four that a safe statement may
-# not write.
+# not write. "deref" is its opposite and is the fifth for the same reason: it
+# reads through an address, which is the one thing a reference never needs.
 <unary_op>              ::= "!"
                           | "-"
                           | <ref_op>
                           | "addr"
+                          | "deref"
 
 <postfix>               ::= <primary>
                           | <postfix> <postfix_op>

@@ -307,6 +307,7 @@ pub(super) fn keyword_of(word: &str) -> Option<TokType> {
         "move" => TokType::Move,
         "once" => TokType::Once,
         "addr" => TokType::Addr,
+        "deref" => TokType::Deref,
 
         // Literals
         "true" => TokType::True,

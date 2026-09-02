@@ -237,3 +237,37 @@ fn an_array_suffix_binds_inside_a_fn_types_return() {
     // `b` takes an array of fns.
     assert!(matches!(&ttir.types[of("b")], Ty::Array { .. }));
 }
+
+// ---- Reading through a pointer ----------------------------------------------
+
+// `addr x` makes an address and `deref p` reads one back. The two are a pair
+// and neither has anything to do with a reference: a reference already stands
+// for the place it refers to, so there is nothing there to dereference (§3).
+
+#[test]
+fn deref_of_a_pointer_is_what_it_points_at() {
+    clean("fn f(p: ptr i32): i32 {\n    unsafe let v = deref p\n    v\n}\n");
+}
+
+#[test]
+fn deref_of_anything_else_is_refused() {
+    let out = refused("fn f(n: i32): i32 {\n    unsafe let v = deref n\n    v\n}\n");
+    assert!(out.contains("not a pointer"), "{}", out);
+    let out = refused("fn f(r: &i32): i32 {\n    unsafe let v = deref r\n    v\n}\n");
+    assert!(out.contains("not a pointer"), "a reference is not one: {}", out);
+}
+
+// What it reads is the pointer's own type and not something near it.
+#[test]
+fn deref_carries_the_type_through() {
+    let out = refused("fn f(p: ptr i32): i64 {\n    unsafe let v = deref p\n    v\n}\n");
+    assert!(!out.is_empty(), "an i32 read out of a `ptr i32` is not an i64");
+    clean("fn f(p: ptr i64): i64 {\n    unsafe let v = deref p\n    v\n}\n");
+}
+
+// It is a place, so it may be written as well as read -- which is the whole of
+// what a pointer is worth having for.
+#[test]
+fn deref_is_a_place_and_may_be_assigned_to() {
+    clean("fn f(p: ptr i32, v: i32) {\n    unsafe deref p = v\n}\n");
+}

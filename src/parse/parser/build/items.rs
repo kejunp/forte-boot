@@ -73,15 +73,15 @@ impl Parser {
 
             // ---- ASTVisibility ----------------------------------------------
             // <visibility> -> pub
-            418 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Pub)), c[0]),
+            419 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Pub)), c[0]),
             // <visibility> -> priv
-            419 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Priv)), c[0]),
+            420 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Priv)), c[0]),
             // <visibility> -> pub ( suite )
-            420 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Suite)), c[0]),
+            421 => self.at(ASTNodeKind::Mark(ASTMark::Vis(ASTVisibility::Suite)), c[0]),
             // <visibility_opt> -> ε
-            421 => self.here(ASTNodeKind::Empty),
+            422 => self.here(ASTNodeKind::Empty),
             // <visibility_opt> -> <visibility>
-            422 => self.pass(c[0]),
+            423 => self.pass(c[0]),
 
             // ---- Bindings ------------------------------------------------
             // <binding_name> -> IDENTIFIER
@@ -275,32 +275,32 @@ impl Parser {
 
             // ---- where ---------------------------------------------------
             // <where_clause_opt> -> ε
-            423 => self.here(ASTNodeKind::List(Vec::new())),
+            424 => self.here(ASTNodeKind::List(Vec::new())),
             // <where_clause_opt> -> where <where_pred_list>
-            424 => self.pass(c[1]),
+            425 => self.pass(c[1]),
             // <where_pred> -> <where_subject> : <type_bounds>
-            425 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
+            426 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
             // A `<where_subject>` is a `<type>` with one branch left out, and
             // what it builds is a type: the branch it leaves out is a grammar's
             // trouble with a colon and nothing this tree has to keep.
             // <where_subject> -> <ref_op> <lifetime_opt> <where_subject>
-            429 => {
+            430 => {
                 let op = ref_of(self.mark(c[0]));
                 let life = self.opt(c[1]);
                 self.at(ASTNodeKind::RefType { op, life, inner: c[2] }, c[0])
             }
             // <where_subject> -> ptr <where_subject>
-            430 => self.at(ASTNodeKind::PtrType(c[1]), c[0]),
+            431 => self.at(ASTNodeKind::PtrType(c[1]), c[0]),
             // <where_subject> -> <base_type> <array_suffix_list>
-            431 => self.fold_suffixes(c[0], c[1]),
+            432 => self.fold_suffixes(c[0], c[1]),
             // <where_pred> -> <lifetime> : <type_bounds>
             // The same node: a lifetime is what `ty` holds, and which of the
             // two was written is the node it points at.
-            426 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
+            427 => self.at(ASTNodeKind::WherePred { ty: c[0], bounds: self.list(c[2]) }, c[0]),
             // <where_pred_list> -> <where_pred>
-            427 => self.one(c[0]),
+            428 => self.one(c[0]),
             // <where_pred_list> -> <where_pred_list> , <where_pred>
-            428 => self.grew(c[0], c[2]),
+            429 => self.grew(c[0], c[2]),
 
             // ---- Structs -------------------------------------------------
             // <struct_decl> -> struct IDENTIFIER <generic_params_opt> { <field_decl_list_opt> } <semi_opt>
@@ -566,9 +566,9 @@ impl Parser {
 
             // ---- Variables -----------------------------------------------
             // <var_decl> -> <var_head> ;
-            408 => self.pass(c[0]),
+            409 => self.pass(c[0]),
             // <var_head> -> <var_intro> <gc_opt> <binding_name> <type_annotation_opt> <initializer_opt>
-            409 => {
+            410 => {
                 let intro = intro_of(self.mark(c[0]));
                 // The word itself is spent here: what is left of it is the flag,
                 // and where it may stand is `tir::lower`'s to say.
@@ -587,9 +587,9 @@ impl Parser {
                 )
             }
             // <var_intro> -> let
-            410 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Let)), c[0]),
+            411 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Let)), c[0]),
             // <var_intro> -> var
-            411 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Var)), c[0]),
+            412 => self.at(ASTNodeKind::Mark(ASTMark::Intro(ASTVariableIntro::Var)), c[0]),
 
             // ---- gc ------------------------------------------------------
             // Read by `<var_head>` above through `opt`, which is why the word
@@ -610,12 +610,12 @@ impl Parser {
             // ---- What a `;` may be left off ------------------------------
             // <unterminated_decl> -> <var_head> | <const_head> | <type_head>
             //                     |  <import_head> | <fn_sig>
-            395 | 396 | 397 | 398 | 399 => self.pass(c[0]),
+            396 | 397 | 398 | 399 | 400 => self.pass(c[0]),
             // <unterminated_stmt> -> <expression> | <var_head> | <const_head>
             //                     |  <type_head>
-            400 | 401 | 402 | 403 => self.pass(c[0]),
+            401 | 402 | 403 | 404 => self.pass(c[0]),
             // <unterminated_stmt> -> unsafe <unterminated_stmt>
-            404 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            405 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

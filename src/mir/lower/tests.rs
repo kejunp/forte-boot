@@ -561,3 +561,42 @@ fn indexing_an_array_reads_nothing_first() {
         kinds
     );
 }
+
+// ---- Reading and writing through a pointer -----------------------------------
+
+// `deref p` is a read out of memory and has to be one all the way down.
+//
+// It began as a `Unary`, which type-checked and ran and was wrong the moment
+// anything optimised it: `sir::opt::share` folds two identical unary
+// instructions into one, because an operator over the same operand gives the
+// same answer twice. That is true of `-x` and false of what is at an address.
+// So the shape is asserted here rather than the behaviour, because the
+// behaviour was right until a pass looked at it.
+#[test]
+fn reading_through_a_pointer_is_a_load() {
+    let p = lowered("fn f(p: ptr i32): i32 {\n    unsafe let v = deref p\n    v\n}\n");
+    assert!(
+        has(&p, "1f", |k| matches!(k, MIRInstKind::Load { .. })),
+        "{:#?}",
+        held(&p, "1f")
+    );
+}
+
+// And writing through one is a store to what it holds -- not to a slot holding
+// it, which is the same mistake the write side of a place made everywhere
+// before `sir::lower::base_of`.
+#[test]
+fn writing_through_a_pointer_is_a_store_to_what_it_holds() {
+    let p = lowered("fn f(p: ptr i32, v: i32) {\n    unsafe deref p = v\n}\n");
+    let kinds = held(&p, "1f");
+    assert!(
+        kinds.iter().any(|k| matches!(k, MIRInstKind::Store { .. })),
+        "{:#?}",
+        kinds
+    );
+    assert!(
+        !kinds.iter().any(|k| matches!(k, MIRInstKind::Frame(_))),
+        "the value went into the frame instead of through the pointer: {:#?}",
+        kinds
+    );
+}
