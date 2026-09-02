@@ -1,0 +1,326 @@
+// `TreeMap`: keys to values, in the order the keys are in.
+//
+// What a `HashMap` will not do. A hash sends neighbouring keys to unrelated
+// places on purpose, so a hashed map can say what is under a key and nothing
+// else -- not the smallest key, not the next one up, not the keys between two
+// bounds. Everything this holds it holds in order, and that is the whole of
+// why both exist.
+//
+// It is a *treap*: a search tree by key and a heap by a priority nobody
+// chooses. A plain search tree is a list when the keys arrive sorted, which is
+// how keys usually arrive; giving every node a random priority and keeping the
+// tree a heap on it makes the shape the shape it would have had if the keys
+// had arrived shuffled. That is expected `log n` for a lookup and an insert,
+// with no cases to get wrong -- an AVL tree or a red-black tree buys a
+// worst-case bound with four rotations and a colour rule, and this file would
+// rather be read.
+//
+// ---- Nodes without pointers --------------------------------------------------
+//
+// The nodes are not linked by `ptr` but by *index*: five runs side by side, a
+// node being the same subscript into each, and a child that is not there being
+// -1. Two reasons, and the second is the one that decided it.
+//
+// A node per allocation is a call to the runtime per key, and the runs grow by
+// doubling as `vec.ft` does, so the whole tree costs a handful.
+//
+// And there is no such thing as a pointer to nothing. "A `ptr` admits no
+// absent address, as a reference admits none" (§3), so a `ptr Node` for a
+// child that is not there would be exactly the null the language went out of
+// its way not to have. An index of -1 is not a bad index of that kind; it is
+// the same "not there" `find` below hands back, and nothing dereferences it.
+//
+// ---- What a key has to come with ---------------------------------------------
+//
+// An ordering, handed in when the map is made, for the reason `hashmap.ft`
+// gives at more length: there are no traits reaching this far, and the
+// built-in `<` over a struct compares where the two *are*.
+//
+//     fn less_i64(a: &i64, b: &i64): bool { a < b }
+//     var m: TreeMap<i64, i64> = empty(less_i64)
+//
+// It has to be a strict order: `less(a, b)` and `less(b, a)` both false is how
+// this file reads "the same key", so an ordering that says a key is less than
+// itself makes every key equal to every other.
+
+%symbol("__rt_alloc")
+fn room(bytes: i64): ptr u8
+
+pub struct TreeMap<K, V> {
+    pub keys:  ptr K,
+    pub vals:  ptr V,
+    pub left:  ptr i64,
+    pub right: ptr i64,
+    // The heap's ordering, which is nobody's business outside this file.
+    pub pri:   ptr i64,
+    pub less:  fn(&K, &K): bool,
+    // Where the tree starts, or -1.
+    pub root:  i64,
+    pub len:   i64,
+    pub cap:   i64,
+    // The state of the priorities. A tree with a fixed seed is a tree that
+    // behaves the same way twice, which is what makes a wrong answer here
+    // something that can be looked at again.
+    pub seed:  i64,
+}
+
+pub fn stride<T>(p: ptr T): i64 {
+    unsafe let a = addr p[0] as i64
+    unsafe let b = addr p[1] as i64
+    b - a
+}
+
+pub fn less_i64(a: &i64, b: &i64): bool {
+    a < b
+}
+
+// ---- Making one -------------------------------------------------------------
+
+pub fn empty<K, V>(less: fn(&K, &K): bool): TreeMap<K, V> {
+    unsafe let no_k = 0 as ptr K
+    unsafe let no_v = 0 as ptr V
+    unsafe let no_i = 0 as ptr i64
+    TreeMap {
+        keys:  no_k,
+        vals:  no_v,
+        left:  no_i,
+        right: no_i,
+        pri:   no_i,
+        less:  less,
+        root:  -1,
+        len:   0,
+        cap:   0,
+        seed:  -7046029254386353131,
+    }
+}
+
+pub fn len<K, V>(m: &TreeMap<K, V>): i64 {
+    m.len
+}
+
+pub fn is_empty<K, V>(m: &TreeMap<K, V>): bool {
+    m.len == 0
+}
+
+// ---- Room -------------------------------------------------------------------
+
+// Five runs, grown together, because a node is one subscript into all of them.
+pub fn grow<K, V>(m: *TreeMap<K, V>, want: i64) {
+    if want <= m.cap {
+        return
+    }
+    var cap = 8
+    while cap < want {
+        cap = cap * 2
+    }
+    unsafe let no_k = 0 as ptr K
+    unsafe let no_v = 0 as ptr V
+    unsafe let no_i = 0 as ptr i64
+    let k_bytes = cap * stride(no_k)
+    let v_bytes = cap * stride(no_v)
+    let i_bytes = cap * stride(no_i)
+    unsafe let keys = room(k_bytes) as ptr K
+    unsafe let vals = room(v_bytes) as ptr V
+    unsafe let left = room(i_bytes) as ptr i64
+    unsafe let right = room(i_bytes) as ptr i64
+    unsafe let pri = room(i_bytes) as ptr i64
+
+    // The indices do not change, so this is a copy and not a rebuild -- which
+    // is the other half of what indices bought.
+    var i = 0
+    while i < m.len {
+        unsafe keys[i] = m.keys[i]
+        unsafe vals[i] = m.vals[i]
+        unsafe left[i] = m.left[i]
+        unsafe right[i] = m.right[i]
+        unsafe pri[i] = m.pri[i]
+        i = i + 1
+    }
+    m.keys = keys
+    m.vals = vals
+    m.left = left
+    m.right = right
+    m.pri = pri
+    m.cap = cap
+}
+
+// The next priority. `xorshift64`, which is three shifts and no memory, and
+// which is plenty for deciding the shape of a tree -- nothing here is keeping
+// a secret.
+pub fn roll<K, V>(m: *TreeMap<K, V>): i64 {
+    var x = m.seed
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    m.seed = x
+    x
+}
+
+// ---- Finding ----------------------------------------------------------------
+
+// The node holding the key, or -1. A walk down and no recursion: a lookup is
+// the thing this map does most, and the descent has nothing to do on the way
+// back up.
+pub fn find<K, V>(m: &TreeMap<K, V>, k: &K): i64 {
+    let below = m.less
+    var at = m.root
+    while at >= 0 {
+        unsafe let under = below(k, &m.keys[at])
+        if under {
+            unsafe at = m.left[at]
+        } else {
+            unsafe let over = below(&m.keys[at], k)
+            if over {
+                unsafe at = m.right[at]
+            } else {
+                return at
+            }
+        }
+    }
+    -1
+}
+
+pub fn has<K, V>(m: &TreeMap<K, V>, k: &K): bool {
+    find(m, k) >= 0
+}
+
+pub fn get_or<K, V>(m: &TreeMap<K, V>, k: &K, other: V): V {
+    let at = find(m, k)
+    if at < 0 {
+        return other
+    }
+    unsafe let out = m.vals[at]
+    out
+}
+
+pub fn key_at<K, V>(m: &TreeMap<K, V>, at: i64): K {
+    unsafe let out = m.keys[at]
+    out
+}
+
+pub fn val_at<K, V>(m: &TreeMap<K, V>, at: i64): V {
+    unsafe let out = m.vals[at]
+    out
+}
+
+// ---- Walking in order --------------------------------------------------------
+
+// The smallest key, or -1 for a map with none. All the way left, which is what
+// a search tree means.
+pub fn first<K, V>(m: &TreeMap<K, V>): i64 {
+    var at = m.root
+    if at < 0 {
+        return -1
+    }
+    unsafe var down = m.left[at]
+    while down >= 0 {
+        at = down
+        unsafe down = m.left[at]
+    }
+    at
+}
+
+// And the one after it: the smallest key greater than the key at `at`, or -1.
+//
+// Found by descending again rather than by climbing, there being no parent to
+// climb to. That is a `log n` per step and an `n log n` for the whole walk,
+// where a stack or a parent run would give `n` -- and it is five lines instead
+// of a rotation that has to keep three parents right. A walk over a map is not
+// usually the thing a program does most.
+pub fn next<K, V>(m: &TreeMap<K, V>, at: i64): i64 {
+    if at < 0 {
+        return -1
+    }
+    let below = m.less
+    var best = -1
+    var down = m.root
+    while down >= 0 {
+        unsafe let over = below(&m.keys[at], &m.keys[down])
+        if over {
+            best = down
+            unsafe down = m.left[down]
+        } else {
+            unsafe down = m.right[down]
+        }
+    }
+    best
+}
+
+// ---- Putting things in -------------------------------------------------------
+
+// A rotation, which is the one move a treap makes. `at` and its left child
+// swap places, and the child's right subtree becomes `at`'s left -- which is
+// the arrangement that keeps every key on the correct side of every other. The
+// right-hand version is the mirror.
+pub fn turn_right<K, V>(m: *TreeMap<K, V>, at: i64): i64 {
+    unsafe let up = m.left[at]
+    unsafe m.left[at] = m.right[up]
+    unsafe m.right[up] = at
+    up
+}
+
+pub fn turn_left<K, V>(m: *TreeMap<K, V>, at: i64): i64 {
+    unsafe let up = m.right[at]
+    unsafe m.right[at] = m.left[up]
+    unsafe m.left[up] = at
+    up
+}
+
+// Room for one more node, filled in as a leaf, and its index.
+pub fn leaf<K, V>(m: *TreeMap<K, V>, k: K, v: V): i64 {
+    grow(m, m.len + 1)
+    let at = m.len
+    let p = roll(m)
+    unsafe m.keys[at] = k
+    unsafe m.vals[at] = v
+    unsafe m.left[at] = -1
+    unsafe m.right[at] = -1
+    unsafe m.pri[at] = p
+    m.len = m.len + 1
+    at
+}
+
+// Put the key under `at`'s subtree and hand back what that subtree's root has
+// become, which is how a rotation reaches the node above without a parent
+// link: the caller writes back what it is given.
+//
+// The rotation happens on the way *up*, once the new node is in and its
+// priority can be compared with the one it went under. That is the whole of
+// what keeps the tree a heap.
+pub fn sink<K, V>(m: *TreeMap<K, V>, at: i64, k: K, v: V): i64 {
+    if at < 0 {
+        return leaf(m, k, v)
+    }
+    let below = m.less
+    unsafe let under = below(&k, &m.keys[at])
+    if under {
+        unsafe let made = sink(m, m.left[at], k, v)
+        unsafe m.left[at] = made
+        unsafe let child = m.pri[made]
+        unsafe let here = m.pri[at]
+        if child > here {
+            return turn_right(m, at)
+        }
+        return at
+    }
+    unsafe let over = below(&m.keys[at], &k)
+    if over {
+        unsafe let made = sink(m, m.right[at], k, v)
+        unsafe m.right[at] = made
+        unsafe let child = m.pri[made]
+        unsafe let here = m.pri[at]
+        if child > here {
+            return turn_left(m, at)
+        }
+        return at
+    }
+    // Neither below nor above, so the same key: the value is replaced and the
+    // shape is left alone.
+    unsafe m.vals[at] = v
+    at
+}
+
+pub fn insert<K, V>(m: *TreeMap<K, V>, k: K, v: V) {
+    let made = sink(m, m.root, k, v)
+    m.root = made
+}
