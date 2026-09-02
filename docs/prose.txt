@@ -726,9 +726,21 @@ making one and reaching through one, and "unsafe" is where both go
 A "ptr" is made by "addr" (section 5) and by a cast from another one, and it
 is not reached by anything a reference is reached by: a "&T" stands for the
 place it refers to and is read and written as that place, and a "ptr" is a
-number until an unsafe statement says otherwise. What a read through one is
-spelled, and whether the arithmetic C does on one is written here at all, is
-open (section 8).
+number until an unsafe statement says otherwise. It is reached through by
+"deref p" for the first of its elements and by "p[i]" for any of them, both
+of them places and both of them wanting the word:
+
+    unsafe let first = deref v.at
+    unsafe v.at[i] = x
+
+"p[i]" is the index a run is written with, and it means here what it means
+there: the address steps by the *stride* of the element and not by its size,
+so a three-byte element with a four-byte alignment steps four. That is what
+lets a container manage its own room without a spelling for the arithmetic C
+does on a pointer, which is not written here: the one piece of it a container
+needed was the index, and the index is already the language's. What the
+elements are is what the pointer says, so a "ptr i32" steps four and a "ptr
+T" steps by whatever the "T" of this instantiation turned out to be.
 
 <receiver>. A method borrows its receiver by writing the reference on it:
 "fn norm(&self): f64" reads the value and "fn scale(*self, k: f64)" writes to
@@ -1976,11 +1988,23 @@ answer is not obvious from the rules alone.
     into an address and the other turns an address back into a place, and
     neither may be written without the word.
 
-    Two of the three are still open. There is no spelling for the arithmetic C
-    does on a pointer, and none for the cast between a "ptr" and an integer;
-    each is a thing the language will have to say before a container can be
-    written that manages its own room. The one answer given in advance is that
-    none of them will be null: a "ptr" admits no absent address, as a
+    Indexing settles the second. "p[i]" is a place, under the same "unsafe"
+    and stepping by the same stride an indexed run steps by (section 3), and
+    it is the whole of the pointer arithmetic a container needs: a "Vec" is a
+    "ptr T" and a length, and "v.at[i]" reaches the i'th of them. The general
+    arithmetic — "p + n" as an address rather than a number — is still not
+    written, and now has one caller fewer asking for it.
+
+    The third was answered without being noticed. "p as i64", "n as ptr u8"
+    and "p as ptr i32" all lower to a conversion of the width they are, which
+    is what a cast between a "ptr" and an integer *is* on every machine here,
+    so the entry claiming there was no spelling for it was reading the
+    grammar and not the checker. It is written down now because a claim that
+    something is missing is worth no more than the last time somebody tried
+    it.
+
+    So none of the three is open, and the one answer given in advance still
+    holds: none of them will be null. A "ptr" admits no absent address, as a
     reference admits none.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
