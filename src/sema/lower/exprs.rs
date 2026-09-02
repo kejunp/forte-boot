@@ -563,7 +563,7 @@ impl<'a> Lowerer<'a> {
         }
         for (i, (&want, &got)) in params.iter().zip(args.iter()).enumerate() {
             let found = self.out.exprs[got].ty;
-            if self.types.unify(found, want).is_err() {
+            if self.types.unify(found, want).is_err() && !self.weakens(found, want) {
                 let (found, want) = (self.spell(found), self.spell(want));
                 self.errors.push(
                     Diagnostic::error(
@@ -611,6 +611,28 @@ impl<'a> Lowerer<'a> {
         // declaration's own parameters: the `v` of a `Held<T>` is a `T`. What
         // it is *here* is that with the arguments of this use put in.
         Some((index, self.types.substitute(ty, &args)))
+    }
+
+    // Whether a `*` will do where a `&` was asked for.
+    //
+    // "The left of each is read-only and the right of each is not" (§2): a `*`
+    // is everything a `&` is and a licence besides, so handing one to
+    // something that only reads takes nothing away. Without this a body
+    // holding a `*` could not call anything that reads -- `fn write(p: *P) {
+    // p.a = read(p) + 1 }` was refused -- which is not a rule anybody wrote
+    // down, only one nobody had written the other half of.
+    //
+    // It goes one way and only one. A `&` handed where a `*` is wanted would
+    // be a write licence made out of nothing.
+    pub(super) fn weakens(&mut self, found: TyId, want: TyId) -> bool {
+        let (found, want) = (self.types.get(found).clone(), self.types.get(want).clone());
+        match (found, want) {
+            (
+                Ty::Ref { op: TIRRefOp::Mut, inner: from, .. },
+                Ty::Ref { op: TIRRefOp::Imm, inner: to, .. },
+            ) => self.types.unify(from, to).is_ok(),
+            _ => false,
+        }
     }
 
     // An expression with the references taken off it, which is one read out

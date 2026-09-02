@@ -336,3 +336,29 @@ fn a_reference_and_a_value_are_one_type_under_an_operator() {
 fn a_reference_to_a_reference_is_read_through_twice() {
     clean("fn f(a: &&i64, b: i64): i64 {\n    a + b\n}\n");
 }
+
+// ---- A `*` will do where a `&` is wanted -------------------------------------
+
+// "The left of each is read-only and the right of each is not" (§2): a `*` is
+// everything a `&` is and a licence besides. Without this a body holding a `*`
+// could not call anything that only reads, which is not a rule anybody wrote
+// down.
+#[test]
+fn a_mutable_reference_may_be_handed_to_something_that_only_reads() {
+    clean(
+        "struct P {\n    pub a: i64,\n}\n\
+         fn read(p: &P): i64 {\n    p.a\n}\n\
+         fn write(p: *P) {\n    p.a = read(p) + 1\n}\n",
+    );
+}
+
+// And not the other way, which would be a write licence made out of nothing.
+#[test]
+fn a_shared_reference_may_not_be_handed_to_something_that_writes() {
+    let out = refused(
+        "struct P {\n    pub a: i64,\n}\n\
+         fn write(p: *P) {\n    p.a = 1\n}\n\
+         fn read(p: &P) {\n    write(p)\n}\n",
+    );
+    assert!(out.contains("and it takes"), "{}", out);
+}

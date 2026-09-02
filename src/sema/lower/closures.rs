@@ -138,7 +138,7 @@ impl<'a> Lowerer<'a> {
         } else {
             for (i, (&want, &got)) in wanted.iter().zip(made.iter()).enumerate() {
                 let found = self.out.exprs[got].ty;
-                if self.types.unify(found, want).is_err() {
+                if self.types.unify(found, want).is_err() && !self.weakens(found, want) {
                     let (found, want) = (self.spell(found), self.spell(want));
                     self.errors.push(
                         Diagnostic::error(
