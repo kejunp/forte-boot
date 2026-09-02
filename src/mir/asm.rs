@@ -26,6 +26,10 @@
 // list of registers and answers in one. So `Body` below works all of that out
 // once, and what a machine's own file does is write it down.
 //
+// An answer too big for a register is a register too: `mir::lower` has already
+// turned it into a first argument holding the room to write it in, so nothing
+// here has to know that some answers are bigger than others.
+//
 // **The prologue and the epilogue arrive here.** `mir::regalloc` says it does
 // not write them and says why: they are instructions around a body rather than
 // decisions about it, and they belong with whatever turns a listing into an

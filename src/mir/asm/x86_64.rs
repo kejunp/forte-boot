@@ -538,8 +538,26 @@ fn inst_of(
         // out of the way first. It is one instruction whatever the size, which
         // is what makes it the right answer for a structure of any width.
         MIRInstKind::Copy { to, from, bytes } => {
-            let a = into(out, b, *from, sc0(Class::Int));
-            let c = into(out, b, *to, sc1(Class::Int));
+            // Both addresses into the scratch registers *first*, and
+            // unconditionally.
+            //
+            // The three registers the string instruction insists on are three
+            // the allocator hands out, so either address may already be
+            // sitting in one of them -- and `movq %r12, %rdi` to set the
+            // destination is how the source is lost when the source was
+            // `%rdi`. Reading both somewhere the instruction does not want is
+            // what makes the order safe whatever the allocator did.
+            let held = named(sc0(Class::Int), 8);
+            let a = read_at(out, b, *from, sc0(Class::Int), 8);
+            if a != held {
+                let _ = writeln!(out, "\tmovq\t{}, {}", a, held);
+            }
+            let one = named(sc1(Class::Int), 8);
+            let c = read_at(out, b, *to, sc1(Class::Int), 8);
+            if c != one {
+                let _ = writeln!(out, "\tmovq\t{}, {}", c, one);
+            }
+            let (a, c) = (held, one);
             let _ = writeln!(out, "\tpushq\t%rdi");
             let _ = writeln!(out, "\tpushq\t%rsi");
             let _ = writeln!(out, "\tpushq\t%rcx");

@@ -21,6 +21,14 @@
 // and the two never have to be told apart at the point of use because the
 // register always holds the same kind of thing for a given type.
 //
+// **An answer too big for a register is written where the caller says.** A
+// value held by its address is held in somebody's frame, and a body that
+// answered with one of its own would be answering with an address that dies at
+// its epilogue -- which is what it did. So a body that answers with one takes
+// the room for it as a first parameter in front of the written ones, copies
+// its answer there and hands that address back, and a call that wants one
+// makes a slot and passes it. `sret` on the builder below is the whole of it.
+//
 // **What the language has and a machine does not becomes a call.** A map, a
 // set, a closure's captures, a release at the end of a scope. `mir::runtime`
 // names them and this writes the calls; nothing else in the compiler mentions
@@ -125,6 +133,18 @@ struct Builder {
     // `Frame`" through the three instructions that move an address about --
     // and every one of those goes through `making`.
     on_frame: HashSet<MIRRegId>,
+    // Where an answer too big for a register is written.
+    //
+    // A value held by its address is held in *somebody's* frame, and a body
+    // that answered with one of its own would be answering with an address
+    // that dies at the epilogue. So a caller that wants one hands over room
+    // for it, as a first argument in front of the written ones, and the body
+    // copies its answer there and hands the same address back.
+    //
+    // That is the convention every one of the three machines uses and calls by
+    // a different name. `None` for a body whose answer fits a register, which
+    // is nearly all of them.
+    sret:     Option<MIRRegId>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -190,6 +210,25 @@ impl<'a> Lowerer<'a> {
         self.b.at = (0..source.values.len()).collect();
 
         self.b.params = source.params.iter().map(|&value| self.of(value)).collect();
+
+        // A body whose answer is held by its address takes the room for it in
+        // front of everything else. Which bodies those are is read off the
+        // terminators rather than looked up: what a body answers with is the
+        // type of what it returns, and it is the same at every return.
+        self.b.sret = None;
+        let answers = source.blocks.iter().find_map(|b| match b.term {
+            SIRTerm::Return(Some(value)) => Some(value),
+            _ => None,
+        });
+        if let Some(value) = answers {
+            let ty = self.ty_of(value);
+            if self.indirect(ty) {
+                let (line, col) = (source.blocks[source.entry].line, 1);
+                let room = self.temp(line, col);
+                self.b.params.insert(0, room);
+                self.b.sret = Some(room);
+            }
+        }
 
         // What each value naming a declaration stands for -- see the field.
         for (bl, block) in source.blocks.iter().enumerate() {
@@ -287,7 +326,21 @@ impl<'a> Lowerer<'a> {
             SIRTerm::Branch { cond, then, els } => {
                 MIRTerm::Branch { cond: self.of(*cond), then: *then, els: *els }
             }
-            SIRTerm::Return(held) => MIRTerm::Return(held.map(|value| self.of(value))),
+            // The answer copied into the caller's room, and that room handed
+            // back -- which is what the machine's own convention says the
+            // return register holds for a value of this size.
+            SIRTerm::Return(Some(value)) => match self.b.sret {
+                Some(room) => {
+                    let ty = self.ty_of(*value);
+                    let bytes = self.bytes_of(ty).max(1);
+                    let from = self.of(*value);
+                    let (line, col) = (source.line, source.col);
+                    self.effect(MIRInstKind::Copy { to: room, from, bytes }, line, col);
+                    MIRTerm::Return(Some(room))
+                }
+                None => MIRTerm::Return(Some(self.of(*value))),
+            },
+            SIRTerm::Return(None) => MIRTerm::Return(None),
             SIRTerm::Unreachable => MIRTerm::Unreachable,
         };
     }

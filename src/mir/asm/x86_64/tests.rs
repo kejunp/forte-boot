@@ -183,3 +183,56 @@ fn what_comes_out_assembles() {
         }
     }
 }
+
+// ---- The three registers a copy insists on -----------------------------------
+
+// `rep movsb` wants its two addresses in `rdi` and `rsi` and its count in
+// `rcx`, and all three are registers the allocator hands out -- so either
+// address may already be sitting in one of them. Setting the destination first
+// then loses the source when the source *was* the destination's register, and
+// what comes out is a copy of the destination onto itself.
+//
+// It is asserted as a shape because it is a shape: both addresses are read
+// into the scratch registers before any of the three is touched, and the two
+// `movq`s that fill `rdi` and `rsi` read from nowhere else.
+#[test]
+fn a_copy_reads_both_addresses_before_it_writes_either() {
+    let text = shown(
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n",
+    );
+    let held: Vec<&str> = text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| line.starts_with("movq") && (line.ends_with("%rdi") || line.ends_with("%rsi")))
+        .collect();
+    assert!(!held.is_empty(), "nothing sets up a copy: {}", text);
+    for line in held {
+        let from = line.split_whitespace().nth(1).unwrap_or("").trim_end_matches(',');
+        assert!(
+            from == "%r10" || from == "%r11",
+            "a copy reads its address out of {}, which the allocator may have \
+             given to something: {}",
+            from,
+            line
+        );
+    }
+}
+
+// And what comes out still assembles, which is the only reader that knows.
+#[test]
+fn a_body_that_answers_with_an_aggregate_assembles() {
+    let held = [
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n",
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n\
+         fn f(n: i64): i64 {\n    let p = mk(n)\n    p.a + p.b\n}\n",
+    ];
+    for source in held {
+        let text = render(&lowered(source), X86_64).0;
+        if let Some(said) = tried(&text, "x86_64-linux-gnu") {
+            panic!("{}\n---- from ----\n{}", said, source);
+        }
+    }
+}

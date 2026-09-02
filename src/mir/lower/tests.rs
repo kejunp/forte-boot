@@ -600,3 +600,72 @@ fn writing_through_a_pointer_is_a_store_to_what_it_holds() {
         kinds
     );
 }
+
+// ---- Answering with something too big for a register -------------------------
+
+// A value held by its address is held in somebody's frame, and a body that
+// answered with one of its own would answer with an address that dies at the
+// epilogue. It did: `ret` handed back a `lea` of a local slot, and the caller
+// read whatever was there next.
+//
+// So the room is the caller's, handed over in front of the written arguments.
+#[test]
+fn a_body_that_answers_with_an_aggregate_takes_the_room_for_it() {
+    let p = lowered(
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n",
+    );
+    let body = body_of(&p, "2mk");
+    assert_eq!(body.params.len(), 2, "one written parameter and the room");
+}
+
+// And it copies its answer there rather than handing back where it built it.
+#[test]
+fn the_answer_is_copied_into_the_room_the_caller_gave() {
+    let p = lowered(
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n",
+    );
+    let body = body_of(&p, "2mk");
+    let kinds = kinds(body);
+    assert!(
+        kinds.iter().any(|k| matches!(k, MIRInstKind::Copy { .. })),
+        "nothing is copied out: {:#?}",
+        kinds
+    );
+    // What it answers with is the room, which is its first parameter.
+    let room = body.params[0];
+    let back = body.blocks.iter().find_map(|b| match b.term {
+        MIRTerm::Return(held) => held,
+        _ => None,
+    });
+    assert_eq!(back, Some(room), "it answers with something that is not the room");
+}
+
+// A body whose answer fits a register takes nothing extra, or every call in a
+// program would carry an argument for nothing.
+#[test]
+fn a_body_that_answers_with_a_number_takes_no_room() {
+    let p = lowered("fn f(n: i64): i64 { n }\n");
+    assert_eq!(body_of(&p, "1f").params.len(), 1);
+}
+
+// The caller's side: it makes the room and hands it over.
+#[test]
+fn a_call_that_answers_with_an_aggregate_hands_over_room() {
+    let p = lowered(
+        "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
+         fn mk(n: i64): P {\n    P { a: n, b: n }\n}\n\
+         fn f(n: i64): i64 {\n    let p = mk(n)\n    p.a\n}\n",
+    );
+    let body = body_of(&p, "1f");
+    let held: Vec<usize> = kinds(body)
+        .iter()
+        .filter_map(|k| match k {
+            MIRInstKind::Call { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held, vec![2], "the room and the written argument");
+    assert!(!body.frame.is_empty(), "the room is a slot of the caller's frame");
+}

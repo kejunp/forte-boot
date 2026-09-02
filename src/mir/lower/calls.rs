@@ -60,6 +60,7 @@ impl<'a> Lowerer<'a> {
         match &inst.kind {
             SIRInstKind::Call { callee, args } => {
                 let (to, args) = self.callee(*callee, args, line, col);
+                let args = self.answering(value, args, line, col);
                 self.making(def, MIRInstKind::Call { to, args }, line, col);
             }
 
@@ -71,6 +72,7 @@ impl<'a> Lowerer<'a> {
                 let name = self.symbol_at(at, i).unwrap_or_default();
                 let mut held = vec![self.of(*recv)];
                 held.extend(args.iter().map(|&arg| self.of(arg)));
+                let held = self.answering(value, held, line, col);
                 self.making(
                     def,
                     MIRInstKind::Call { to: MIRCallee::Symbol(name), args: held },
@@ -167,6 +169,38 @@ impl<'a> Lowerer<'a> {
 
             _ => self.making(def, MIRInstKind::Undef, line, col),
         }
+    }
+
+    // Room for an answer too big for a register, handed over in front of the
+    // written arguments.
+    //
+    // The other half of `Lowerer`'s `sret`: a body that answers with a value
+    // held by its address writes it where the caller says and hands that
+    // address back, so the caller has to say -- and the room has to be the
+    // caller's, because the callee's dies at its epilogue.
+    //
+    // Which calls those are is the same question asked from the other side:
+    // what the call *answers with* is the type of the value it makes, so a
+    // call whose answer is `indirect` is a call to a body whose `Return` was.
+    // Nothing has to look the callee up.
+    fn answering(
+        &mut self,
+        value: SIRValueId,
+        args: Vec<MIRRegId>,
+        line: usize,
+        col: usize,
+    ) -> Vec<MIRRegId> {
+        let ty = self.ty_of(value);
+        if !self.indirect(ty) {
+            return args;
+        }
+        let held = self.laid(ty);
+        let name = format!("${}", self.frame_len());
+        let slot = self.slot(name, held.bytes.max(1), held.align.max(1));
+        let room = self.push(MIRInstKind::Frame(slot), line, col);
+        let mut out = vec![room];
+        out.extend(args);
+        out
     }
 
     // ---- What a call names -------------------------------------------------
