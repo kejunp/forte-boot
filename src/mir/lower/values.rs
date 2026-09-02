@@ -56,7 +56,20 @@ impl<'a> Lowerer<'a> {
                     self.paired(def, name, line, col);
                     return;
                 }
-                self.making(def, MIRInstKind::Symbol(name), line, col);
+                // Anything else named as a value is a `const` or a global, and
+                // what stands under the name is where it *is*. So the value is
+                // a read through it, the same two instructions a field of a
+                // structure is (`places::Field`) and for the same reason.
+                //
+                // It used to be the symbol itself, so `const N: i64 = 5` read
+                // as the address of `N` -- every const and every global in the
+                // language, at every use. What kept it from being noticed is
+                // that a const is usually folded before this pass sees it;
+                // what does not fold is one whose value is wanted at run time,
+                // which is any const stored into memory a byte at a time.
+                let held = self.push(MIRInstKind::Symbol(name), line, col);
+                let ty = self.ty_of(value);
+                self.take(def, held, ty, line, col);
             }
 
             // `self` is the first parameter and has been since the signature

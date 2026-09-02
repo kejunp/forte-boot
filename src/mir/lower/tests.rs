@@ -698,6 +698,27 @@ fn a_fn_named_as_a_value_is_built_as_the_pair_a_fn_value_is() {
     assert!(stores >= 4, "the two arms write two words each: {:#?}", kinds);
 }
 
+// ---- A name that stands for somewhere --------------------------------------
+
+// A global named as a value is a read *through* the symbol and not the symbol.
+// It used to be the symbol, so every global in the language read as its own
+// address. (A `const` no longer reaches here at all -- `sema` puts its value
+// where the name was, which is what a compile-time constant is.)
+#[test]
+fn a_global_named_as_a_value_is_read_through() {
+    let p = lowered("var G: i64 = 7\nfn f(): i64 {\n    G\n}\n");
+    let kinds = held(&p, "1f");
+    let at = kinds
+        .iter()
+        .position(|k| matches!(k, MIRInstKind::Symbol(_)))
+        .expect("the global's name");
+    assert!(
+        kinds[at + 1..].iter().any(|k| matches!(k, MIRInstKind::Load { .. })),
+        "the address was handed back instead of what is at it: {:#?}",
+        kinds
+    );
+}
+
 // ---- Answering with something too big for a register -------------------------
 
 // A value held by its address is held in somebody's frame, and a body that
