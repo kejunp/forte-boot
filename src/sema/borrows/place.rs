@@ -99,6 +99,17 @@ impl<'a> Checker<'a> {
         let place = self.place(base)?;
         match &self.p.types[self.p.exprs[base].ty] {
             Ty::Ref { .. } => Some(place.then(Step::Deref)),
+            // Not a place this pass has anything to say about. What is at the
+            // far end of a raw pointer is not owned by this frame and is not
+            // owned by anything the checker can see -- §8 calls a `ptr` "what
+            // the checker stopped answering for", and this is where it stops.
+            //
+            // Saying `None` rather than putting a step in is what keeps the
+            // rules above from firing on it: `p[i]` is not an element of an
+            // array this frame owns, so taking it leaves no hole, and the
+            // `unsafe` the index already needed is where the answer for it
+            // was given.
+            Ty::Ptr(_) => None,
             _ => Some(place),
         }
     }

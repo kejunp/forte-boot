@@ -855,6 +855,26 @@ fn an_element_is_not_ours_to_give_away_either() {
     assert_eq!(s.errors(body), "");
 }
 
+// But an element of a *pointer* is not, because the array it would leave a
+// hole in is not one this frame owns -- or one anybody has told the checker
+// about. "What is at the far end of a pointer is exactly what the checker
+// stopped answering for" (section 8), and the `unsafe` the index already
+// wanted is where that answer was given instead.
+#[test]
+fn an_element_of_a_pointer_is_not_an_element_of_an_array() {
+    let mut s = Suite::new();
+    let buf = s.strukt("Buf");
+    let to_buf = s.ty(Ty::Ptr(buf));
+    let p = s.slot("p", to_buf, TIRIntro::Var);
+
+    let base = s.local(p);
+    let i = s.int(0);
+    let one = s.expr(TTIRExprKind::Index { base, index: i }, buf);
+    let hand = s.call(vec![one]);
+    let body = s.block(vec![], Some(hand));
+    assert_eq!(s.errors(body), "");
+}
+
 // ---- Closures -------------------------------------------------------------
 
 // "A name the body uses but did not declare is captured, and how is worked out
