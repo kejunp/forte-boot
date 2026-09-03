@@ -56,8 +56,15 @@ pub struct TreeMap<K, V> {
     pub less:  fn(&K, &K): bool,
     // Where the tree starts, or -1.
     pub root:  i64,
+    // How many are in it. Not how many indices have been handed out, which is
+    // `used`: a removal gives an index back and the next thing put in takes it
+    // again, so the two part company the first time anything is taken out.
     pub len:   i64,
+    pub used:  i64,
     pub cap:   i64,
+    // The head of the chain of indices nothing is using, or -1. The chain runs
+    // through the `left` run, a dead node having no left child to keep there.
+    pub free:  i64,
     // The state of the priorities. A tree with a fixed seed is a tree that
     // behaves the same way twice, which is what makes a wrong answer here
     // something that can be looked at again.
@@ -89,7 +96,9 @@ pub fn empty<K, V>(less: fn(&K, &K): bool): TreeMap<K, V> {
         less:  less,
         root:  -1,
         len:   0,
+        used:  0,
         cap:   0,
+        free:  -1,
         seed:  -7046029254386353131,
     }
 }
@@ -128,7 +137,7 @@ pub fn grow<K, V>(m: *TreeMap<K, V>, want: i64) {
     // The indices do not change, so this is a copy and not a rebuild -- which
     // is the other half of what indices bought.
     var i = 0
-    while i < m.len {
+    while i < m.used {
         unsafe keys[i] = m.keys[i]
         unsafe vals[i] = m.vals[i]
         unsafe left[i] = m.left[i]
@@ -220,7 +229,21 @@ pub fn first<K, V>(m: &TreeMap<K, V>): i64 {
     at
 }
 
-// And the one after it: the smallest key greater than the key at `at`, or -1.
+// And the largest, which a `HashMap` cannot answer at all.
+pub fn last<K, V>(m: &TreeMap<K, V>): i64 {
+    var at = m.root
+    if at < 0 {
+        return -1
+    }
+    unsafe var down = m.right[at]
+    while down >= 0 {
+        at = down
+        unsafe down = m.right[at]
+    }
+    at
+}
+
+// And the one after `at`: the smallest key greater than the key there, or -1.
 //
 // Found by descending again rather than by climbing, there being no parent to
 // climb to. That is a `log n` per step and an `n log n` for the whole walk,
@@ -268,8 +291,17 @@ pub fn turn_left<K, V>(m: *TreeMap<K, V>, at: i64): i64 {
 
 // Room for one more node, filled in as a leaf, and its index.
 pub fn leaf<K, V>(m: *TreeMap<K, V>, k: K, v: V): i64 {
-    grow(m, m.len + 1)
-    let at = m.len
+    // An index nothing is using, if a removal left one. The chain is walked
+    // from the front, so the most recently freed comes back first -- which is
+    // the one most likely to still be somewhere the machine can reach.
+    var at = m.free
+    if at >= 0 {
+        unsafe m.free = m.left[at]
+    } else {
+        grow(m, m.used + 1)
+        at = m.used
+        m.used = m.used + 1
+    }
     let p = roll(m)
     unsafe m.keys[at] = k
     unsafe m.vals[at] = v
@@ -278,6 +310,15 @@ pub fn leaf<K, V>(m: *TreeMap<K, V>, k: K, v: V): i64 {
     unsafe m.pri[at] = p
     m.len = m.len + 1
     at
+}
+
+// And the other way: an index nothing points at any more goes on the chain.
+// The key and the value are left where they are rather than cleared, there
+// being nothing to clear them to and nothing that reads a place off the chain.
+pub fn release<K, V>(m: *TreeMap<K, V>, at: i64) {
+    unsafe m.left[at] = m.free
+    m.free = at
+    m.len = m.len - 1
 }
 
 // Put the key under `at`'s subtree and hand back what that subtree's root has
@@ -323,4 +364,71 @@ pub fn sink<K, V>(m: *TreeMap<K, V>, at: i64, k: K, v: V): i64 {
 pub fn insert<K, V>(m: *TreeMap<K, V>, k: K, v: V) {
     let made = sink(m, m.root, k, v)
     m.root = made
+}
+
+// ---- Taking things out -------------------------------------------------------
+
+// The node at `at` goes, and what its subtree's root has become comes back.
+//
+// A search tree cannot simply drop a node with two children -- something has
+// to take its place, and which something is where the balancing schemes
+// differ. A treap has the answer already: rotate the node *down*, each time
+// bringing up whichever child has the higher priority, and it is a leaf soon
+// enough. The tree stays a heap the whole way because every rotation moves a
+// higher priority above a lower one, and it stays a search tree because a
+// rotation always does.
+pub fn drop_node<K, V>(m: *TreeMap<K, V>, at: i64): i64 {
+    unsafe let l = m.left[at]
+    unsafe let r = m.right[at]
+    // A leaf, or near enough: the one child stands in its place.
+    if l < 0 {
+        release(m, at)
+        return r
+    }
+    if r < 0 {
+        release(m, at)
+        return l
+    }
+    unsafe let lp = m.pri[l]
+    unsafe let rp = m.pri[r]
+    if lp > rp {
+        // The left child comes up, which leaves `at` as its right child.
+        let up = turn_right(m, at)
+        unsafe m.right[up] = drop_node(m, at)
+        return up
+    }
+    let up = turn_left(m, at)
+    unsafe m.left[up] = drop_node(m, at)
+    up
+}
+
+// Find the key and drop its node, handing back what this subtree's root has
+// become. The descent is the same one `find` makes; what is different is that
+// the way back up has something to write.
+pub fn pull<K, V>(m: *TreeMap<K, V>, at: i64, k: &K): i64 {
+    if at < 0 {
+        return -1
+    }
+    let below = m.less
+    unsafe let under = below(k, &m.keys[at])
+    if under {
+        unsafe let made = pull(m, m.left[at], k)
+        unsafe m.left[at] = made
+        return at
+    }
+    unsafe let over = below(&m.keys[at], k)
+    if over {
+        unsafe let made = pull(m, m.right[at], k)
+        unsafe m.right[at] = made
+        return at
+    }
+    drop_node(m, at)
+}
+
+// Take one out, and say whether there was one.
+pub fn remove<K, V>(m: *TreeMap<K, V>, k: &K): bool {
+    let before = m.len
+    let made = pull(m, m.root, k)
+    m.root = made
+    m.len < before
 }
