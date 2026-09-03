@@ -4,6 +4,7 @@ mod sir;
 mod error;
 mod expand;
 mod lex;
+mod link;
 mod parse;
 mod prep;
 mod tir;
@@ -125,6 +126,8 @@ fn compile(
     level: sir::opt::Level,
     target: sir::target::Target,
     emit: Option<What>,
+    out: Option<PathBuf>,
+    runtime: Option<PathBuf>,
 ) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
@@ -291,9 +294,10 @@ fn compile(
         // The stats and the names go to the error stream where something is
         // being emitted, so that what comes out of the compiler is the thing
         // and not the thing with a paragraph in front of it.
-        let said = |line: String| match emit {
-            Some(_) => eprintln!("{}", line),
-            None => println!("{}", line),
+        let loose = emit.is_some() && out.is_none();
+        let said = |line: String| match loose {
+            true => eprintln!("{}", line),
+            false => println!("{}", line),
         };
         said(format!(
             "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
@@ -335,16 +339,52 @@ fn compile(
             most,
             described
         ));
-        match emit {
-            Some(What::Mir) => print!("{}", mir::text::render(&machine_ir, m)),
-            Some(What::Asm) => {
-                let (text, said) = mir::asm::render(&machine_ir, m);
-                for one in said {
-                    eprintln!("{}: {}", name.display(), one);
-                }
-                print!("{}", text);
+        // The assembly, and whatever the emitters would not write. Worked out
+        // once: `--emit asm` writes it and a link step assembles it, and the
+        // two must not be able to differ.
+        let assembly = || {
+            let (text, said) = mir::asm::render(&machine_ir, m);
+            for one in said {
+                eprintln!("{}: {}", name.display(), one);
             }
-            None => {}
+            text
+        };
+        // A page to read, a page to assemble, or a file to run. The last is
+        // the only one that is not simply text, and it is the only one that
+        // can fail here.
+        match (emit, out.as_deref()) {
+            (Some(what), where_to) => {
+                let text = match what {
+                    What::Mir => mir::text::render(&machine_ir, m),
+                    What::Asm => assembly(),
+                };
+                match where_to {
+                    Some(at) => {
+                        if let Err(why) = std::fs::write(at, &text) {
+                            eprintln!("could not write {}: {}", at.display(), why);
+                            return false;
+                        }
+                    }
+                    None => print!("{}", text),
+                }
+            }
+            // Nothing named to emit and a file to make: the whole way down.
+            (None, Some(at)) => {
+                let Some(entry) = entry_of(&ttir) else {
+                    eprintln!(
+                        "{}: nothing to run -- there is no `main` taking no arguments \
+                         at the top of this file, and a program needs one to start at",
+                        name.display()
+                    );
+                    return false;
+                };
+                let text = assembly();
+                if let Err(why) = link::link(&text, &entry, m, at, runtime.as_deref()) {
+                    eprintln!("{}: {}", name.display(), why);
+                    return false;
+                }
+            }
+            (None, None) => {}
         }
         for (symbol, _) in symbols.sorted() {
             said(format!("    {}", symbol));
@@ -352,6 +392,53 @@ fn compile(
         let _ = scopes;
     }
     true
+}
+
+// The program's own entry: `main` at the top of the root module, taking
+// nothing.
+//
+// The root module and not any module, because a suite has one beginning and it
+// is the file that was named -- a `main` in something imported is a fn called
+// `main`, and two files each holding one is not two programs. And taking
+// nothing, because a `main` with parameters is mangled with them and is not
+// the one a process starts at; there is nowhere for an argument to come from.
+//
+// `answers` is whether what it hands back is a number, which is what may
+// become an exit status. Everything else -- `null` above all, which is what a
+// fn with no return type returns -- leaves the answer register holding
+// whatever the body last put there, and that is not a status.
+fn entry_of(ttir: &tir::ttir_nodes::TTIRProgram) -> Option<link::Entry> {
+    use tir::tir_nodes::TIRPrim;
+    use tir::ttir_nodes::{Ty, TTIRItemKind};
+
+    // The mangler and not `TTIRFn::symbol`, which `sema::lower` leaves empty:
+    // what a fn is called is worked out from where it was declared, and that
+    // is a fact about the whole program rather than about the fn.
+    let mangler = names::Mangler::new(ttir);
+    let module = ttir.modules.first()?;
+    for &item in &module.roots {
+        let TTIRItemKind::Fn(f) = &ttir.items[item].kind else { continue };
+        if f.name != "main" || !f.params.is_empty() {
+            continue;
+        }
+        let answers = matches!(
+            ttir.types.get(f.ret),
+            Some(Ty::Prim(
+                TIRPrim::I8
+                    | TIRPrim::I16
+                    | TIRPrim::I32
+                    | TIRPrim::I64
+                    | TIRPrim::I128
+                    | TIRPrim::U8
+                    | TIRPrim::U16
+                    | TIRPrim::U32
+                    | TIRPrim::U64
+                    | TIRPrim::U128
+            ))
+        );
+        return Some(link::Entry { symbol: mangler.symbol_of(item, ttir)?, answers });
+    }
+    None
 }
 
 // Every instruction the bodies can still reach, which is what `sir::opt`
@@ -412,6 +499,13 @@ fn run(args: &[String]) -> bool {
     // one line per file, and a back end's own page is something to be asked
     // for.
     let mut emit: Option<What> = None;
+    // Where the output goes. Nothing by default, which is the shape this had
+    // before there was anything to write: a build that names no file is a
+    // build asking whether the program compiles.
+    let mut out: Option<PathBuf> = None;
+    // And what runtime to put beside it, for the one case where the archive is
+    // not the one next to this compiler.
+    let mut runtime: Option<PathBuf> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -454,6 +548,23 @@ fn run(args: &[String]) -> bool {
                     return false;
                 }
             },
+            // `-o` is where the output goes, and what the output *is* depends
+            // on whether anything was asked to be emitted: the listing or the
+            // assembly where it was, and an executable where it was not.
+            "-o" => match rest.next() {
+                Some(at) => out = Some(PathBuf::from(at)),
+                None => {
+                    eprintln!("-o wants a file after it");
+                    return false;
+                }
+            },
+            "--runtime" => match rest.next() {
+                Some(at) => runtime = Some(PathBuf::from(at)),
+                None => {
+                    eprintln!("--runtime wants an archive after it");
+                    return false;
+                }
+            },
             "--target" => match rest.next() {
                 Some(name) => match sir::target::of(name) {
                     Some(held) => target = held,
@@ -483,11 +594,15 @@ fn run(args: &[String]) -> bool {
         }
     }
     match root {
-        Some(root) => compile(&root, search_paths, level, target, emit),
+        Some(root) => compile(&root, search_paths, level, target, emit, out, runtime),
         None => {
             eprintln!(
-                "usage: fortec <root.ft> [-O<0-3>] [--target <name>] [--emit mir|asm] \
-                 [-I <dir>]..."
+                "usage: fortec <root.ft> [-o <file>] [-O<0-3>] [--target <name>] \
+                 [--emit mir|asm] [--runtime <archive>] [-I <dir>]...\n\
+                 \n\
+                 \x20 -o with no --emit assembles and links an executable; with one \
+                 it writes\n\
+                 \x20 what was emitted to the file instead of the standard output."
             );
             false
         }
