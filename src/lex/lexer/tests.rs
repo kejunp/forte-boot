@@ -1,9 +1,10 @@
 // What the lexer makes of a source, one decision at a time.
 //
 // These lived in `main.rs` until now, at the crate root and outside any module
-// -- sixty-three tests and the two helpers below, three thousand lines of
-// them, a directory away from the pass they are about. Every other phase here
-// keeps its tests beside itself, and this is that.
+// -- sixty-two tests and the two helpers below, three thousand lines of them,
+// a directory away from the pass they are about. Every other phase here keeps
+// its tests beside itself, and this is that. The sixty-third was about
+// preprocessing rather than lexing and went to `prep`.
 //
 // One file per subject, and the subjects are the lexer's own: `layout` is the
 // separator insertion of section 7, `words` the reserved words, `numbers` the
@@ -12,7 +13,6 @@
 
 use super::*;
 use crate::lex::tokens::TokType;
-use crate::prep::preprocess;
 
 mod attrs;
 mod closures;
@@ -20,7 +20,6 @@ mod generics;
 mod layout;
 mod literals;
 mod numbers;
-mod prep;
 mod refs;
 mod spans;
 mod types;

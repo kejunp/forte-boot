@@ -2,13 +2,13 @@
 //
 // Blanking a comment rather than deleting it only pays off if the output lines
 // up with the input character for character: that is what lets a diagnostic
-// quote the source as written while the parse runs on the stripped copy.
+// quote the source as written while the parse runs on the stripped copy. So
+// there is one thing to check and it is checked on everything awkward -- an
+// unterminated block, a `/*/` that is not one, a file that is nothing but a
+// comment.
 
 use super::*;
 
-// Blanking rather than deleting only pays off if the output lines up with the
-// input character for character, which is what lets a diagnostic quote the
-// source as written while the parse runs on the preprocessed copy.
 #[test]
 fn preprocessing_preserves_length_and_lines() {
     let cases = [
