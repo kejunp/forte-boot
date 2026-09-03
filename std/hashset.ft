@@ -1,0 +1,299 @@
+// `HashSet`: each thing once, in no order at all.
+//
+// The same open addressing `hashmap.ft` lays out and explains: one run of
+// elements and one of what each place is doing, a power-of-two capacity so the
+// wrap is an `&`, three quarters as the load factor, and a removed place left
+// as `GONE` rather than `FREE` so that anything which probed past it is still
+// found. Everything that file says about why, about `__rt_alloc`, and about
+// what a key has to come with, is true here and is not said twice.
+//
+// What is not the same is that there is no second run. A set is not a map to
+// nothing -- a map to nothing still reserves the room, still copies it when it
+// grows, and still asks the caller what the nothing is. This holds elements.
+//
+// That the two files repeat each other is the import's fault and not the
+// design's: a name declared in one file does not reach another, so there is no
+// writing this as `HashMap<T, ()>` and no sharing the probe with the file that
+// already has one. It is written down here so the next person knows it is a
+// thing to undo rather than a thing to copy again.
+//
+// ---- What an element has to come with ---------------------------------------
+//
+//     fn hash_i64(x: &i64): i64 { mix(x) }
+//     fn eq_i64(a: &i64, b: &i64): bool { a == b }
+//     var s: HashSet<i64> = empty(mix, eq_i64)
+
+%symbol("__rt_alloc")
+fn room(bytes: i64): ptr u8
+
+const FREE: u8 = 0
+const TAKEN: u8 = 1
+const GONE: u8 = 2
+
+pub struct HashSet<T> {
+    pub elems: ptr T,
+    pub state: ptr u8,
+    pub hash:  fn(&T): i64,
+    pub eq:    fn(&T, &T): bool,
+    pub len:   i64,
+    pub cap:   i64,
+    // `TAKEN` plus `GONE`, which is what the growth is measured against -- see
+    // `hashmap.ft`, where the same field is the same argument.
+    pub used:  i64,
+}
+
+pub fn stride<T>(p: ptr T): i64 {
+    unsafe let a = addr p[0] as i64
+    unsafe let b = addr p[1] as i64
+    b - a
+}
+
+// `splitmix64`'s finaliser, for the integers. See `hashmap.ft` for why an
+// identity hash turns a linear-probing table into a linear scan.
+pub fn mix(x: &i64): i64 {
+    var h = (x ^ (x >> 30)) * -4658895280553007687
+    h = (h ^ (h >> 27)) * -7723592293110705685
+    h ^ (h >> 31)
+}
+
+pub fn eq_i64(a: &i64, b: &i64): bool {
+    a == b
+}
+
+// ---- Making one -------------------------------------------------------------
+
+pub fn empty<T>(hash: fn(&T): i64, eq: fn(&T, &T): bool): HashSet<T> {
+    unsafe let no_t = 0 as ptr T
+    unsafe let no_s = 0 as ptr u8
+    HashSet { elems: no_t, state: no_s, hash: hash, eq: eq, len: 0, cap: 0, used: 0 }
+}
+
+pub fn len<T>(s: &HashSet<T>): i64 {
+    s.len
+}
+
+pub fn is_empty<T>(s: &HashSet<T>): bool {
+    s.len == 0
+}
+
+// ---- Finding ----------------------------------------------------------------
+
+// Where it is, or -1. The walk stops at a `FREE` place because that is where
+// this element would have gone, so anything past it was put there by
+// something else.
+pub fn find<T>(s: &HashSet<T>, x: &T): i64 {
+    if s.cap == 0 {
+        return -1
+    }
+    let mask = s.cap - 1
+    let f = s.hash
+    var at = f(x) & mask
+    var steps = 0
+    while steps < s.cap {
+        unsafe let what = s.state[at]
+        if what == FREE {
+            return -1
+        }
+        if what == TAKEN {
+            let same = s.eq
+            unsafe let is = same(&s.elems[at], x)
+            if is {
+                return at
+            }
+        }
+        at = (at + 1) & mask
+        steps = steps + 1
+    }
+    -1
+}
+
+pub fn has<T>(s: &HashSet<T>, x: &T): bool {
+    find(s, x) >= 0
+}
+
+// ---- Walking ----------------------------------------------------------------
+
+// The places are in no order and most of them are empty, so a walk is `0` to
+// `places` with `taken_at` asked at each:
+//
+//     var i = 0
+//     while i < places(&s) {
+//         if taken_at(&s, i) { ... elem_at(&s, i) ... }
+//         i = i + 1
+//     }
+pub fn places<T>(s: &HashSet<T>): i64 {
+    s.cap
+}
+
+pub fn taken_at<T>(s: &HashSet<T>, at: i64): bool {
+    unsafe let what = s.state[at]
+    what == TAKEN
+}
+
+pub fn elem_at<T>(s: &HashSet<T>, at: i64): T {
+    unsafe let out = s.elems[at]
+    out
+}
+
+// ---- Putting things in -------------------------------------------------------
+
+pub fn grow<T>(s: *HashSet<T>, want: i64) {
+    if want * 4 <= s.cap * 3 {
+        return
+    }
+    var cap = 8
+    while cap * 3 < want * 4 {
+        cap = cap * 2
+    }
+    unsafe let no_t = 0 as ptr T
+    unsafe let elems = room(cap * stride(no_t)) as ptr T
+    let state = room(cap)
+    var i = 0
+    while i < cap {
+        unsafe state[i] = FREE
+        i = i + 1
+    }
+
+    // Where an element belongs is a function of the capacity, and the capacity
+    // has changed. The tombstones do not come with it, which is the other half
+    // of what growing is for.
+    let old_elems = s.elems
+    let old_state = s.state
+    let old_cap = s.cap
+    s.elems = elems
+    s.state = state
+    s.cap = cap
+    s.len = 0
+    s.used = 0
+    var j = 0
+    while j < old_cap {
+        unsafe let what = old_state[j]
+        if what == TAKEN {
+            unsafe place(s, old_elems[j])
+        }
+        j = j + 1
+    }
+}
+
+// Put one in, assuming there is room, and say whether it was not already
+// there. The first `GONE` place on the way is remembered and used if the
+// element turns out to be missing, which is what keeps a set that is churned
+// rather than filled from walking further every time.
+pub fn place<T>(s: *HashSet<T>, x: T): bool {
+    let mask = s.cap - 1
+    let f = s.hash
+    var at = f(&x) & mask
+    var free = -1
+    var steps = 0
+    while steps < s.cap {
+        unsafe let what = s.state[at]
+        if what == FREE {
+            if free < 0 {
+                free = at
+            }
+            break
+        }
+        if what == GONE {
+            if free < 0 {
+                free = at
+            }
+        }
+        if what == TAKEN {
+            let same = s.eq
+            unsafe let is = same(&s.elems[at], &x)
+            if is {
+                return false
+            }
+        }
+        at = (at + 1) & mask
+        steps = steps + 1
+    }
+    // Every place taken and none of them this one. `add` grows first, so
+    // nothing reaches here by that road.
+    if free < 0 {
+        return false
+    }
+    unsafe let was = s.state[free]
+    unsafe s.elems[free] = x
+    unsafe s.state[free] = TAKEN
+    s.len = s.len + 1
+    if was == FREE {
+        s.used = s.used + 1
+    }
+    true
+}
+
+// Put one in, making room first. Answers whether the set changed, which is
+// what a set is usually asked -- "was this new" is the question, and counting
+// the length before and after is the long way round to it.
+pub fn add<T>(s: *HashSet<T>, x: T): bool {
+    grow(s, s.used + 1)
+    place(s, x)
+}
+
+// Take one out, and say whether there was one. What is left behind is a `GONE`
+// place and not a `FREE` one.
+pub fn remove<T>(s: *HashSet<T>, x: &T): bool {
+    let at = find(s, x)
+    if at < 0 {
+        return false
+    }
+    unsafe s.state[at] = GONE
+    s.len = s.len - 1
+    true
+}
+
+// ---- Two of them ------------------------------------------------------------
+
+// Everything in either, everything in both, and everything in the first that
+// is not in the second. The new set hashes and compares the way the first one
+// does: an element that two sets disagreed about would not survive being put
+// in a third.
+pub fn union<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty(a.hash, a.eq)
+    var i = 0
+    while i < a.cap {
+        if taken_at(a, i) {
+            add(*out, elem_at(a, i))
+        }
+        i = i + 1
+    }
+    var j = 0
+    while j < b.cap {
+        if taken_at(b, j) {
+            add(*out, elem_at(b, j))
+        }
+        j = j + 1
+    }
+    out
+}
+
+pub fn intersection<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty(a.hash, a.eq)
+    var i = 0
+    while i < a.cap {
+        if taken_at(a, i) {
+            unsafe let both = has(b, &a.elems[i])
+            if both {
+                add(*out, elem_at(a, i))
+            }
+        }
+        i = i + 1
+    }
+    out
+}
+
+pub fn difference<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty(a.hash, a.eq)
+    var i = 0
+    while i < a.cap {
+        if taken_at(a, i) {
+            unsafe let both = has(b, &a.elems[i])
+            if both == false {
+                add(*out, elem_at(a, i))
+            }
+        }
+        i = i + 1
+    }
+    out
+}
