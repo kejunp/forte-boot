@@ -188,6 +188,44 @@ the six:
 is reserved: each needs something the language has not got — a layout story,
 traits with code behind them, and a configuration to ask about.
 
+Where a program begins. A suite is compiled from the one file named on the
+command line, that file's module is the root, and the program starts at a fn
+called "main" written at the top of it, taking no parameters. There is one
+because a process has one beginning, and it is the root module's because that
+is the file the compiler was pointed at — a "main" in something imported is a
+fn called "main" like any other, and a suite whose files each held one would
+be a suite of several programs and no way to say which had started.
+
+Taking no parameters, because there is nowhere for an argument to come from.
+A mangled name carries its parameter types (the "%symbol" entry above), so a
+"main" written with them compiles to a different symbol and is a different
+function; the one a process starts at is the one spelled with none. What a
+program is handed by whoever ran it — the arguments, the environment — is not
+in the language yet, and when it is it will be something "main" asks for and
+not something it is handed for having the right name.
+
+What it gives back is the exit status where that is an integer, and nothing
+where it is not. An integer is handed on as it stands; anything else — "null"
+above all, which is what a fn with no return type returns (section 3) —
+leaves the program exiting zero. That is not tidiness. The register an answer
+comes back in holds whatever the body last put there, so a "main" returning
+nothing whose answer was read anyway would exit on a leftover: a number the
+program never computed, different for a change nobody made.
+
+"main" is not a reserved word. It is a name the compiler looks for, which
+leaves it a fn like any other — callable from anywhere, including from
+itself — rather than a word the language would have to stop somebody spending
+elsewhere. A suite with none compiles; it is asking for a file to run that
+turns the absence into an error, which is the right answer for a library and
+the reason a library never has to say it is one.
+
+Nothing written in the language calls the runtime's start-up. What a compiled
+program actually begins at is an entry the compiler writes and links in
+(src/link.rs): it notes where the stack begins — the one thing about the
+collector's roots that cannot be worked out from inside it
+(runtime/src/gc.rs) — and then calls "main". It is the only code in a Forte
+program that nobody wrote in Forte.
+
 
 ==============================================================================
 2. Declarations
@@ -2100,4 +2138,23 @@ answer is not obvious from the rules alone.
     signature introduced, so "where i32: Show" is refused (section 2).
     Settled. What a bound *means* is still a question for whatever checks
     traits, and nothing here says it.
+  - Where a program begins is settled and what it is handed is not. "main" at
+    the top of the root module, taking nothing, its integer answer the exit
+    status and everything else exiting zero (section 1). What is missing is
+    the way in and the way out. There is no spelling for the arguments a
+    process was started with and none for its environment, so the only
+    program that can be written is one that computes what it was going to
+    compute anyway. And there is no way out of the middle of one: a fn deep
+    in a program that has found it cannot go on returns "never" and has
+    nothing to call — nothing, that is, but a "%symbol" declaration of
+    somebody else's "exit", which is the same answer the language gives for
+    every other thing it has not got round to and is not an answer for this
+    one. A process that cannot stop when it knows it should is worse off than
+    one that cannot read its arguments.
+
+    Nor is it said what "%test" means for any of this. Section 1 says a
+    "%test" fn is "collected and run on its own rather than compiled into an
+    ordinary build", which is a second entry point described in one clause —
+    what collects them, what they are linked against, and whether a suite
+    being tested still wants a "main" are all unasked.
 ==============================================================================
