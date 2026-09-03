@@ -48,7 +48,6 @@ impl Suite {
             is_const:  false,
             is_unsafe: false,
             name:      name.to_string(),
-            symbol:    String::new(),
             generics:  Vec::new(),
             wheres:    Vec::new(),
             ty,

@@ -280,9 +280,6 @@ pub enum Payload {
 // out. Nor is a lifetime: a region is worked out rather than written, and two
 // fns differing in one are the same code.
 
-// Built once for a program: where an item is declared is a fact about the
-// program and not about the fn being named, and working it out per fn would be
-// walking the whole tree for each of them.
 // What a mangled name opens with: `__` because nothing written in the language
 // may begin with it, so a mangled name collides with nothing a `%symbol` gave
 // and with nothing on the other side of a foreign declaration -- and then a
@@ -309,6 +306,24 @@ fn prefix_of(kind: &TTIRItemKind) -> Option<&'static str> {
     })
 }
 
+// Built once for a program: where an item is declared is a fact about the
+// program and not about the fn being named, and working it out per fn would be
+// walking the whole tree for each of them.
+//
+// **This is the only place a symbol is worked out, and a declaration does not
+// carry its own.** `TTIRFn` held a `symbol` field for a while and it is worth
+// saying why it is gone rather than leaving the next reader to wonder. It was
+// never filled -- `sema::lower` builds a fn before its parameter types are
+// settled, and a mangled name is those types spelled out -- so what it held
+// was the empty string, and the one caller that trusted it emitted a call to a
+// function with no name.
+//
+// Filling it would not have earned it either. A monomorphised instance's
+// symbol is the declaration's with a part appended per type argument, worked
+// out against the grown program rather than the original (`mir::mono`), and
+// the types, structs and constants the linker sees are named here too. So the
+// mangler has to exist wherever a name is wanted, and a field beside it would
+// be a second answer to keep in step with the first.
 pub struct Mangler {
     // The segments each item is declared under, by item. Empty for an item at
     // the top of the root module, and for one nothing reaches.

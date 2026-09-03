@@ -79,7 +79,7 @@ impl Suite {
                 inline: TIRInline::Unwritten, is_test: false,
             },
             is_const: false, is_unsafe: false, name: name.to_string(),
-            symbol: String::new(), generics: Vec::new(), wheres: Vec::new(),
+            generics: Vec::new(), wheres: Vec::new(),
             ty,
             params: vec![TTIRParam { name: TIRBinding::SelfRecv(mode, None), slot: None }],
             ret: Self::NULL, outlives: Vec::new(), body: None,
@@ -181,7 +181,7 @@ impl Suite {
                 inline: TIRInline::Unwritten, is_test: false,
             },
             is_const: false, is_unsafe: false, name: "go".to_string(),
-            symbol: String::new(), generics: Vec::new(), wheres: Vec::new(),
+            generics: Vec::new(), wheres: Vec::new(),
             ty, params: Vec::new(), ret: Self::NULL, outlives: Vec::new(),
             body: Some(body),
         }));

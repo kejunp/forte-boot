@@ -570,7 +570,6 @@ impl<'a> Lowerer<'a> {
             is_const: f.is_const,
             is_unsafe: f.is_unsafe,
             name: f.name.clone(),
-            symbol: String::new(),
             generics: Vec::new(),
             wheres: Vec::new(),
             ty: 0,

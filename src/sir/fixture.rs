@@ -275,7 +275,6 @@ impl Fixture {
                 is_const: false,
                 is_unsafe: false,
                 name: name.to_string(),
-                symbol: name.to_string(),
                 generics: Vec::new(),
                 wheres: Vec::new(),
                 outlives: Vec::new(),

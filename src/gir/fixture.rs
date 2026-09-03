@@ -172,7 +172,6 @@ impl Fixture {
             is_const:  false,
             is_unsafe: false,
             name:      "f".to_string(),
-            symbol:    String::new(),
             generics:  Vec::new(),
             wheres:    Vec::new(),
             ty,

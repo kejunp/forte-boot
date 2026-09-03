@@ -318,9 +318,6 @@ pub struct TTIRFn {
     pub is_const:  bool,
     pub is_unsafe: bool,
     pub name:      String,
-    // The mangled symbol, or what `%symbol` said instead. Worked out once here
-    // rather than by everything downstream that wants to name the function.
-    pub symbol:    String,
     pub generics:  Vec<TTIRGeneric>,
     pub wheres:    Vec<TTIRWherePred>,
     // Which of this signature's regions outlive which, as `(longer, shorter)`.
