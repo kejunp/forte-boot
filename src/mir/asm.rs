@@ -297,6 +297,7 @@ pub fn render(p: &MIRProgram, m: Machine) -> (String, Vec<String>) {
         };
         out.push_str(&text);
     }
+    out.push_str(&data(&p.data, m.name != "x86-64"));
     (out, said)
 }
 
@@ -356,6 +357,44 @@ pub fn bytes_of(held: &MIRConstant) -> String {
     }
     if held.bytes.is_empty() {
         let _ = writeln!(out, "\t.zero\t1");
+    }
+    out
+}
+
+// The globals, in a segment that may be written to.
+//
+// `.data` and not `.rodata`, which is the whole of why this is not `pool`: a
+// global is a place and a program may assign to one, and a store into
+// `.rodata` faults. They are otherwise emitted the same way, and the one
+// difference between the machines is the same one -- x86-64's `.align` counts
+// bytes and the other two count the power of two.
+//
+// `.globl` as a fn is, though everything is in one object today. A global's
+// mangled name already carries the module it was declared in, so making it
+// visible costs nothing and stops this being the one thing that would have to
+// change on the day an object is emitted per file.
+pub fn data(held: &[MIRGlobal], log2: bool) -> String {
+    let mut out = String::new();
+    if held.is_empty() {
+        return out;
+    }
+    let _ = writeln!(out, "\t.section\t.data");
+    for one in held {
+        let name = symbol(&one.symbol);
+        let align = one.align.max(1);
+        let said = match log2 {
+            true => align.trailing_zeros() as usize,
+            false => align,
+        };
+        let _ = writeln!(out, "\t.align\t{}", said);
+        let _ = writeln!(out, "\t.globl\t{}", name);
+        let _ = writeln!(out, "\t.type\t{}, @object", name);
+        let _ = writeln!(out, "{}:", name);
+        for line in one.bytes.chunks(16) {
+            let held: Vec<String> = line.iter().map(|byte| byte.to_string()).collect();
+            let _ = writeln!(out, "\t.byte\t{}", held.join(", "));
+        }
+        let _ = writeln!(out, "\t.size\t{}, .-{}", name, name);
     }
     out
 }

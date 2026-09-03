@@ -52,13 +52,57 @@ use std::collections::{HashMap, HashSet};
 use crate::sema::borrows::Copies;
 use crate::sema::names::Mangler;
 use crate::sir::sir_nodes::*;
-use crate::tir::tir_nodes::TIRPrim;
-use crate::tir::ttir_nodes::{Ty, TyId};
+use crate::tir::tir_nodes::{TIRLit, TIRPrim};
+use crate::tir::ttir_nodes::{TTIRExprKind, TTIRItemKind, Ty, TyId};
 
 use super::layout::{Layout, Layouts, Shape};
 use super::machine::{Class, Machine};
 use super::mir_nodes::*;
 use super::mono::Made;
+
+// A literal written into a global's image, in as many bytes as the type is.
+//
+// **Little-endian, and that is not a choice made here.** All three machines
+// this compiler emits for are little-endian in the configurations it emits --
+// x86-64 always, aarch64 and riscv64 in every ABI in use -- so there is one
+// answer and `mir::machine` is not asked for it. A big-endian target would
+// have to say so, and would have to say so in a good many places besides this.
+//
+// A value wider than the room truncates rather than refusing. What fits in an
+// `i32` is the checker's question and it is not asked anywhere yet, of a global
+// or of a plain literal; taking the low bytes is what every machine does with
+// the store that would have written it.
+//
+// A string writes nothing. What a `str` *is* here is an address and a length,
+// and an address is not known until the linker has run -- it wants a
+// relocation into the pool rather than bytes, which is a thing no global has
+// asked for yet and is not invented on the way past.
+fn write_lit(into: &mut [u8], lit: &TIRLit) {
+    let whole = |n: i64| n.to_le_bytes();
+    match lit {
+        TIRLit::Int(n) => {
+            let held = whole(*n);
+            let take = into.len().min(held.len());
+            into[..take].copy_from_slice(&held[..take]);
+        }
+        TIRLit::Char(c) => {
+            let held = u32::from(*c).to_le_bytes();
+            let take = into.len().min(held.len());
+            into[..take].copy_from_slice(&held[..take]);
+        }
+        TIRLit::Bool(b) => into[0] = u8::from(*b),
+        // Four bytes of room means it was declared `f32`, whatever the value
+        // was written as: a literal has the type the declaration gave it.
+        TIRLit::Float(n) => {
+            if into.len() >= 8 {
+                into[..8].copy_from_slice(&n.to_le_bytes());
+            } else if into.len() >= 4 {
+                into[..4].copy_from_slice(&(*n as f32).to_le_bytes());
+            }
+        }
+        TIRLit::Str(_) | TIRLit::Null => {}
+    }
+}
 
 mod aggregates;
 mod calls;
@@ -174,8 +218,59 @@ impl<'a> Lowerer<'a> {
         self.glue();
     }
 
-    pub fn finish(self) -> MIRProgram {
+    pub fn finish(mut self) -> MIRProgram {
+        self.globals();
         self.out
+    }
+
+    // ---- The globals -------------------------------------------------------
+
+    // Somewhere for every global to live.
+    //
+    // A global is a place, so what a use of one compiles to is the address of a
+    // symbol (`places::ItemAddr`) -- and until this ran, nothing anywhere
+    // defined that symbol and the program failed at the link step rather than
+    // in the compiler. §8 asked for "a segment for the globals that are left,
+    // which have to be somewhere because a global is a place and may be
+    // assigned to". This is where they are put.
+    //
+    // Every global of the suite and not only the ones something read: a global
+    // is a declaration and not a use, and one nothing mentions is still a name
+    // the program has. That also keeps this from depending on what the
+    // optimiser left standing.
+    //
+    // What is skipped is a global whose type has no layout -- a type variable
+    // nothing settled, which is what an uninitialised `var` with no annotation
+    // leaves. There is nothing to reserve for a width nobody knows, and the
+    // link error it produces is the one that was there before rather than a
+    // new one.
+    fn globals(&mut self) {
+        for at in 0..self.made.ttir.items.len() {
+            let TTIRItemKind::Global { ty, init, .. } = &self.made.ttir.items[at].kind else {
+                continue;
+            };
+            let (ty, init) = (*ty, *init);
+            let Some(symbol) = self.mangler.symbol_of(at, &self.made.ttir) else {
+                continue;
+            };
+            let Some(layout) = self.layouts.of(ty) else { continue };
+            let bytes = layout.bytes.max(1);
+
+            // Nought unless something said otherwise, which is what a global
+            // with no initialiser means and what one this could not read gets
+            // as well.
+            let mut image = vec![0u8; bytes];
+            if let Some(held) = init.and_then(|at| self.made.ttir.exprs.get(at)) {
+                if let TTIRExprKind::Literal(lit) = &held.kind {
+                    write_lit(&mut image, lit);
+                }
+            }
+            self.out.data.push(MIRGlobal {
+                symbol,
+                bytes: image,
+                align: layout.align.max(1),
+            });
+        }
     }
 
     // ---- One body ----------------------------------------------------------

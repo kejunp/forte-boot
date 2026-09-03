@@ -46,6 +46,25 @@ pub struct MIRProgram {
     // the only one so far: `Const` holds a number, and the bytes of "hello" are
     // not a number.
     pub pool:   Vec<MIRConstant>,
+    // The globals, which are the one thing here that is neither code nor a
+    // constant. A global is a *place* (§8): it may be assigned to, so it cannot
+    // go in the pool beside the strings -- that is `.rodata` and a write to it
+    // faults -- and it has to exist even where nothing initialises it, because
+    // a program that only ever writes one still needs somewhere to write.
+    pub data:   Vec<MIRGlobal>,
+}
+
+// One global, and the bytes it starts as.
+//
+// The image is as wide as the type and no wider, which is what `.size` will
+// say; a global nothing initialised is that many zeroes. Kept as bytes rather
+// than as a value because by here a type is three numbers and not a type
+// (`MIRReg`), and the one thing a data segment is is bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MIRGlobal {
+    pub symbol: String,
+    pub bytes:  Vec<u8>,
+    pub align:  usize,
 }
 
 // One thing in the constant pool, under the symbol that reaches it.

@@ -97,7 +97,7 @@ pub(super) fn share(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -
             for value in SIRBody::uses_mut(&mut kind) {
                 *value = settle(&subst, *value);
             }
-            if !known(&kind) {
+            if !known(ttir, &kind) {
                 continue;
             }
             let ty = body.values[def].ty;

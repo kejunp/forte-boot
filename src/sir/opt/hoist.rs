@@ -184,5 +184,5 @@ fn liftable(
     // A load is liftable as far as this is concerned; whether what it reads
     // stays put for the length of the loop is `quiet`'s to say, and it is the
     // only one of these that has to ask.
-    known(kind) || matches!(kind, SIRInstKind::Load { .. })
+    known(ttir, kind) || matches!(kind, SIRInstKind::Load { .. })
 }

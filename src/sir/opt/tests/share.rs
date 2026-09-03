@@ -66,3 +66,53 @@ fn one_arm_of_a_branch_does_not_share_with_the_other() {
         kinds(body)
     );
 }
+
+
+// ---- What a global is, which is a place and not a value ---------------------
+
+// Two reads of a global with a store between them are two answers, and sharing
+// them is reading the old one twice.
+//
+// `known` had `Item` in its list from the beginning, beside the literals and
+// the addresses -- true of a fn and of a `const`, and false of a global, which
+// is the one item that is a *place*. Nothing caught it because until there was
+// a data segment to put a global in, no program holding one ever linked, so
+// the pass that would have shown it up could not be run against one.
+//
+// Written as a source rather than against the fixture because that is what
+// makes it a regression: the shape has to arrive here the way a program does.
+#[test]
+fn two_reads_of_a_global_across_a_store_are_not_one_read() {
+    let (p, _) = compiled(
+        "var counter: i64 = 0\n\
+         fn bump(): i64 {\n\
+             counter = counter + 1\n\
+             counter\n\
+         }\n",
+    );
+    let body = p.bodies.iter().find(|b| !b.blocks.is_empty()).expect("a body");
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Item(_))),
+        2,
+        "the read after the store was shared with the one before it:\n{:#?}",
+        kinds(body)
+    );
+}
+
+// And the other half, so the fix is not simply "never share an item": a `const`
+// is not a place, and two reads of one are one read.
+#[test]
+fn two_reads_of_a_const_are_one_read() {
+    let (p, _) = compiled(
+        "const N: i64 = 40\n\
+         fn twice(): i64 {\n\
+             N + N\n\
+         }\n",
+    );
+    let body = p.bodies.iter().find(|b| !b.blocks.is_empty()).expect("a body");
+    assert!(
+        count(body, |k| matches!(k, SIRInstKind::Item(_))) == 0,
+        "a const should have folded before this pass:\n{:#?}",
+        kinds(body)
+    );
+}

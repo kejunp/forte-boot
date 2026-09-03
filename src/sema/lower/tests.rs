@@ -20,6 +20,7 @@ use crate::tir::ttir_nodes::*;
 mod basics;
 mod bounds;
 mod closures;
+mod consts;
 mod containers;
 mod lives;
 mod loops;

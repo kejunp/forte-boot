@@ -318,3 +318,39 @@ fn an_ordinary_body_is_not_refused() {
         assert!(said.is_empty(), "{}: {:?}", m.name, said);
     }
 }
+
+
+// ---- The segment a global lives in ------------------------------------------
+
+fn one(symbol: &str, bytes: Vec<u8>, align: usize) -> MIRGlobal {
+    MIRGlobal { symbol: symbol.to_string(), bytes, align }
+}
+
+// `.data` and not `.rodata`, which is the whole reason this is not the pool: a
+// global may be assigned to, and a store into `.rodata` faults.
+#[test]
+fn a_global_goes_in_a_segment_that_may_be_written_to() {
+    let out = data(&[one("__G1t1g", vec![7, 0, 0, 0, 0, 0, 0, 0], 8)], false);
+    assert!(out.contains(".section\t.data"), "{}", out);
+    assert!(!out.contains(".rodata"), "{}", out);
+    assert!(out.contains("__G1t1g:"), "{}", out);
+    assert!(out.contains(".byte\t7, 0, 0, 0, 0, 0, 0, 0"), "{}", out);
+    assert!(out.contains(".size\t__G1t1g, .-__G1t1g"), "{}", out);
+}
+
+// x86-64's `.align` counts bytes and the other two count the power of two,
+// which is the one difference between the machines here and the same one the
+// pool has.
+#[test]
+fn the_alignment_is_said_the_way_the_machine_says_it() {
+    let held = [one("__G1t1g", vec![0; 8], 8)];
+    assert!(data(&held, false).contains(".align\t8"), "{}", data(&held, false));
+    assert!(data(&held, true).contains(".align\t3"), "{}", data(&held, true));
+}
+
+// Nothing at all where there are no globals: an empty `.data` directive would
+// be a section in every object for the programs that have none.
+#[test]
+fn no_globals_is_no_segment() {
+    assert_eq!(data(&[], false), "");
+}

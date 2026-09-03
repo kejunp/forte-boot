@@ -787,3 +787,44 @@ fn a_call_that_answers_with_an_aggregate_hands_over_room() {
     assert_eq!(held, vec![2], "the room and the written argument");
     assert!(!body.frame.is_empty(), "the room is a slot of the caller's frame");
 }
+
+
+// ---- Somewhere for a global to live -----------------------------------------
+
+// A global is a place, so it needs bytes of its own. Until there was a segment
+// for it, a use of one compiled to the address of a symbol nothing defined and
+// the program failed at the link step (§8).
+#[test]
+fn a_global_becomes_a_segment_entry() {
+    let p = lowered("var counter: i64 = 7\nfn f(): i64 { counter }\n");
+    assert_eq!(p.data.len(), 1, "{:#?}", p.data);
+    let held = &p.data[0];
+    assert!(held.symbol.starts_with("__G"), "{}", held.symbol);
+    // Eight bytes because it is an `i64`, little-endian because every machine
+    // here is, and a seven in the first of them.
+    assert_eq!(held.bytes, vec![7, 0, 0, 0, 0, 0, 0, 0], "{:#?}", held);
+    assert_eq!(held.align, 8);
+}
+
+// One nothing initialised is still a name the program has, and starts as nought.
+#[test]
+fn a_global_with_no_initialiser_is_a_run_of_zeroes() {
+    let p = lowered("var counter: i64\nfn f(): i64 { counter }\n");
+    assert_eq!(p.data.len(), 1, "{:#?}", p.data);
+    assert_eq!(p.data[0].bytes, vec![0; 8], "{:#?}", p.data[0]);
+}
+
+// And one nothing mentions, because a global is a declaration and not a use.
+#[test]
+fn a_global_nothing_reads_is_still_given_room() {
+    let p = lowered("var unused: i64 = 3\nfn f(): i64 { 1 }\n");
+    assert_eq!(p.data.len(), 1, "{:#?}", p.data);
+    assert_eq!(p.data[0].bytes, vec![3, 0, 0, 0, 0, 0, 0, 0], "{:#?}", p.data[0]);
+}
+
+// The width follows the type: a `i32` global is four bytes and not eight.
+#[test]
+fn a_globals_room_is_as_wide_as_its_type() {
+    let p = lowered("var small: i32 = 258\nfn f(): i32 { small }\n");
+    assert_eq!(p.data[0].bytes, vec![2, 1, 0, 0], "{:#?}", p.data[0]);
+}

@@ -2083,17 +2083,37 @@ answer is not obvious from the rules alone.
     So none of the three is open, and the one answer given in advance still
     holds: none of them will be null. A "ptr" admits no absent address, as a
     reference admits none.
-  - Nothing at file scope has anywhere to live. A global "var" and a
-    constant the checker could not fold are both a name the back end writes
-    a reference to, and the back end emits no data for either — there is a
-    constant pool for literals and descriptors and no segment for anything a
-    declaration named. So a program with a global links against a symbol
-    nobody defined. What is wanted is small and is two things rather than
-    one: an evaluator for <const_expr>, so a constant folds whatever it was
-    written as; and a segment for the globals that are left, which have to
-    be somewhere because a global is a place and may be assigned to. The
-    second is also where the collector will have to be told to look, there
-    being no other root outside a stack.
+  - Nothing at file scope had anywhere to live, and both halves of what was
+    wanted are now written. A constant folds whatever it was written as: the
+    arithmetic, the shifts and the bitwise operators over integers, the
+    comparisons, the casts between numbers, and a name standing for a const
+    already declared — so "const N: i64 = 6 * 7" puts a 42 where the name was
+    and reaches no symbol at all. And what is left is a global, which cannot
+    fold because it is a *place*; each one is given as many bytes as its type
+    is, in a ".data" segment beside the constant pool and deliberately not in
+    it, since the pool is ".rodata" and a store into that faults. A global
+    nothing initialised starts as nought, and one nothing mentions is still
+    given its room: a global is a declaration and not a use.
+
+    Two things this turned up are worth having written down. The first is
+    that "sir::opt" had been sharing two reads of a global across a store
+    between them — the pass asks whether two instructions with the same
+    operands make the same value, and the answer had been yes for every way
+    of naming a declaration, which is true of a fn and of a const and false
+    of the one that is a place. It could not have been noticed before, since
+    no program holding a global had ever linked. The second is that what a
+    global may be initialised *to* is now exactly what a const may be: the
+    same evaluator answers both, so anything it cannot read leaves the global
+    starting at nought rather than refusing the program.
+
+    What is still not done is the part that was never only about a segment.
+    Nothing checks a constant for range, so a value too big for the type it
+    was declared as is neither folded away nor complained about — and a
+    division by zero in a const is left unfolded rather than reported, there
+    being nothing to report it. A "str" global writes no bytes, an address
+    not being known until the linker has run; it wants a relocation into the
+    pool, which nothing has asked for yet. And the collector still has to be
+    told to look here, there being no other root outside a stack.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it

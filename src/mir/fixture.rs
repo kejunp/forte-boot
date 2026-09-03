@@ -165,7 +165,7 @@ impl Fixture {
     }
 
     pub fn program(self, entry: MIRBlockId) -> MIRProgram {
-        MIRProgram { bodies: vec![self.body(entry)], pool: Vec::new() }
+        MIRProgram { bodies: vec![self.body(entry)], pool: Vec::new(), data: Vec::new() }
     }
 }
 

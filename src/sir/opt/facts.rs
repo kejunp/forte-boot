@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use crate::sir::sir_nodes::*;
 use crate::tir::tir_nodes::{TIRBinOp, TIRFnUses, TIRLit, TIRPrim};
-use crate::tir::ttir_nodes::{TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{TTIRItemKind, TTIRProgram, Ty, TyId};
 
 
 // What made each value, by the value's id. SSA is what makes this a table
@@ -162,7 +162,22 @@ fn within(
 // something different the second time, because a store between them is exactly
 // the effect the load has not got. A division may trap and is still the same
 // answer twice: if the first one trapped there is no second one.
-pub(super) fn known(kind: &SIRInstKind) -> bool {
+pub(super) fn known(ttir: &TTIRProgram, kind: &SIRInstKind) -> bool {
+    // A global is the exception, and it is the same exception a load is. `Item`
+    // reads what stands under a name: for a fn that is a value the linker
+    // settles and for a `const` it is a constant, but a global is a *place*,
+    // and two reads of one with a store between them are two answers. It sat in
+    // this list from the beginning and nothing caught it, because until there
+    // was a segment to put a global in no program with one ever linked -- so
+    // the one pass that would have shown it up could not be run.
+    if let SIRInstKind::Item(item) = kind {
+        if matches!(
+            ttir.items.get(*item).map(|held| &held.kind),
+            Some(TTIRItemKind::Global { .. })
+        ) {
+            return false;
+        }
+    }
     matches!(
         kind,
         SIRInstKind::Literal(_)

@@ -172,16 +172,20 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Const { ty, value, .. } => {
                     let held = self.ty(ty);
-                    // What it is worth, where that is written plainly enough
-                    // to read off. A const is the compile-time constant, so a
-                    // use of the name is the value and not a place holding it
-                    // -- and this is the only place the value is still to
-                    // hand, `TTIRItemKind::Const`'s own `value` being an
-                    // expression id nothing fills in.
-                    if let TIRExprKind::Literal { value: lit, .. } =
-                        &self.tir.exprs[value].kind
-                    {
-                        self.consts.insert(made, lit.clone());
+                    // What it is worth. A const is the compile-time constant,
+                    // so a use of the name is the value and not a place
+                    // holding it -- and this is the only place the value is
+                    // still to hand, `TTIRItemKind::Const`'s own `value` being
+                    // an expression id nothing fills in.
+                    //
+                    // Whatever it was written as and not a bare literal only:
+                    // see `consts`, which is what §8 asked for. A const this
+                    // cannot read is left out of the map, and a use of it stays
+                    // the symbol it was -- which links against nothing, and is
+                    // the same failure as before for a shrinking set of
+                    // programs rather than a new one for any.
+                    if let Some(lit) = self.const_value(value, 0) {
+                        self.consts.insert(made, lit);
                     }
                     let TTIRItemKind::Const { ty, .. } = &mut self.out.items[made].kind else {
                         continue;
@@ -189,15 +193,31 @@ impl<'a> Lowerer<'a> {
                     *ty = held;
                 }
 
-                TIRItemKind::Global { ty, .. } => {
+                TIRItemKind::Global { ty, init: written, .. } => {
                     let held = match ty {
                         Some(ty) => self.ty(ty),
                         None => self.types.fresh(),
                     };
-                    let TTIRItemKind::Global { ty, .. } = &mut self.out.items[made].kind else {
+                    // What it starts as, where that can be worked out. A global
+                    // is a place and the back end has to put bytes somewhere
+                    // for it (§8); which bytes is this, and a global with no
+                    // initialiser -- or one this cannot read -- starts as
+                    // nought, which is what an unwritten `var` means anywhere
+                    // else and what a data segment costs nothing to give.
+                    //
+                    // Kept on the item rather than in a map beside it, because
+                    // `TTIRItemKind::Global` has an `init` for exactly this and
+                    // has been carrying `None` since it was written.
+                    let start = written
+                        .and_then(|at| Some((self.const_value(at, 0)?, at)))
+                        .map(|(lit, at)| self.make(TTIRExprKind::Literal(lit), held, at));
+                    let TTIRItemKind::Global { ty, init, .. } =
+                        &mut self.out.items[made].kind
+                    else {
                         continue;
                     };
                     *ty = held;
+                    *init = start;
                 }
 
                 TIRItemKind::Namespace { items, .. } => {
