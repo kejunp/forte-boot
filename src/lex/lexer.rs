@@ -38,6 +38,9 @@ mod rules;
 mod scan;
 mod words;
 
+#[cfg(test)]
+mod tests;
+
 
 pub struct Lexer {
     input: Vec<char>,
