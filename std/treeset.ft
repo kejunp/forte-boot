@@ -1,0 +1,420 @@
+// `TreeSet`: each thing once, in the order the things are in.
+//
+// The treap `treemap.ft` lays out and explains, with no value run: a search
+// tree by element and a heap by a priority nobody chooses, its nodes linked by
+// *index* rather than by `ptr` so that a child which is not there can be -1
+// instead of the null address §3 says a pointer does not admit. Everything
+// that file says about why a plain search tree is a list when the elements
+// arrive sorted, and about what an element has to come with, is true here and
+// is not said twice.
+//
+// What it is for, against a `HashSet`, is the order: the smallest element, the
+// next one up, and a walk that comes out sorted. A hash sends neighbours to
+// unrelated places on purpose and can answer none of those.
+//
+// That this file repeats `treemap.ft` is the import's fault and not the
+// design's -- see the same note in `hashset.ft`.
+//
+//     fn less_i64(a: &i64, b: &i64): bool { a < b }
+//     var s: TreeSet<i64> = empty(less_i64)
+
+%symbol("__rt_alloc")
+fn room(bytes: i64): ptr u8
+
+pub struct TreeSet<T> {
+    pub elems: ptr T,
+    pub left:  ptr i64,
+    pub right: ptr i64,
+    pub pri:   ptr i64,
+    pub less:  fn(&T, &T): bool,
+    pub root:  i64,
+    // How many are in it. Not how many indices have been handed out, which is
+    // `used`: a removal gives an index back and the next thing put in takes it
+    // again, so the two part company the first time anything is taken out.
+    pub len:   i64,
+    pub used:  i64,
+    pub cap:   i64,
+    // The head of the chain of indices nothing is using, or -1. The chain runs
+    // through the `left` run, a dead node having no left child to keep there.
+    pub free:  i64,
+    pub seed:  i64,
+}
+
+pub fn stride<T>(p: ptr T): i64 {
+    unsafe let a = addr p[0] as i64
+    unsafe let b = addr p[1] as i64
+    b - a
+}
+
+pub fn less_i64(a: &i64, b: &i64): bool {
+    a < b
+}
+
+// ---- Making one -------------------------------------------------------------
+
+pub fn empty<T>(less: fn(&T, &T): bool): TreeSet<T> {
+    unsafe let no_t = 0 as ptr T
+    unsafe let no_i = 0 as ptr i64
+    TreeSet {
+        elems: no_t,
+        left:  no_i,
+        right: no_i,
+        pri:   no_i,
+        less:  less,
+        root:  -1,
+        len:   0,
+        used:  0,
+        cap:   0,
+        free:  -1,
+        seed:  -7046029254386353131,
+    }
+}
+
+pub fn len<T>(s: &TreeSet<T>): i64 {
+    s.len
+}
+
+pub fn is_empty<T>(s: &TreeSet<T>): bool {
+    s.len == 0
+}
+
+// ---- Room -------------------------------------------------------------------
+
+// Four runs, grown together, because a node is one subscript into all of them.
+// The indices do not change, so this is a copy and not a rebuild.
+pub fn grow<T>(s: *TreeSet<T>, want: i64) {
+    if want <= s.cap {
+        return
+    }
+    var cap = 8
+    while cap < want {
+        cap = cap * 2
+    }
+    unsafe let no_t = 0 as ptr T
+    unsafe let no_i = 0 as ptr i64
+    let t_bytes = cap * stride(no_t)
+    let i_bytes = cap * stride(no_i)
+    unsafe let elems = room(t_bytes) as ptr T
+    unsafe let left = room(i_bytes) as ptr i64
+    unsafe let right = room(i_bytes) as ptr i64
+    unsafe let pri = room(i_bytes) as ptr i64
+    var i = 0
+    while i < s.used {
+        unsafe elems[i] = s.elems[i]
+        unsafe left[i] = s.left[i]
+        unsafe right[i] = s.right[i]
+        unsafe pri[i] = s.pri[i]
+        i = i + 1
+    }
+    s.elems = elems
+    s.left = left
+    s.right = right
+    s.pri = pri
+    s.cap = cap
+}
+
+// `xorshift64`: three shifts and no memory, which is plenty for deciding the
+// shape of a tree.
+pub fn roll<T>(s: *TreeSet<T>): i64 {
+    var x = s.seed
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    s.seed = x
+    x
+}
+
+// ---- Finding ----------------------------------------------------------------
+
+// The node holding it, or -1. A walk down and no recursion: the descent has
+// nothing to do on the way back up.
+pub fn find<T>(s: &TreeSet<T>, x: &T): i64 {
+    let below = s.less
+    var at = s.root
+    while at >= 0 {
+        unsafe let under = below(x, &s.elems[at])
+        if under {
+            unsafe at = s.left[at]
+        } else {
+            unsafe let over = below(&s.elems[at], x)
+            if over {
+                unsafe at = s.right[at]
+            } else {
+                return at
+            }
+        }
+    }
+    -1
+}
+
+pub fn has<T>(s: &TreeSet<T>, x: &T): bool {
+    find(s, x) >= 0
+}
+
+pub fn elem_at<T>(s: &TreeSet<T>, at: i64): T {
+    unsafe let out = s.elems[at]
+    out
+}
+
+// ---- Walking in order --------------------------------------------------------
+
+// The smallest, or -1 for a set with none. All the way left, which is what a
+// search tree means.
+pub fn first<T>(s: &TreeSet<T>): i64 {
+    var at = s.root
+    if at < 0 {
+        return -1
+    }
+    unsafe var down = s.left[at]
+    while down >= 0 {
+        at = down
+        unsafe down = s.left[at]
+    }
+    at
+}
+
+// And the largest, which a `HashSet` cannot answer at all.
+pub fn last<T>(s: &TreeSet<T>): i64 {
+    var at = s.root
+    if at < 0 {
+        return -1
+    }
+    unsafe var down = s.right[at]
+    while down >= 0 {
+        at = down
+        unsafe down = s.right[at]
+    }
+    at
+}
+
+// The one after it: the smallest element greater than the one at `at`, or -1.
+// Found by descending again rather than by climbing, there being no parent to
+// climb to -- see `treemap.ft`, where the trade is set out.
+pub fn next<T>(s: &TreeSet<T>, at: i64): i64 {
+    if at < 0 {
+        return -1
+    }
+    let below = s.less
+    var best = -1
+    var down = s.root
+    while down >= 0 {
+        unsafe let over = below(&s.elems[at], &s.elems[down])
+        if over {
+            best = down
+            unsafe down = s.left[down]
+        } else {
+            unsafe down = s.right[down]
+        }
+    }
+    best
+}
+
+// ---- Putting things in -------------------------------------------------------
+
+pub fn turn_right<T>(s: *TreeSet<T>, at: i64): i64 {
+    unsafe let up = s.left[at]
+    unsafe s.left[at] = s.right[up]
+    unsafe s.right[up] = at
+    up
+}
+
+pub fn turn_left<T>(s: *TreeSet<T>, at: i64): i64 {
+    unsafe let up = s.right[at]
+    unsafe s.right[at] = s.left[up]
+    unsafe s.left[up] = at
+    up
+}
+
+pub fn leaf<T>(s: *TreeSet<T>, x: T): i64 {
+    // An index nothing is using, if a removal left one. The chain is walked
+    // from the front, so the most recently freed comes back first -- which is
+    // the one most likely to still be somewhere the machine can reach.
+    var at = s.free
+    if at >= 0 {
+        unsafe s.free = s.left[at]
+    } else {
+        grow(s, s.used + 1)
+        at = s.used
+        s.used = s.used + 1
+    }
+    let p = roll(s)
+    unsafe s.elems[at] = x
+    unsafe s.left[at] = -1
+    unsafe s.right[at] = -1
+    unsafe s.pri[at] = p
+    s.len = s.len + 1
+    at
+}
+
+// And the other way: an index nothing points at any more goes on the chain.
+// The elements are left where they are rather than cleared, there being
+// nothing to clear them to and nothing that reads a place off the chain.
+pub fn release<T>(s: *TreeSet<T>, at: i64) {
+    unsafe s.left[at] = s.free
+    s.free = at
+    s.len = s.len - 1
+}
+
+// Put it under `at`'s subtree and hand back what that subtree's root has
+// become, which is how a rotation reaches the node above without a parent
+// link: the caller writes back what it is given. The rotation happens on the
+// way *up*, once the new node is in and its priority can be compared with the
+// one it went under.
+//
+// What it hands back is the subtree's root and nothing else, so whether a node
+// was made is read off the length afterwards. A fn gives back one thing, and a
+// second run of the descent to ask a question the first one answered would
+// cost more than the subtraction does.
+pub fn sink<T>(s: *TreeSet<T>, at: i64, x: T): i64 {
+    if at < 0 {
+        return leaf(s, x)
+    }
+    let below = s.less
+    unsafe let under = below(&x, &s.elems[at])
+    if under {
+        unsafe let made = sink(s, s.left[at], x)
+        unsafe s.left[at] = made
+        unsafe let child = s.pri[made]
+        unsafe let here = s.pri[at]
+        if child > here {
+            return turn_right(s, at)
+        }
+        return at
+    }
+    unsafe let over = below(&s.elems[at], &x)
+    if over {
+        unsafe let made = sink(s, s.right[at], x)
+        unsafe s.right[at] = made
+        unsafe let child = s.pri[made]
+        unsafe let here = s.pri[at]
+        if child > here {
+            return turn_left(s, at)
+        }
+        return at
+    }
+    // Neither below nor above, so it is already in and nothing changes. A set
+    // keeps the element it has rather than the one just handed over: the two
+    // compare the same, and replacing one with the other would be work done to
+    // reach the state it was already in.
+    at
+}
+
+// Put one in, and say whether the set changed.
+pub fn add<T>(s: *TreeSet<T>, x: T): bool {
+    let before = s.len
+    let made = sink(s, s.root, x)
+    s.root = made
+    s.len > before
+}
+
+// ---- Taking things out -------------------------------------------------------
+
+// The node at `at` goes, and what its subtree's root has become comes back.
+//
+// A search tree cannot simply drop a node with two children -- something has
+// to take its place, and which something is where the balancing schemes differ.
+// A treap has the answer already: rotate the node *down*, each time bringing up
+// whichever child has the higher priority, and it is a leaf soon enough. The
+// tree stays a heap the whole way because every rotation moves a higher
+// priority above a lower one, and it stays a search tree because a rotation
+// always does.
+pub fn drop_node<T>(s: *TreeSet<T>, at: i64): i64 {
+    unsafe let l = s.left[at]
+    unsafe let r = s.right[at]
+    // A leaf, or near enough: the one child stands in its place.
+    if l < 0 {
+        release(s, at)
+        return r
+    }
+    if r < 0 {
+        release(s, at)
+        return l
+    }
+    unsafe let lp = s.pri[l]
+    unsafe let rp = s.pri[r]
+    if lp > rp {
+        // The left child comes up, which leaves `at` as its right child.
+        let up = turn_right(s, at)
+        unsafe s.right[up] = drop_node(s, at)
+        return up
+    }
+    let up = turn_left(s, at)
+    unsafe s.left[up] = drop_node(s, at)
+    up
+}
+
+// Find it and drop it, handing back what this subtree's root has become. The
+// descent is the same one `find` makes; what is different is that the way back
+// up has something to write.
+pub fn pull<T>(s: *TreeSet<T>, at: i64, x: &T): i64 {
+    if at < 0 {
+        return -1
+    }
+    let below = s.less
+    unsafe let under = below(x, &s.elems[at])
+    if under {
+        unsafe let made = pull(s, s.left[at], x)
+        unsafe s.left[at] = made
+        return at
+    }
+    unsafe let over = below(&s.elems[at], x)
+    if over {
+        unsafe let made = pull(s, s.right[at], x)
+        unsafe s.right[at] = made
+        return at
+    }
+    drop_node(s, at)
+}
+
+// Take one out, and say whether there was one.
+pub fn remove<T>(s: *TreeSet<T>, x: &T): bool {
+    let before = s.len
+    let made = pull(s, s.root, x)
+    s.root = made
+    s.len < before
+}
+
+// ---- Two of them ------------------------------------------------------------
+
+// The new set orders the way the first one does: an element that two sets
+// disagreed about would not survive being put in a third.
+pub fn union<T>(a: &TreeSet<T>, b: &TreeSet<T>): TreeSet<T> {
+    var out: TreeSet<T> = empty(a.less)
+    var i = first(a)
+    while i >= 0 {
+        add(*out, elem_at(a, i))
+        i = next(a, i)
+    }
+    var j = first(b)
+    while j >= 0 {
+        add(*out, elem_at(b, j))
+        j = next(b, j)
+    }
+    out
+}
+
+pub fn intersection<T>(a: &TreeSet<T>, b: &TreeSet<T>): TreeSet<T> {
+    var out: TreeSet<T> = empty(a.less)
+    var i = first(a)
+    while i >= 0 {
+        unsafe let both = has(b, &a.elems[i])
+        if both {
+            add(*out, elem_at(a, i))
+        }
+        i = next(a, i)
+    }
+    out
+}
+
+pub fn difference<T>(a: &TreeSet<T>, b: &TreeSet<T>): TreeSet<T> {
+    var out: TreeSet<T> = empty(a.less)
+    var i = first(a)
+    while i >= 0 {
+        unsafe let both = has(b, &a.elems[i])
+        if both == false {
+            add(*out, elem_at(a, i))
+        }
+        i = next(a, i)
+    }
+    out
+}
