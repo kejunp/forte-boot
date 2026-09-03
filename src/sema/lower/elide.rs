@@ -211,12 +211,16 @@ impl<'a> Lowerer<'a> {
         if seen.contains(&made) {
             return 0;
         }
-        let Some(&Some(id)) = self.from_item.get(made) else { return 0 };
+        // Which file the declaration is in as well as which item: this walks
+        // the whole suite's declarations, and a `struct Outer { inner: Inner }`
+        // whose `Inner` came from an import reaches into another file's arenas
+        // to count what it carries.
+        let Some(&Some((file, id))) = self.from_item.get(made) else { return 0 };
         seen.push(made);
-        let takes = match &self.tir.items[id].kind {
+        let takes = match &self.files[file].items[id].kind {
             TIRItemKind::Struct { generics, fields, .. } => {
                 lifetimes_of(generics)
-                    + fields.iter().map(|f| self.elided_in(f.ty, seen)).sum::<usize>()
+                    + fields.iter().map(|f| self.elided_in(file, f.ty, seen)).sum::<usize>()
             }
             TIRItemKind::Enum { generics, variants, .. } => {
                 lifetimes_of(generics)
@@ -227,16 +231,16 @@ impl<'a> Lowerer<'a> {
                             // so it carries no reference either.
                             TIRPayload::None | TIRPayload::Discriminant(_) => 0,
                             TIRPayload::Tuple(tys) => {
-                                tys.iter().map(|&t| self.elided_in(t, seen)).sum()
+                                tys.iter().map(|&t| self.elided_in(file, t, seen)).sum()
                             }
                             TIRPayload::Named(fields) => {
-                                fields.iter().map(|f| self.elided_in(f.ty, seen)).sum()
+                                fields.iter().map(|f| self.elided_in(file, f.ty, seen)).sum()
                             }
                         })
                         .sum::<usize>()
             }
             TIRItemKind::TypeAlias { generics, ty, .. } => {
-                lifetimes_of(generics) + self.elided_in(*ty, seen)
+                lifetimes_of(generics) + self.elided_in(file, *ty, seen)
             }
             _ => 0,
         };
@@ -248,32 +252,32 @@ impl<'a> Lowerer<'a> {
     // any declaration it names and hands no lifetime to -- a `struct Outer {
     // inner: Inner }` carries whatever `Inner` does, since the regions its
     // fields stand in have to come from somewhere.
-    fn elided_in(&self, ty: TIRTypeId, seen: &mut Vec<TTIRItemId>) -> usize {
-        match &self.tir.types[ty].kind {
+    fn elided_in(&self, file: usize, ty: TIRTypeId, seen: &mut Vec<TTIRItemId>) -> usize {
+        match &self.files[file].types[ty].kind {
             TIRTypeKind::Ref { life, inner, .. } => {
-                usize::from(life.is_none()) + self.elided_in(*inner, seen)
+                usize::from(life.is_none()) + self.elided_in(file, *inner, seen)
             }
-            TIRTypeKind::Ptr(inner) => self.elided_in(*inner, seen),
+            TIRTypeKind::Ptr(inner) => self.elided_in(file, *inner, seen),
             TIRTypeKind::Array { elem, .. } | TIRTypeKind::Run(elem) => {
-                self.elided_in(*elem, seen)
+                self.elided_in(file, *elem, seen)
             }
             TIRTypeKind::Tuple(members) => {
-                members.iter().map(|&m| self.elided_in(m, seen)).sum()
+                members.iter().map(|&m| self.elided_in(file, m, seen)).sum()
             }
             TIRTypeKind::Fn { params, ret, .. } => {
-                params.iter().map(|&p| self.elided_in(p, seen)).sum::<usize>()
-                    + ret.map(|r| self.elided_in(r, seen)).unwrap_or(0)
+                params.iter().map(|&p| self.elided_in(file, p, seen)).sum::<usize>()
+                    + ret.map(|r| self.elided_in(file, r, seen)).unwrap_or(0)
             }
             TIRTypeKind::Named { path, args } => {
                 let written = args.iter().filter(|a| matches!(a, TIRGenericArg::Life(_))).count();
                 let inner: usize = args
                     .iter()
                     .map(|a| match a {
-                        TIRGenericArg::Type(ty) => self.elided_in(*ty, seen),
+                        TIRGenericArg::Type(ty) => self.elided_in(file, *ty, seen),
                         TIRGenericArg::Life(_) => 0,
                     })
                     .sum();
-                let named = match self.names.get(&path.join("::")).copied() {
+                let named = match self.look_in(file, &path.join("::")) {
                     Some(item) => self.takes_of(item, seen).saturating_sub(written),
                     None => 0,
                 };

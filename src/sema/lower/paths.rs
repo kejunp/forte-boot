@@ -43,7 +43,7 @@ impl<'a> Lowerer<'a> {
         if let Some((of, index)) = self.variant_path(path) {
             return self.variant_lit(of, index, &[], id);
         }
-        match self.names.get(&path.join("::")).copied() {
+        match self.look(&path.join("::")) {
             Some(item) => {
                 // "A `<const_decl>` is the compile-time constant" (§2), so a
                 // name that stands for one stands for its value and not for

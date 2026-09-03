@@ -32,9 +32,10 @@
 //
 // ---- What a key has to come with ---------------------------------------------
 //
-// An ordering, handed in when the map is made, for the reason `hashmap.ft`
-// gives at more length: there are no traits reaching this far, and the
-// built-in `<` over a struct compares where the two *are*.
+// An ordering, handed in when the map is made, for the reason `order.ft` gives
+// at more length: there are no traits reaching this far, and the built-in `<`
+// over a struct compares where the two *are*. That file holds the one for the
+// type most keys are.
 //
 //     fn less_i64(a: &i64, b: &i64): bool { a < b }
 //     var m: TreeMap<i64, i64> = empty(less_i64)
@@ -43,8 +44,8 @@
 // this file reads "the same key", so an ordering that says a key is less than
 // itself makes every key equal to every other.
 
-%symbol("__rt_alloc")
-fn room(bytes: i64): ptr u8
+import mem::{room, stride};
+import order::less_i64;
 
 pub struct TreeMap<K, V> {
     pub keys:  ptr K,
@@ -69,16 +70,6 @@ pub struct TreeMap<K, V> {
     // behaves the same way twice, which is what makes a wrong answer here
     // something that can be looked at again.
     pub seed:  i64,
-}
-
-pub fn stride<T>(p: ptr T): i64 {
-    unsafe let a = addr p[0] as i64
-    unsafe let b = addr p[1] as i64
-    b - a
-}
-
-pub fn less_i64(a: &i64, b: &i64): bool {
-    a < b
 }
 
 // ---- Making one -------------------------------------------------------------

@@ -18,7 +18,7 @@ use expand::Expander;
 use tir::lower::Lowerer;
 use parse::parser::Parser;
 use prep::preprocess;
-use sema::imports::ImportResolver;
+use sema::imports::{ImportResolver, ParsedSuite};
 use sema::names;
 use sema::scopes::Scopes;
 
@@ -145,23 +145,66 @@ fn compile(
         return false;
     }
 
-    // Every file, in the order the resolver read them, turned into the typed
-    // tree. This is where the compiler stops being about what was written and
-    // starts being about what it means.
-    let mut stopped = false;
-    for suite in resolver.suites() {
-        let name = suite.path.strip_prefix(root.parent().unwrap_or(Path::new(".")))
-            .unwrap_or(&suite.path);
-        let at = resolver.module_of(&suite.path);
-        let (ttir, errors) = sema::lower::Lowerer::new(&suite.tir).lower(at);
+    // Every file at once, turned into one typed tree. This is where the
+    // compiler stops being about what was written and starts being about what
+    // it means -- and where it stops being about a file.
+    //
+    // One tree and not one per file, which is what makes an import worth
+    // writing. A generic declared in one file and used in another has to be
+    // monomorphised against the use, and two separate programs have nothing to
+    // monomorphise: `empty<K, V>()` in `hashmap.ft` becomes a body only where
+    // somebody says what `K` and `V` are. So the suite is the unit from here
+    // down, and every pass below runs once.
+    let files: Vec<&ParsedSuite> = resolver.suites().collect();
+    let tirs: Vec<&tir::tir_nodes::TIRProgram> = files.iter().map(|s| &s.tir).collect();
+    let paths: Vec<Vec<String>> =
+        files.iter().map(|s| resolver.module_of(&s.path)).collect();
+
+    // What each file's imports bound, with the file said as a number: the
+    // resolver holds a path on disk and `sema::lower` would rather not.
+    let where_at = |held: &Path| files.iter().position(|s| s.path == held);
+    let bound: Vec<Vec<sema::lower::Bound>> = files
+        .iter()
+        .map(|s| {
+            s.bindings
+                .iter()
+                .filter_map(|b| {
+                    Some(sema::lower::Bound {
+                        name: b.name.clone(),
+                        file: where_at(&b.home)?,
+                        path: b.path.clone(),
+                    })
+                })
+                .collect()
+        })
+        .collect();
+
+    // Every file's own name, for a report to be quoted against.
+    let shown: Vec<String> = files
+        .iter()
+        .map(|s| {
+            s.path
+                .strip_prefix(root.parent().unwrap_or(Path::new(".")))
+                .unwrap_or(&s.path)
+                .display()
+                .to_string()
+        })
+        .collect();
+    let quoted: Vec<Source> = files
+        .iter()
+        .zip(shown.iter())
+        .map(|(s, name)| Source::new(name, &s.text))
+        .collect();
+    let name = Path::new(shown.first().map(|s| s.as_str()).unwrap_or("suite"));
+
+    {
+        let (ttir, errors) =
+            sema::lower::Lowerer::across(tirs, paths).lower_suite(&bound);
         if !errors.is_empty() {
-            let shown = name.display().to_string();
-            let quoted = Source::new(&shown, &suite.text);
-            eprintln!("{}\n", errors.render(&quoted));
+            eprintln!("{}\n", errors.render_across(&quoted));
         }
         if errors.has_errors() {
-            stopped = true;
-            continue;
+            return false;
         }
 
         // What the checker made of it, and what every pass built on it can now
@@ -208,8 +251,7 @@ fn compile(
             eprintln!("{}: {}", name.display(), said);
         }
         if !made.refused.is_empty() {
-            stopped = true;
-            continue;
+            return false;
         }
         let m = mir::machine::Machine::of(target);
         let mut lowerer = mir::lower::Lowerer::new(&made, m);
@@ -309,7 +351,7 @@ fn compile(
         }
         let _ = scopes;
     }
-    !stopped
+    true
 }
 
 // Every instruction the bodies can still reach, which is what `sir::opt`

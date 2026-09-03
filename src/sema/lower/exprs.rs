@@ -516,7 +516,7 @@ impl<'a> Lowerer<'a> {
                     made.push(TTIRStmt::Expr { is_unsafe: *is_unsafe, expr });
                 }
                 TIRStmt::Item(item) => {
-                    if let Some(made_item) = self.made[*item] {
+                    if let Some(made_item) = self.made[self.at][*item] {
                         made.push(TTIRStmt::Item(made_item));
                     }
                 }

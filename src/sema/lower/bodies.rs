@@ -24,7 +24,7 @@ impl<'a> Lowerer<'a> {
         for &id in items {
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
-                    let Some(made) = self.made[id] else { continue };
+                    let Some(made) = self.made[self.at][id] else { continue };
                     let Some(value) = f.body else { continue };
                     self.here = self.span(id);
                     self.params = type_names_of(&f.generics);

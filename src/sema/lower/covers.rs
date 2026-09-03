@@ -105,7 +105,7 @@ impl<'a> Lowerer<'a> {
             // was settled when the pattern was lowered, and asking `names` here
             // asks the same question the same way.
             TIRPatKind::Name(path) => {
-                path.len() == 1 && !self.names.contains_key(&path[0])
+                path.len() == 1 && self.look(&path[0]).is_none()
             }
             // A tuple has one shape, so a pattern that takes everything in
             // every place takes the whole of it: `(x, y)` matches every pair.

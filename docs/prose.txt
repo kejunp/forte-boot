@@ -1692,19 +1692,33 @@ answer is not obvious from the rules alone.
   - <import_decl> is a "::" tree: a group under a common path, a group
     inside a group, a glob, and an "as" alias on the leaf it renames. An
     import is a namespace someone else wrote and is reached like one, which
-    leaves "." meaning only "into a value at run time". Settled. What it does
-    not say is where a path is looked up, whether a name that is not a legal
-    identifier can be imported at all, or what a glob does to a name already
-    in scope -- whether it loses to the name written by hand, or is an error
-    naming both.
+    leaves "." meaning only "into a value at run time". Settled, and settled
+    now in the compiler as well as on the page: an imported name reaches the
+    file that imported it and no other file, an alias is what that file calls
+    it, and a glob loses to a name written by hand. Where a path is looked up
+    is section 1's -- a module is a file, and the longest prefix that names
+    one is the module.
+
+    What made this more than a resolver's job is generics. A "fn empty<K,
+    V>()" written in one file becomes a body only where somebody says what
+    "K" and "V" are, so a suite whose files were separate programs would have
+    nothing to make it against. The whole suite is lowered into one typed
+    tree for that reason, and the visibility written on a declaration is what
+    holds it together: a name that is not "pub" is not reachable from another
+    file, by an import or by writing its path out.
+
+    A name that is not a legal identifier still cannot be imported, and
+    nothing says what one would mean.
   - A path may start at "suite", "super" or "self", and a file is a module so
     that all three have something to mean (section 1). They are segments and
     not roots, which is what lets "super" repeat: pinning them to the front
     of a path wants the token after the "::" that follows a "super", and that
     is one more than an LR(1) table holds. Settled. The cost is that
     "a::super::b" parses, a root in the middle where it names nothing, and
-    only the resolver can turn it down. Nor is it said what a file's module
-    is called, or whether two files may name the same one.
+    only the resolver can turn it down. A file's module is its path from the
+    suite root, which is what stands in front of every symbol it compiles to
+    -- so two files never name the same module, and two files may each
+    declare a "stride" without either being the other's.
   - A receiver is "self", "&self" or "*self", and there is no "self: T": the
     type is the one the impl names, so the annotation only ever repeated it,
     and with the type gone the reference went where the type had been.

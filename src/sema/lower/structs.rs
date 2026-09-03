@@ -34,7 +34,7 @@ impl<'a> Lowerer<'a> {
         let TIRExprKind::Name(path) = self.tir.exprs[base].kind.clone() else {
             return self.not_yet("a struct literal whose head is not a name", at);
         };
-        let Some(item) = self.names.get(&path.join("::")).copied() else {
+        let Some(item) = self.look(&path.join("::")) else {
             let name = path.join("::");
             self.errors.push(
                 Diagnostic::error(format!("no type is called `{}`", name), self.at(base))

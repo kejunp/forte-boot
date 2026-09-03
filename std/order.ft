@@ -1,0 +1,36 @@
+// Comparing things the language will not compare for you.
+//
+// A container that orders its keys needs to be told how, and one that hashes
+// them needs to be told that too. Neither is something the compiler can do for
+// an arbitrary `T`: there are no traits reaching this far -- an `impl<T>` does
+// not yet scope its own parameter -- and the built-in `==` over a struct
+// compares where the two *are* rather than what they hold, which is a wrong
+// answer that looks like an answer.
+//
+// So the operations are values, handed to a container once when it is made,
+// and this file holds the ones for the type most keys are.
+
+// Strictly less. `a` and `b` are references and an operator over a reference
+// is an operator over what it refers to (§3), so this is the comparison of the
+// two i64 and not of the two addresses.
+pub fn less_i64(a: &i64, b: &i64): bool {
+    a < b
+}
+
+pub fn eq_i64(a: &i64, b: &i64): bool {
+    a == b
+}
+
+// `splitmix64`'s finaliser: three shifts, two multiplies and no state.
+//
+// It matters more than a hash usually does, because the tables here probe
+// *forward*: keys that hash near each other pile into one another's places, so
+// the identity hash a counter would produce turns a table into a linear scan.
+// This sends neighbouring keys somewhere unrelated, which is all that is asked
+// of it -- nothing here is keeping a secret.
+pub fn mix(k: &i64): i64 {
+    // The first line reads the key and the rest work on what it read.
+    var h = (k ^ (k >> 30)) * -4658895280553007687
+    h = (h ^ (h >> 27)) * -7723592293110705685
+    h ^ (h >> 31)
+}

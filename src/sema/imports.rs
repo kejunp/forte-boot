@@ -34,10 +34,9 @@
 //     at the second. A reader can see the first rule and write around it; no
 //     reader can be asked to choose between two globs.
 
-// Nothing outside `sema` calls into this yet -- the pass that would is the one
-// that turns a resolved suite into a typed tree. The allow is for that, and
-// comes off with it.
-#![allow(dead_code)]
+// What reads it is `sema::lower`, which takes the whole suite and lowers it
+// into one tree: the `bindings` below become the names each file can see that
+// it did not declare. `main::compile` is what puts the two together.
 
 use std::collections::HashMap;
 use std::fs;
@@ -215,6 +214,11 @@ impl ImportResolver {
         out
     }
 
+    // One file by the path it was read from. Only the tests below ask: a build
+    // walks every file in the order they were read (`suites`) and never wants
+    // one in particular, and a compiler that kept an accessor nothing calls
+    // would be keeping it for the same reason nobody deleted it.
+    #[cfg(test)]
     pub fn suite(&self, file: &Path) -> Option<&ParsedSuite> {
         self.parsed.get(&normalise(file))
     }

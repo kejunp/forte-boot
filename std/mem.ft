@@ -1,0 +1,44 @@
+// Room, and how wide a thing is.
+//
+// The two things every container here needs and neither of which the language
+// has a word for. They were written out again in each of the five files that
+// wanted them, back when a name declared in one file did not reach another;
+// they are written once now.
+
+// Room that outlives the frame asking for it.
+//
+// `%symbol` puts a Forte declaration under a name something else defines, and
+// `__rt_alloc` is `mir::runtime`'s name for the runtime's untraced allocator.
+// It is deliberately not `__rt_gc_alloc`: that one takes a type descriptor
+// beside the size so the collector can scan what it hands back, and nothing in
+// the language can spell one. So what comes back is room the collector does
+// not walk into, and a container of things holding pointers keeps nothing
+// alive.
+//
+// Nothing here frees. What the collector owns it takes back on its own, and a
+// container that had to be told when to would be the only thing in the
+// language that did.
+%symbol("__rt_alloc")
+pub fn room(bytes: i64): ptr u8
+
+// How far apart two of them stand.
+//
+// There is no `size_of`, so it is measured rather than asked for: §3 says a
+// pointer is indexed by the stride of what it points at, so the difference
+// between the addresses of `p[0]` and `p[1]` *is* the stride. Three
+// instructions, and right for every `T` a monomorphisation ever produces --
+// which is more than a hand-written table of widths would be.
+//
+// A size and a stride are not the same number. A three-byte element with a
+// four-byte alignment strides four, and the stride is the one a container
+// wants: it is what the room has to be multiplied by for element `i` to land
+// where `p[i]` will look for it.
+//
+// Nothing is read through the pointer, so a `0 as ptr T` measures as well as a
+// real one -- which is what lets a container work out how much room to ask for
+// before it has any.
+pub fn stride<T>(p: ptr T): i64 {
+    unsafe let a = addr p[0] as i64
+    unsafe let b = addr p[1] as i64
+    b - a
+}

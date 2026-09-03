@@ -8,9 +8,8 @@
 // allocation per entry, and this file has neither to spare.
 //
 // The room is a `ptr` per run, reached with `p[i]`, as `vec.ft` reaches its
-// elements and for the same reasons. Everything said there about `__rt_alloc`,
-// about the collector not walking what it hands back, and about nothing here
-// ever freeing, is true here too.
+// elements and for the same reasons. `room` and `stride` are `mem.ft`'s, which
+// is where what the collector does and does not walk into is set out.
 //
 // ---- What a key has to come with -------------------------------------------
 //
@@ -28,12 +27,10 @@
 // That is a requirement written down rather than a bound the checker enforces,
 // and it is the honest shape today: a map that quietly used `==` would be
 // right for the scalars and wrong for everything else, and wrong without
-// saying so.
-//
-// `mix` below is here to be that hash for the integers, which is most keys.
+// saying so. `order.ft` holds the pair for the type most keys are.
 
-%symbol("__rt_alloc")
-fn room(bytes: i64): ptr u8
+import mem::{room, stride};
+import order::{eq_i64, mix};
 
 // What a place in the runs is doing. Three states and not two, because a
 // removal cannot simply mark a place free: a key that probed *past* it on the
@@ -61,34 +58,6 @@ pub struct HashMap<K, V> {
     // against, and it is why a map that is churned rather than filled still
     // rehashes.
     pub used:  i64,
-}
-
-// How wide one of them is, measured rather than asked for -- see `vec.ft`,
-// which explains why there is nothing to ask.
-pub fn stride<T>(p: ptr T): i64 {
-    unsafe let a = addr p[0] as i64
-    unsafe let b = addr p[1] as i64
-    b - a
-}
-
-// A hash for the integers, and the one this file uses in its own tests.
-//
-// It is `splitmix64`'s finaliser: three shifts, two multiplies and no state,
-// which is enough to send neighbouring keys to unrelated places. That matters
-// more here than in a chained map -- linear probing walks *forward*, so keys
-// that hash near each other pile into one another's places, and the identity
-// hash a counter would produce turns a map into a linear scan.
-pub fn mix(k: &i64): i64 {
-    // The first line reads the key and the rest work on what it read: an
-    // operator over a reference is an operator over the place it refers to
-    // (§3), so `k ^ (k >> 30)` is an `i64` and `h` is one from there on.
-    var h = (k ^ (k >> 30)) * -4658895280553007687
-    h = (h ^ (h >> 27)) * -7723592293110705685
-    h ^ (h >> 31)
-}
-
-pub fn eq_i64(a: &i64, b: &i64): bool {
-    a == b
 }
 
 // ---- Making one -------------------------------------------------------------

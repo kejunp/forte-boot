@@ -29,6 +29,7 @@ mod paths;
 mod refs;
 mod regions;
 mod structs;
+mod suites;
 
 // Source to typed tree. The passes before this one must all succeed: what this
 // makes of a tree they turned down is not what is under test.
@@ -63,6 +64,58 @@ fn clean(source: &str) -> TTIRProgram {
 
 fn refused(source: &str) -> String {
     typed(source).1.join("\n")
+}
+
+// Several files at once, each with its module path and what its imports bound.
+// The same road `main::compile` takes for a real build, minus the resolver:
+// what a path on disk names is `sema::imports`' question and is tested there,
+// and what is under test here is what happens once it is answered.
+fn suite(files: &[(&str, &str)], bound: &[Vec<Bound>]) -> (TTIRProgram, Vec<String>) {
+    let mut tirs = Vec::new();
+    for (_, source) in files {
+        let prepped = preprocess(source);
+        let mut p = Parser::new(Lexer::new(&prepped));
+        let root = p.parse();
+        assert!(p.errors().is_empty(), "{}\n{:#?}", source, p.errors());
+        let root = {
+            let mut e = Expander::new(&mut p);
+            let out = e.expand(&root);
+            assert!(e.errors().is_empty(), "{}\n{:#?}", source, e.errors());
+            out
+        };
+        let mut l = TIRLowerer::new(&p);
+        l.lower(&root);
+        assert!(l.errors().is_empty(), "{}\n{:#?}", source, l.errors());
+        tirs.push(l.finish());
+    }
+    let paths: Vec<Vec<String>> =
+        files.iter().map(|(name, _)| vec![name.to_string()]).collect();
+    let held: Vec<&crate::tir::tir_nodes::TIRProgram> = tirs.iter().collect();
+    let (ttir, errors) = Lowerer::across(held, paths).lower_suite(bound);
+
+    // Each quoted against its own text, which is the whole of why a diagnostic
+    // carries a file at all.
+    let texts: Vec<Vec<char>> = files.iter().map(|(_, s)| s.chars().collect()).collect();
+    let names: Vec<String> = files.iter().map(|(n, _)| format!("{}.ft", n)).collect();
+    let quoted: Vec<crate::error::Source> = names
+        .iter()
+        .zip(texts.iter())
+        .map(|(name, text)| crate::error::Source::new(name, text))
+        .collect();
+    let said = errors
+        .iter()
+        .zip(errors.whose().iter())
+        .map(|(e, &whose)| e.render(&quoted[whose]))
+        .collect();
+    (ttir, said)
+}
+
+fn bound(name: &str, file: usize, path: &[&str]) -> Bound {
+    Bound {
+        name: name.to_string(),
+        file,
+        path: path.iter().map(|p| p.to_string()).collect(),
+    }
 }
 
 // Everything a file declares becomes an item, and every one of them a symbol.

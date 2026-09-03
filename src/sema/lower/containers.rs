@@ -86,7 +86,7 @@ impl<'a> Lowerer<'a> {
         at: TIRExprId,
     ) -> TyId {
         let name = if hashed { format!("Hash{}", kind) } else { kind.to_string() };
-        match self.names.get(&name).copied() {
+        match self.look(&name) {
             Some(item) if matches!(
                 self.out.items[item].kind,
                 TTIRItemKind::Struct { .. } | TTIRItemKind::Enum { .. }

@@ -296,7 +296,7 @@ impl<'a> Lowerer<'a> {
             return None;
         }
         let last = path.last()?;
-        let of = *self.names.get(&path[..path.len() - 1].join("::"))?;
+        let of = self.look(&path[..path.len() - 1].join("::"))?;
         let TTIRItemKind::Enum { variants, .. } = &self.out.items[of].kind else { return None };
         variants.iter().position(|v| v.name == *last).map(|i| (of, i))
     }

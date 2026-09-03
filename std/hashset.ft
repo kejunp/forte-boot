@@ -4,27 +4,26 @@
 // elements and one of what each place is doing, a power-of-two capacity so the
 // wrap is an `&`, three quarters as the load factor, and a removed place left
 // as `GONE` rather than `FREE` so that anything which probed past it is still
-// found. Everything that file says about why, about `__rt_alloc`, and about
-// what a key has to come with, is true here and is not said twice.
+// found. Everything that file says about why, and about what an element has to
+// come with, is true here and is not said twice.
 //
 // What is not the same is that there is no second run. A set is not a map to
 // nothing -- a map to nothing still reserves the room, still copies it when it
 // grows, and still asks the caller what the nothing is. This holds elements.
 //
-// That the two files repeat each other is the import's fault and not the
-// design's: a name declared in one file does not reach another, so there is no
-// writing this as `HashMap<T, ()>` and no sharing the probe with the file that
-// already has one. It is written down here so the next person knows it is a
-// thing to undo rather than a thing to copy again.
+// The probe is still written out twice, here and in `hashmap.ft`. What is not
+// is everything underneath it: `room` and `stride` are `mem.ft`'s and the hash
+// and the equality are `order.ft`'s, so the two files differ where they are
+// actually different and nowhere else. Sharing the probe as well wants a
+// `HashMap<T, ()>` whose second run costs nothing, and a run that costs
+// nothing is not a thing this language has yet.
 //
 // ---- What an element has to come with ---------------------------------------
 //
-//     fn hash_i64(x: &i64): i64 { mix(x) }
-//     fn eq_i64(a: &i64, b: &i64): bool { a == b }
 //     var s: HashSet<i64> = empty(mix, eq_i64)
 
-%symbol("__rt_alloc")
-fn room(bytes: i64): ptr u8
+import mem::{room, stride};
+import order::{eq_i64, mix};
 
 const FREE: u8 = 0
 const TAKEN: u8 = 1
@@ -40,24 +39,6 @@ pub struct HashSet<T> {
     // `TAKEN` plus `GONE`, which is what the growth is measured against -- see
     // `hashmap.ft`, where the same field is the same argument.
     pub used:  i64,
-}
-
-pub fn stride<T>(p: ptr T): i64 {
-    unsafe let a = addr p[0] as i64
-    unsafe let b = addr p[1] as i64
-    b - a
-}
-
-// `splitmix64`'s finaliser, for the integers. See `hashmap.ft` for why an
-// identity hash turns a linear-probing table into a linear scan.
-pub fn mix(x: &i64): i64 {
-    var h = (x ^ (x >> 30)) * -4658895280553007687
-    h = (h ^ (h >> 27)) * -7723592293110705685
-    h ^ (h >> 31)
-}
-
-pub fn eq_i64(a: &i64, b: &i64): bool {
-    a == b
 }
 
 // ---- Making one -------------------------------------------------------------

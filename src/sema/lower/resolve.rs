@@ -23,7 +23,7 @@ use super::Lowerer;
 impl<'a> Lowerer<'a> {
     pub(super) fn resolve(&mut self, items: &[TIRItemId]) {
         for &id in items {
-            let Some(made) = self.made[id] else { continue };
+            let Some(made) = self.made[self.at][id] else { continue };
             self.here = self.span(id);
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
@@ -202,7 +202,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Namespace { items, .. } => {
                     let inner: Vec<TTIRItemId> =
-                        items.iter().filter_map(|&i| self.made[i]).collect();
+                        items.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     self.resolve(&items);
                     let TTIRItemKind::Namespace { items, .. } = &mut self.out.items[made].kind
                     else {
@@ -213,7 +213,7 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Trait { members, .. } => {
                     let inner: Vec<TTIRItemId> =
-                        members.iter().filter_map(|&i| self.made[i]).collect();
+                        members.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     self.resolve(&members);
                     let TTIRItemKind::Trait { members, .. } = &mut self.out.items[made].kind
                     else {
@@ -234,7 +234,7 @@ impl<'a> Lowerer<'a> {
                         None => (self.ty(ty), None),
                     };
                     let inner: Vec<TTIRItemId> =
-                        members.iter().filter_map(|&i| self.made[i]).collect();
+                        members.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     let held = self.subject.replace(subject);
                     self.resolve(&members);
                     self.subject = held;
@@ -330,7 +330,7 @@ impl<'a> Lowerer<'a> {
             return None;
         };
         let name = path.join("::");
-        let Some(item) = self.names.get(&name).copied() else {
+        let Some(item) = self.look(&name) else {
             self.errors.push(
                 Diagnostic::error(format!("no trait is called `{}`", name), at)
                     .with_label("nothing declares it")
@@ -390,7 +390,7 @@ impl<'a> Lowerer<'a> {
                         TIRGenericArg::Life(_) => None,
                     })
                     .collect();
-                match self.names.get(&path.join("::")).copied() {
+                match self.look(&path.join("::")) {
                     // "an alias is a name for a type and not a type, so once
                     // the resolver has followed it there is nothing left of it"
                     Some(item) => match &self.out.items[item].kind {

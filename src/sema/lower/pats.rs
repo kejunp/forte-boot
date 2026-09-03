@@ -91,7 +91,7 @@ impl<'a> Lowerer<'a> {
 
             TIRPatKind::Name(path) => {
                 // It names a constant, so it tests against one.
-                let named = self.names.get(&path.join("::")).copied();
+                let named = self.look(&path.join("::"));
                 if let Some(item) = named {
                     if matches!(self.out.items[item].kind, TTIRItemKind::Const { .. }) {
                         let held = self.item_ty(item);
@@ -265,7 +265,7 @@ impl<'a> Lowerer<'a> {
                         id,
                     );
                 }
-                let Some(item) = self.names.get(&path.join("::")).copied() else {
+                let Some(item) = self.look(&path.join("::")) else {
                     let name = path.join("::");
                     self.errors.push(
                         Diagnostic::error(format!("no type is called `{}`", name), self.pat_at(id))

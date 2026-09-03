@@ -12,14 +12,14 @@
 // next one up, and a walk that comes out sorted. A hash sends neighbours to
 // unrelated places on purpose and can answer none of those.
 //
-// That this file repeats `treemap.ft` is the import's fault and not the
-// design's -- see the same note in `hashset.ft`.
+// The treap is still written out twice, here and in `treemap.ft`; what is
+// underneath it is not, `room` and `stride` being `mem.ft`'s and the ordering
+// `order.ft`'s. See the same note in `hashset.ft`.
 //
-//     fn less_i64(a: &i64, b: &i64): bool { a < b }
 //     var s: TreeSet<i64> = empty(less_i64)
 
-%symbol("__rt_alloc")
-fn room(bytes: i64): ptr u8
+import mem::{room, stride};
+import order::less_i64;
 
 pub struct TreeSet<T> {
     pub elems: ptr T,
@@ -38,16 +38,6 @@ pub struct TreeSet<T> {
     // through the `left` run, a dead node having no left child to keep there.
     pub free:  i64,
     pub seed:  i64,
-}
-
-pub fn stride<T>(p: ptr T): i64 {
-    unsafe let a = addr p[0] as i64
-    unsafe let b = addr p[1] as i64
-    b - a
-}
-
-pub fn less_i64(a: &i64, b: &i64): bool {
-    a < b
 }
 
 // ---- Making one -------------------------------------------------------------
