@@ -33,7 +33,7 @@
 // `sema` is where that is refused, and inventing a zero here would be this
 // pass answering a question that is not its own.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::dom::Dominators;
 use super::sir_nodes::*;
@@ -182,7 +182,18 @@ fn place(
         body.blocks.iter().map(|block| vec![None; block.phis.len()]).collect();
 
     // Where each slot is stored to, gathered once rather than per slot.
-    let mut stores: HashMap<SIRSlotId, Vec<SIRBlockId>> = HashMap::new();
+    //
+    // **A `BTreeMap` because this is iterated, and the order it is iterated in
+    // reaches the output.** A phi placed here is a value pushed onto the body's
+    // arena, so the order the slots come out in is the order the values are
+    // numbered in -- and everything downstream, the register allocator above
+    // all, walks values in that numbering. A `HashMap` is seeded afresh per
+    // process, so the same source compiled twice came out as two different
+    // programs: not merely two spellings of one, but two, one of which divided
+    // by the wrong register. Nothing else in this pass reads the map, so
+    // ordering it costs a comparison per slot and buys a compiler that answers
+    // the same thing twice.
+    let mut stores: BTreeMap<SIRSlotId, Vec<SIRBlockId>> = BTreeMap::new();
     for (at, block) in body.blocks.iter().enumerate() {
         if !live[at] {
             continue;

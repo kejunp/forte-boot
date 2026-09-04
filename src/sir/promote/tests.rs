@@ -350,3 +350,88 @@ fn a_block_nothing_reaches_holds_nothing_this_pass_answers_for() {
     assert_eq!(count(body, |k| matches!(k, SIRInstKind::Drop(_))), 1);
     assert_eq!(count(body, |k| matches!(k, SIRInstKind::DropSlot(_))), 0);
 }
+
+
+// ---- The order the phis are placed in ----------------------------------------
+
+// Placing a phi pushes a value onto the body's arena, so the order the slots
+// are walked in is the order the values are numbered in -- and everything
+// downstream, the register allocator above all, walks that numbering.
+//
+// It used to be a `HashMap`'s order, which Rust seeds afresh per process. So
+// the same source compiled twice came out as two different programs: not two
+// spellings of one, but two, and one of them put a loop's counter in `%rdx`
+// where the divide clobbers it and divided by nought. The nondeterminism is
+// what made that hazard show up at random, and the hazard is fixed in
+// `mir::asm::x86_64` -- but a compiler that answers differently on Tuesday is
+// its own bug, and this is what says it does not.
+//
+// Eight names each written on both sides of a branch, so each wants a phi where
+// the two sides meet. Eight and not three: with three, an order nothing settled
+// is ascending by luck often enough that the test passed with the bug in it.
+//
+// The phis of the join must stand in the order of the slots they were placed
+// for, which -- since a phi's value is pushed as it is placed -- is the same
+// statement as their definitions ascending.
+#[test]
+fn the_phis_of_a_join_stand_in_the_order_of_their_slots() {
+    const NAMES: usize = 8;
+    let mut f = Fixture::new();
+    let names: Vec<_> =
+        (0..NAMES).map(|i| f.local(&format!("n{}", i), f.int)).collect();
+    let (at, then, els, join) = (f.block(), f.block(), f.block(), f.block());
+    let cond = f.boolean(true);
+    f.term(at, GIRTerm::Branch { cond, then, els });
+    for (i, &name) in names.iter().enumerate() {
+        let held = f.int(i as i64 + 1);
+        f.set(then, name, held);
+    }
+    f.term(then, GIRTerm::Goto(join));
+    for (i, &name) in names.iter().enumerate() {
+        let held = f.int(i as i64 + 100);
+        f.set(els, name, held);
+    }
+    f.term(els, GIRTerm::Goto(join));
+    for &name in &names {
+        let read = f.read(name);
+        let hands = f.hands(read);
+        f.eval(join, hands);
+    }
+    f.term(join, GIRTerm::Return(None));
+    f.body(at);
+
+    let p = taken_out(f);
+    let body = &p.bodies[0];
+
+    let held = body
+        .blocks
+        .iter()
+        .find(|block| block.phis.len() > 1)
+        .expect("a join with a phi for each name");
+    assert_eq!(held.phis.len(), NAMES, "{:#?}", held.phis);
+
+    // Which phi each name ended up as. The reads were written in the order the
+    // names were declared and each became that name's phi, so the values handed
+    // to the calls below the join are the phis in declaration order.
+    //
+    // Asserting that *those* ascend is the real statement. The phis' own
+    // definitions ascend however the slots were walked -- a phi's value is
+    // pushed as it is placed, so they come out numbered in placement order
+    // whatever that order was -- which is why the obvious assertion passes with
+    // the bug in and this one does not.
+    let handed: Vec<SIRValueId> = insts(body)
+        .into_iter()
+        .filter_map(|(_, inst)| match inst.kind {
+            SIRInstKind::Call { args, .. } if args.len() == 1 => Some(args[0]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handed.len(), NAMES, "one read of each name: {:#?}", kinds(body));
+    let mut sorted = handed.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        handed, sorted,
+        "the phis were placed in an order nothing settled: {:?}",
+        handed
+    );
+}
