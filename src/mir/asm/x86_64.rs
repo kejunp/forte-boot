@@ -752,6 +752,43 @@ fn divide(
     let _ = writeln!(out, "\tpushq\t%rax");
     let _ = writeln!(out, "\tpushq\t%rdx");
     let one = widened(out, b, rhs, sc1, wide, signed);
+
+    // **The divisor may not be in `%rax` or `%rdx`, and the allocator does not
+    // know that.** This instruction is the one place on this machine where two
+    // registers are named by the opcode rather than by the operands: the
+    // dividend is read from `%rdx:%rax`, so the two lines below this one write
+    // both of them -- `cqto` fills `%rdx` with the sign of `%rax`, and the
+    // unsigned path clears it outright -- and the `mov` into `%rax` writes the
+    // other. A divisor that happened to be allocated to either is destroyed
+    // before the divide reads it.
+    //
+    // The `push`es above do not help. They are what puts the caller's `%rax`
+    // and `%rdx` back afterwards; the divisor is *read* in between, after the
+    // clobber, so what it wants is somewhere else to live rather than somewhere
+    // to be restored from.
+    //
+    // What that was worth in practice: `100 / i` compiled to `idivq %rdx` with
+    // `cqto` immediately above it, so the program divided by the sign bit of
+    // 100 -- nought -- and took SIGFPE. It only showed up at all because which
+    // register `i` landed in varied per run, this compiler having been
+    // nondeterministic (see `sir::promote`); the same source crashed or did
+    // not depending on nothing.
+    //
+    // A scratch register is never one of the two, so this always has somewhere
+    // to go, and a divisor in memory is left where it is -- `idiv` takes a
+    // memory operand and nothing has clobbered it.
+    let taken = [
+        named(Reg { name: "rax", class: Class::Int }, wide),
+        named(Reg { name: "rdx", class: Class::Int }, wide),
+    ];
+    let one = if taken.contains(&one) {
+        let held = named(sc1, wide);
+        let _ = writeln!(out, "\tmov{}\t{}, {}", suffix(wide), one, held);
+        held
+    } else {
+        one
+    };
+
     let a = widened(out, b, lhs, sc0, wide, signed);
     if a != named(Reg { name: "rax", class: Class::Int }, wide) {
         let _ = writeln!(out, "\tmov{}\t{}, %{}", suffix(wide), a,

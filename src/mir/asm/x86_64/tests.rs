@@ -12,7 +12,9 @@
 // on a machine without a cross toolchain is a suite nobody runs.
 
 use super::super::super::fixture::*;
+use super::super::super::linear::{Line, Linear};
 use super::super::super::machine::X86_64;
+use super::super::super::regalloc::{Allocation, Where};
 use super::super::{render, tried, Body};
 use super::*;
 
@@ -234,5 +236,125 @@ fn a_body_that_answers_with_an_aggregate_assembles() {
         if let Some(said) = tried(&text, "x86_64-linux-gnu") {
             panic!("{}\n---- from ----\n{}", said, source);
         }
+    }
+}
+
+
+// ---- The two registers the divide names for itself ---------------------------
+
+// `cqto` fills `%rdx` and the dividend goes in `%rax`, so a divisor allocated
+// to either is destroyed before `idiv` reads it. The allocator does not know
+// that -- nothing tells it an instruction claims a register -- so `divide`
+// moves the divisor out of the way itself.
+//
+// Asserted as an invariant over the whole page rather than on one line: which
+// register a divisor lands in is the allocator's to choose, so a test that
+// pinned it would be testing the allocation and not the hazard. What must hold
+// is that no divide anywhere reads one of the two.
+fn divisors(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("idiv") || line.starts_with("div"))
+        .filter_map(|line| line.split_whitespace().nth(1).map(str::to_string))
+        .collect()
+}
+
+// The hazard built rather than hoped for. Which register a divisor lands in is
+// the allocator's to choose, and it does not choose `%rdx` for any source
+// written here -- but it chose it for a real one, and only for one of the two
+// phi orderings the compiler used to produce at random. So the allocation is
+// made by hand: this is the one shape that has to be right, and waiting for
+// the allocator to stumble into it again is not a test.
+fn int(name: &'static str) -> Reg {
+    Reg { name, class: Class::Int }
+}
+
+fn divided(lhs: Reg, rhs: Reg, op: MIRBinOp) -> String {
+    let regs = vec![MIRReg::one(Class::Int, 8, 1, 1); 3];
+    let held = Linear {
+        symbol: "__F1t1f".to_string(),
+        regs,
+        frame: Vec::new(),
+        params: vec![1, 2],
+        lines: vec![Line::Inst(MIRInst {
+            def:  Some(0),
+            kind: MIRInstKind::Bin { op, lhs: 1, rhs: 2 },
+            line: 1,
+            col:  1,
+        })],
+    };
+    let at = Allocation {
+        at:     vec![Where::In(int("rcx")), Where::In(lhs), Where::In(rhs)],
+        spills: 0,
+        most:   3,
+    };
+    let b = Body::new(&held, &at, X86_64, 0);
+    let mut out = String::new();
+    divide(&mut out, &b, 0, op, 1, 2);
+    out
+}
+
+// The divisor in each of the two registers the instruction writes for itself,
+// and the dividend in the other, which is every way of colliding there is.
+#[test]
+fn a_divisor_in_a_register_the_divide_writes_is_moved_out_of_the_way() {
+    for op in [MIRBinOp::SDiv, MIRBinOp::SRem, MIRBinOp::UDiv, MIRBinOp::URem] {
+        for (lhs, rhs) in [
+            (int("r8"), int("rdx")),
+            (int("r8"), int("rax")),
+            (int("rax"), int("rdx")),
+            (int("rdx"), int("rax")),
+        ] {
+            let out = divided(lhs, rhs, op);
+            for held in divisors(&out) {
+                assert!(
+                    !matches!(held.as_str(), "%rax" | "%eax" | "%rdx" | "%edx"),
+                    "{:?} with the divisor in {} reads {}:\n{}",
+                    op,
+                    rhs.name,
+                    held,
+                    out
+                );
+            }
+            if let Some(said) = tried(&format!("f:\n{}", out), "x86_64-linux-gnu") {
+                panic!("{:?}: {}\n{}", op, said, out);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_divide_never_reads_the_registers_it_writes_for_itself() {
+    // Enough live values at once that the allocator has reason to reach for
+    // `%rax` and `%rdx`: they are the first two it hands out.
+    let sources = [
+        "fn f(a: i64, b: i64): i64 { a / b }\n",
+        "fn f(a: i64, b: i64): i64 { a % b }\n",
+        "fn f(a: i64, b: i64, c: i64, d: i64): i64 { (a / b) + (c / d) }\n",
+        "fn f(a: i64, b: i64, c: i64, d: i64): i64 { (a % b) * (c / d) + a }\n",
+        "fn f(a: i32, b: i32): i32 { a / b }\n",
+        "fn f(a: u64, b: u64): u64 { a / b }\n",
+        "fn f(a: i64): i64 {\n    var t = 0\n    var i = 1\n    while i < 20 { t = t + (a / i); i = i + 1 }\n    t\n}\n",
+    ];
+    for source in sources {
+        let text = shown(source);
+        for held in divisors(&text) {
+            assert!(
+                !matches!(held.as_str(), "%rax" | "%eax" | "%rdx" | "%edx"),
+                "a divide reads {}, which it writes for itself:\n{}",
+                held,
+                text
+            );
+        }
+    }
+}
+
+// And the whole thing still assembles, which is what says the rescue move is
+// an instruction and not merely a plausible line.
+#[test]
+fn a_rescued_divide_still_assembles() {
+    let text = shown("fn f(a: i64, b: i64, c: i64, d: i64): i64 { (a / b) + (c % d) }\n");
+    if let Some(said) = tried(&text, "x86_64-linux-gnu") {
+        panic!("{}\n{}", said, text);
     }
 }
