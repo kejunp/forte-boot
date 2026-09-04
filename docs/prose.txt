@@ -2095,16 +2095,33 @@ answer is not obvious from the rules alone.
     nothing initialised starts as nought, and one nothing mentions is still
     given its room: a global is a declaration and not a use.
 
-    Two things this turned up are worth having written down. The first is
-    that "sir::opt" had been sharing two reads of a global across a store
-    between them — the pass asks whether two instructions with the same
-    operands make the same value, and the answer had been yes for every way
-    of naming a declaration, which is true of a fn and of a const and false
-    of the one that is a place. It could not have been noticed before, since
-    no program holding a global had ever linked. The second is that what a
-    global may be initialised *to* is now exactly what a const may be: the
-    same evaluator answers both, so anything it cannot read leaves the global
-    starting at nought rather than refusing the program.
+    What this turned up is worth having written down, because none of it was
+    about globals and all of it was found by them. Two passes had been
+    treating a global as a value rather than as a place. "sir::opt" shared
+    two reads of one across a store between them — it asks whether two
+    instructions with the same operands make the same value, and the answer
+    had been yes for every way of naming a declaration, which is true of a fn
+    and of a const and false of the one that is a place. And the same pass
+    dropped every store to a global but the last in its block: a store is
+    dead if nothing reads it before it is written over, and the list of
+    things that read had a load on it and not the naming of a global, which
+    is how a global is read. Both were unreachable before, no program holding
+    one having ever linked.
+
+    The third was not about globals at all and was found through them. This
+    compiler was *nondeterministic*: the phis of a join were placed by
+    walking a hash map, so the same source compiled twice gave two different
+    programs — and one of them put a loop counter in the register x86-64's
+    divide clobbers for itself, and divided by nought. Two bugs, one
+    hiding the other: the placement is ordered now, and the divide moves its
+    divisor out of the way rather than trusting an allocator that was never
+    told the instruction claims two registers. A compiler that answers
+    differently on two runs is worse than one that answers wrongly on both,
+    since only one of the two can be debugged.
+
+    What a global may be initialised *to* is now exactly what a const may be:
+    the same evaluator answers both, so anything it cannot read leaves the
+    global starting at nought rather than refusing the program.
 
     What is still not done is the part that was never only about a segment.
     Nothing checks a constant for range, so a value too big for the type it

@@ -291,6 +291,15 @@ fn settled(
         let kind = &body.blocks[at].insts[index].kind;
         let touches = match kind {
             SIRInstKind::Load { from } => addrs.iter().any(|&a| alias.may(a, *from)),
+            // Naming a global reads it, which is a read like the one above and
+            // is not written as a `Load`. Nothing has been shown to reach here
+            // -- what is widened is a run of loads and stores, and a global
+            // read among them would have to be one of the addresses -- but the
+            // omission is the same one that cost `overwritten` every store to
+            // a global but the last, and answering it costs a comparison.
+            SIRInstKind::Item(item) => addrs
+                .iter()
+                .any(|&a| alias.place(a).map(|p| p.base) == Some(Base::Item(*item))),
             SIRInstKind::Store { to, .. } | SIRInstKind::VecStore { to, .. } => {
                 addrs.iter().any(|&a| alias.may(a, *to))
             }

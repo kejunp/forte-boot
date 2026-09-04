@@ -337,3 +337,58 @@ fn two_reads_with_nothing_between_them_are_one() {
     let body = &p.bodies[0];
     assert_eq!(count(body, |k| matches!(k, SIRInstKind::Load { .. })), 1, "{:#?}", kinds(body));
 }
+
+
+// ---- A global is read by naming it, not by loading from it -------------------
+
+// A store to a global that a later store reads is not a store nobody saw.
+//
+// `overwritten` walks a block backwards holding the addresses written again
+// below, and drops one as soon as something that might read it stands in the
+// way. It knew four things that read: a `Load`, a release, a call, and a vector
+// store. It did not know the fifth, which is naming the global -- `Item` is
+// what stands where a declaration was named as a value, and for a global what
+// stands under the name is a place.
+//
+// So `n = n + 1` written twice kept the second store, dropped the first, and
+// left the second reading what the first was meant to have written. Every store
+// to a global but the last, in any block that had more than one.
+#[test]
+fn a_store_to_a_global_that_the_next_one_reads_is_not_dead() {
+    let (p, _) = compiled(
+        "var n: i64 = 1\n\
+         fn go(): i64 {\n\
+             n = n + 1\n\
+             n = n + 1\n\
+             n\n\
+         }\n",
+    );
+    let body = p.bodies.iter().find(|b| !b.blocks.is_empty()).expect("a body");
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Store { .. })),
+        2,
+        "a store was dropped that the next one reads:\n{:#?}",
+        kinds(body)
+    );
+}
+
+// And the rewrite still works where it should: a store nothing reads before it
+// is written over really is dead, so the fix is not "never drop a store".
+#[test]
+fn a_store_to_a_global_that_nothing_reads_is_still_dead() {
+    let (p, _) = compiled(
+        "var n: i64 = 1\n\
+         fn go(): i64 {\n\
+             n = 1\n\
+             n = 2\n\
+             n\n\
+         }\n",
+    );
+    let body = p.bodies.iter().find(|b| !b.blocks.is_empty()).expect("a body");
+    assert_eq!(
+        count(body, |k| matches!(k, SIRInstKind::Store { .. })),
+        1,
+        "the first store is written over before anything reads it:\n{:#?}",
+        kinds(body)
+    );
+}

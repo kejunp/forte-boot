@@ -162,6 +162,25 @@ pub(super) fn overwritten(body: &mut SIRBody, stats: &mut Stats) -> bool {
                     }
                 }
                 SIRInstKind::Load { from } => over.retain(|&held| !alias.may(held, from)),
+                // Naming a global reads it, and a `Load` is not how that is
+                // written. `Item` is what stands where a declaration was named
+                // as a value, and for a global what stands under the name is a
+                // *place* -- so this is a read of it, exactly as the `Load`
+                // above is a read of an address.
+                //
+                // It was not in this list, and what that cost was every store
+                // to a global but the last: `n = n + 1` twice over kept the
+                // second store, dropped the first, and left the second reading
+                // the value the first was meant to have written. Nothing caught
+                // it because no program with a global linked until there was a
+                // segment to put one in.
+                //
+                // By base rather than through `may`, as `DropSlot` below is and
+                // for the same reason: what is being read is named rather than
+                // pointed at, so there is an item to compare and no address.
+                SIRInstKind::Item(item) => over.retain(|&held| {
+                    alias.place(held).map(|p| p.base) != Some(Base::Item(item))
+                }),
                 // Releasing what is in a name reads what is in it.
                 SIRInstKind::DropSlot(slot) => over.retain(|&held| {
                     alias.place(held).map(|p| p.base) != Some(Base::Slot(slot))
