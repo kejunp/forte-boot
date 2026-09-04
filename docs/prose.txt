@@ -1887,10 +1887,30 @@ answer is not obvious from the rules alone.
     is a rule for the checker.
   - A "*T" is re-aimed by assigning a reference to it and written through by
     assigning a value; the type decides, matching exactly and reaching one
-    step, and a "let" of reference type never moves (section 5). Settled.
+    step, and a "let" of reference type never moves (section 5). Settled, and
+    settled now in the compiler as well as on the page. Only the reading half
+    of transparency had been built: an operator over a reference reached what
+    it referred to, and an assignment to one reached nothing, so every write
+    through a reference was turned down — "`i64` cannot be assigned to
+    `*i64`", naming the two types that were never meant to match. A "swap"
+    written the way section 3 says to write one did not compile.
+
     What it leaves is the asymmetry: reading walks a chain of references to
-    the bottom and writing does not, so the two are transparent to different
-    depths and only the reader of a long chain has to notice.
+    the bottom and writing reaches one step, so the two are transparent to
+    different depths and only the reader of a long chain has to notice. That
+    is a decision and not an omission — a write that went as far as it had to
+    would make "p = q" mean something that depends on how deep "p" happens to
+    be — but it is worth saying that the compiler now draws the line exactly
+    there rather than nowhere.
+
+    What is *not* enforced is the half of the rule that is about the binding
+    rather than the type. Section 5 says only a "var" may be re-aimed, "a
+    `let` of reference type refers to one place for its life"; nothing checks
+    it, because nothing checks immutability at all — "let x: i64 = 1"
+    followed by "x = 2" compiles today, reference or no reference. So the
+    type-directed half is right and the binding-directed half is unwritten,
+    and the second is not a rule about references: it is the whole of what
+    "let" is supposed to mean, and it is missing everywhere.
   - How long a reference stays good has a spelling, "'a", and never needs
     one: a return borrows for the shortest-lived of what the parameters
     brought in, which is always sound, so inference answers every signature

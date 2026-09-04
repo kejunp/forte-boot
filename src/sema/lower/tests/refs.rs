@@ -2,6 +2,7 @@
 // anything to ask at all.
 
 use super::*;
+use crate::tir::tir_nodes::TIRUnaryOp;
 
 // ---- What carries a reference ----------------------------------------------
 
@@ -386,4 +387,101 @@ fn a_const_is_the_literal_it_was_declared_as() {
 #[test]
 fn a_const_carries_the_type_it_was_declared_with() {
     clean("const B: u8 = 2\nfn f(p: ptr u8, i: i64) {\n    unsafe p[i] = B\n}\n");
+}
+
+
+// ---- Writing through one, which is the other half of transparency -----------
+
+// "A name of type `*T` is a place too, and what assigning to it does depends on
+// what is assigned: a value of type T is written through to the referent, and a
+// reference of type *T re-aims the name itself" (§5). Only the reading half of
+// that was built: every write through a reference was turned down, with a
+// message naming the two types that were never meant to match.
+//
+// A write through leaves a `Deref` on the place, which is the same node
+// `read_through` puts on a value and lowers to the same thing: `sir::lower`
+// answers the address of a `deref` with what the reference holds.
+fn assigned(source: &str) -> TTIRProgram {
+    clean(source)
+}
+
+fn writes_through(p: &TTIRProgram) -> bool {
+    p.exprs.iter().any(|e| match &e.kind {
+        TTIRExprKind::Assign { place, .. } => matches!(
+            p.exprs[*place].kind,
+            TTIRExprKind::Unary { op: TIRUnaryOp::Deref, .. }
+        ),
+        _ => false,
+    })
+}
+
+#[test]
+fn a_value_assigned_to_a_reference_is_written_through() {
+    let p = assigned(
+        "fn f() {\n    var x: i64 = 3\n    let r: *i64 = *x\n    r = 8\n}\n",
+    );
+    assert!(writes_through(&p), "the write did not reach the referent:\n{:#?}", p.exprs);
+}
+
+// And a reference assigned to one re-aims it instead, which is the half that
+// must not become a write: `cur = *b` puts a reference in `cur`.
+#[test]
+fn a_reference_assigned_to_a_reference_re_aims_it() {
+    let p = assigned(
+        "fn f() {\n\
+             var a: i64 = 1\n\
+             var b: i64 = 2\n\
+             var cur: *i64 = *a\n\
+             cur = *b\n\
+         }\n",
+    );
+    assert!(!writes_through(&p), "a re-aim was turned into a write:\n{:#?}", p.exprs);
+}
+
+// The example §5 gives, which is the two of them in one body: the type decides
+// each time, and the same name is written through and re-aimed in turn.
+#[test]
+fn the_two_readings_are_told_apart_by_what_is_assigned() {
+    let p = assigned(
+        "fn f() {\n\
+             var a: i64 = 1\n\
+             var b: i64 = 2\n\
+             var cur: *i64 = *a\n\
+             cur = 5\n\
+             cur = *b\n\
+             cur = 9\n\
+         }\n",
+    );
+    let through = p
+        .exprs
+        .iter()
+        .filter(|e| match &e.kind {
+            TTIRExprKind::Assign { place, .. } => matches!(
+                p.exprs[*place].kind,
+                TTIRExprKind::Unary { op: TIRUnaryOp::Deref, .. }
+            ),
+            _ => false,
+        })
+        .count();
+    assert_eq!(through, 2, "two writes through and one re-aim:\n{:#?}", p.exprs);
+}
+
+// A compound assignment reaches the referent the same way: the place is the
+// same place whichever operator is written on it.
+#[test]
+fn a_compound_assignment_reaches_the_referent_too() {
+    let p = assigned(
+        "fn f() {\n    var x: i64 = 3\n    let r: *i64 = *x\n    r = r + 4\n}\n",
+    );
+    assert!(writes_through(&p), "{:#?}", p.exprs);
+}
+
+// And what is neither is still turned down, so the rule reaches one step and
+// not as far as it has to: a `*i64` written with a `bool` matches nothing.
+#[test]
+fn a_value_of_neither_type_is_still_refused() {
+    let said = refused(
+        "fn f() {\n    var x: i64 = 3\n    let r: *i64 = *x\n    r = true\n}\n",
+    );
+    assert!(said.contains("cannot be assigned to"), "{}", said);
 }

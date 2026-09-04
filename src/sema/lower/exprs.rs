@@ -129,7 +129,9 @@ impl<'a> Lowerer<'a> {
                 if let TTIRExprKind::Local(slot) = self.out.exprs[p].kind {
                     self.assigns_to(slot);
                 }
-                let (pt, vt) = (self.out.exprs[p].ty, self.out.exprs[v].ty);
+                let vt = self.out.exprs[v].ty;
+                let p = self.written_to(p, vt);
+                let pt = self.out.exprs[p].ty;
                 if self.types.unify(vt, pt).is_err() {
                     let (vt, pt) = (self.spell(vt), self.spell(pt));
                     self.errors.push(
@@ -662,6 +664,49 @@ impl<'a> Lowerer<'a> {
             held = self.out.exprs.len() - 1;
         }
         held
+    }
+
+    // The place an assignment lands on, given what is being put there.
+    //
+    // "A reference is transparent (section 3), so a name of type `*T` is a
+    // place too, and what assigning to it does depends on what is assigned: a
+    // value of type T is written through to the referent, and a reference of
+    // type *T re-aims the name itself" (§5). So this is `read_through`'s
+    // mirror, and it differs from it in the one way §8 sets out: the type
+    // decides, "matching exactly and reaching one step".
+    //
+    // Exactly first, which is what makes a re-aim a re-aim: `cur = *b` puts a
+    // reference in `cur`, and only if that cannot be what was meant is the
+    // value written through to what `cur` refers to. `agrees` and not `unify`
+    // for the asking, so that a question fills nothing in -- the answer is
+    // committed to by the `unify` the caller does afterwards, once.
+    //
+    // And one step and not a chain, which is the asymmetry §8 names: reading
+    // walks a chain of references to the bottom and writing reaches one place
+    // down. A `**T` written to with a `T` is left to the caller's `unify` to
+    // turn down rather than quietly reaching two steps, because a write that
+    // went as far as it had to would make `p = q` mean something that depends
+    // on how deep `p` happens to be.
+    fn written_to(&mut self, place: TTIRExprId, value: TyId) -> TTIRExprId {
+        let ty = self.out.exprs[place].ty;
+        if self.types.agrees(value, ty) {
+            return place;
+        }
+        let Ty::Ref { inner, .. } = self.types.get(ty).clone() else { return place };
+        if !self.types.agrees(value, inner) {
+            return place;
+        }
+        // Built here rather than through `make`, for `read_through`'s reason:
+        // nobody wrote this, so it stands where the place it writes through
+        // stands.
+        let (line, col) = (self.out.exprs[place].line, self.out.exprs[place].col);
+        self.out.exprs.push(TTIRExpr {
+            kind: TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand: place },
+            ty: inner,
+            line,
+            col,
+        });
+        self.out.exprs.len() - 1
     }
 
     // What indexing something that cannot be indexed comes to. It used to come
