@@ -13,6 +13,7 @@
 
 
 use crate::error::Diagnostic;
+use crate::tir::tir_nodes::TIRUnaryOp;
 use crate::tir::tir_nodes::TIRBinding;
 use crate::tir::ttir_nodes::{
     TTIRExprId, TTIRExprKind, TTIRLocalId, Ty,
@@ -87,6 +88,18 @@ impl<'a> Checker<'a> {
                 Some(self.reach(*base)?.then(Step::Tuple(*index)))
             }
             TTIRExprKind::Index { base, .. } => Some(self.reach(*base)?.then(Step::Index)),
+            // Reaching through a reference with nothing after it, which is what
+            // an assignment written through one leaves: `sema::lower` puts a
+            // `Deref` on the place where a value is assigned to a `*T`, and
+            // that is the same crossing `reach` puts in on the way to a field
+            // or an element -- so it is answered the same way.
+            //
+            // Without this the step was invisible wherever nothing was reached
+            // *after* it, and a place nothing could name is a place no rule
+            // could hold: writing through an immutable reference was accepted,
+            // `&` and `*` differing in nothing, so long as the write went no
+            // deeper than the referent itself.
+            TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand } => self.reach(*operand),
             _ => None,
         }
     }

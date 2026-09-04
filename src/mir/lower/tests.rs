@@ -469,7 +469,7 @@ fn a_handle_goes_into_a_slot_where_the_type_is_indirect() {
 fn a_pointer_written_outside_the_frame_goes_through_the_barrier() {
     let p = lowered(
         "struct Node {\n    pub n: i32,\n}\n\
-         fn f(xs: &(*Node)[], i: i32, n: *Node) { xs[i] = n }\n",
+         fn f(xs: *(*Node)[], i: i32, n: *Node) { xs[i] = n }\n",
     );
     assert_eq!(calls(&p, "1f", "__rt_write").len(), 1, "{:#?}", held(&p, "1f"));
 }
@@ -492,7 +492,7 @@ fn a_pointer_written_into_the_frame_is_a_plain_store() {
 fn a_number_written_anywhere_is_a_plain_store() {
     let p = lowered(
         "struct Node {\n    pub n: i32,\n}\n\
-         fn f(xs: &i32[], i: i32, v: i32) { xs[i] = v }\n",
+         fn f(xs: *i32[], i: i32, v: i32) { xs[i] = v }\n",
     );
     assert!(calls(&p, "1f", "__rt_write").is_empty(), "{:#?}", held(&p, "1f"));
 }

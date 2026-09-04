@@ -150,6 +150,32 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if let Some(held) = self.place(place) {
+                    // "`let` binds a name that is read and never written,
+                    // `var` one that may be assigned again" (§2). The same
+                    // predicate `*` is held to and for the same reason: taking
+                    // a mutable reference and assigning are the two ways of
+                    // writing, and what they ask of a place is one question.
+                    //
+                    // So mutability is the root binding's and reaches through
+                    // whatever is reached from it -- `origin.x = 1` is refused
+                    // where `origin` is a `let` -- and the exception is the
+                    // one §2 names: a `let` of `*` reference type never
+                    // re-aims and still writes into what it refers to, which
+                    // is a path with a `Deref` in it rather than a bare name.
+                    if !self.writable(&held) {
+                        let name = self.name(&held);
+                        self.say(
+                            Diagnostic::error(
+                                format!("`{}` may not be assigned to", name),
+                                Span::at(line, col),
+                            )
+                            .with_label("this assigns to it")
+                            .with_help(
+                                "a `let` is read and never written; `var` is the one that \
+                                 may be assigned again",
+                            ),
+                        );
+                    }
                     // What the place is good for is what its root is good for,
                     // and it may not be given something shorter-lived. This is
                     // the refusal §3 promises lands "at the call rather than at

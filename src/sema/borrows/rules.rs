@@ -180,7 +180,7 @@ impl<'a> Checker<'a> {
     // "there is no marking a single field of a `let` writable, and none
     // weakening one of a `var` either" (§2) -- and a `*` reached through is
     // written through whatever the binding says.
-    fn writable(&self, place: &Place) -> bool {
+    pub(super) fn writable(&self, place: &Place) -> bool {
         let local = &self.p.bodies[self.body].locals[place.root];
         if matches!(local.intro, crate::tir::tir_nodes::TIRIntro::Var) {
             return true;

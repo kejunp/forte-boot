@@ -1903,14 +1903,24 @@ answer is not obvious from the rules alone.
     be — but it is worth saying that the compiler now draws the line exactly
     there rather than nowhere.
 
-    What is *not* enforced is the half of the rule that is about the binding
-    rather than the type. Section 5 says only a "var" may be re-aimed, "a
-    `let` of reference type refers to one place for its life"; nothing checks
-    it, because nothing checks immutability at all — "let x: i64 = 1"
-    followed by "x = 2" compiles today, reference or no reference. So the
-    type-directed half is right and the binding-directed half is unwritten,
-    and the second is not a rule about references: it is the whole of what
-    "let" is supposed to mean, and it is missing everywhere.
+    The half of the rule that is about the binding rather than the type is
+    enforced now too, and it had been missing everywhere rather than only
+    here: nothing checked immutability at all, so "let x: i64 = 1" followed
+    by "x = 2" compiled, and a "let" meant nothing. What it is held to is the
+    predicate a "*" was already held to — taking a mutable reference and
+    assigning are the two ways of writing, and they ask a place the same
+    question, so they ask it in one place. Mutability is the root binding's
+    and reaches through whatever is reached from it, which is what refuses
+    "origin.x = 1"; a "let" of "*" reference type still writes through, since
+    what a "let" fixes is the binding and not the referent.
+
+    Two things fell out of writing it. An assignment through a reference had
+    no place the checker could name — the "Deref" step was put in only where
+    something was reached *after* it — so writing through an immutable
+    reference was accepted, "&" and "*" differing in nothing so long as the
+    write went no deeper than the referent. And the only code in the suite
+    the new rule turned down was two tests that were writing through a
+    "&T[]", which section 3 says is the one that reads.
   - How long a reference stays good has a spelling, "'a", and never needs
     one: a return borrows for the shortest-lived of what the parameters
     brought in, which is always sound, so inference answers every signature

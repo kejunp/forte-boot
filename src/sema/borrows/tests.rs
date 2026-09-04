@@ -973,3 +973,140 @@ fn a_closures_body_is_checked_by_itself() {
     let out = s.errors(body);
     assert!(out.contains("error: `held` has been moved"), "{}", out);
 }
+
+
+// ---- What a `let` is, which is a name that is never written ------------------
+
+// "`let` binds a name that is read and never written, `var` one that may be
+// assigned again. That is the whole of the difference" (§2).
+//
+// It was the whole of the difference on the page and none of it in the
+// compiler: nothing checked an assignment against the binding it landed on, so
+// `let x = 1` followed by `x = 2` compiled, and a `let` meant nothing at all.
+// The predicate is the one `*` was already held to -- taking a mutable
+// reference and assigning are the two ways of writing, and they ask a place the
+// same question.
+fn assign(s: &mut Suite, place: TTIRExprId, value: TTIRExprId) -> TTIRExprId {
+    let null = s.ty(Ty::Prim(TIRPrim::Null));
+    s.expr(TTIRExprKind::Assign { op: TIRAssignOp::Set, place, value }, null)
+}
+
+fn deref(s: &mut Suite, of: TTIRExprId, inner: TyId) -> TTIRExprId {
+    s.expr(TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand: of }, inner)
+}
+
+#[test]
+fn a_let_may_not_be_assigned_to() {
+    let mut s = Suite::new();
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let x = s.slot("x", int, TIRIntro::Let);
+    let place = s.local(x);
+    let two = s.int(2);
+    let held = assign(&mut s, place, two);
+    let body = s.block(vec![], Some(held));
+
+    let out = s.errors(body);
+    assert!(out.contains("error: `x` may not be assigned to"), "{}", out);
+}
+
+#[test]
+fn a_var_may_be_assigned_to() {
+    let mut s = Suite::new();
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let x = s.slot("x", int, TIRIntro::Var);
+    let place = s.local(x);
+    let two = s.int(2);
+    let held = assign(&mut s, place, two);
+    let body = s.block(vec![], Some(held));
+
+    assert_eq!(s.errors(body), "");
+}
+
+// "Mutability is the root binding's, and writing reaches through whatever is
+// reached from it. A field or an element of a `var` may be assigned and one of
+// a `let` may not" (§2) -- the `origin.x = 1` of the example there.
+#[test]
+fn a_field_of_a_let_may_not_be_assigned_to() {
+    let mut s = Suite::new();
+    let point = s.strukt("Point");
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let origin = s.slot("origin", point, TIRIntro::Let);
+    let base = s.local(origin);
+    let place = s.field(base, 0, int);
+    let one = s.int(1);
+    let held = assign(&mut s, place, one);
+    let body = s.block(vec![], Some(held));
+
+    let out = s.errors(body);
+    assert!(out.contains("error: `origin.0` may not be assigned to"), "{}", out);
+}
+
+#[test]
+fn a_field_of_a_var_may_be_assigned_to() {
+    let mut s = Suite::new();
+    let point = s.strukt("Point");
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let cursor = s.slot("cursor", point, TIRIntro::Var);
+    let base = s.local(cursor);
+    let place = s.field(base, 0, int);
+    let one = s.int(1);
+    let held = assign(&mut s, place, one);
+    let body = s.block(vec![], Some(held));
+
+    assert_eq!(s.errors(body), "");
+}
+
+// "What a `let` fixes is the binding and not the referent. A `let` of reference
+// type refers to one place for its life, and whether anything may be written
+// through it is the reference's own business -- `&` says no and `*` says yes"
+// (§2). So the two below differ in nothing but the sigil.
+#[test]
+fn a_let_of_mutable_reference_still_writes_through() {
+    let mut s = Suite::new();
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let held = s.ty(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: int });
+    let r = s.slot("r", held, TIRIntro::Let);
+    let base = s.local(r);
+    let place = deref(&mut s, base, int);
+    let five = s.int(5);
+    let one = assign(&mut s, place, five);
+    let body = s.block(vec![], Some(one));
+
+    assert_eq!(s.errors(body), "");
+}
+
+#[test]
+fn nothing_is_written_through_an_immutable_reference() {
+    let mut s = Suite::new();
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let held = s.ty(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: int });
+    let r = s.slot("r", held, TIRIntro::Let);
+    let base = s.local(r);
+    let place = deref(&mut s, base, int);
+    let five = s.int(5);
+    let one = assign(&mut s, place, five);
+    let body = s.block(vec![], Some(one));
+
+    let out = s.errors(body);
+    assert!(out.contains("error: `r` may not be assigned to"), "{}", out);
+}
+
+// And the binding itself is still fixed: "only a `var` may be re-aimed", so a
+// reference assigned to a `let` of reference type is turned down where the same
+// assignment to a `var` is not.
+#[test]
+fn a_let_of_reference_type_may_not_be_re_aimed() {
+    let mut s = Suite::new();
+    let int = s.ty(Ty::Prim(TIRPrim::I64));
+    let held = s.ty(Ty::Ref { op: TIRRefOp::Mut, life: 0, inner: int });
+    let a = s.slot("a", int, TIRIntro::Var);
+    let r = s.slot("r", held, TIRIntro::Let);
+    let place = s.local(r);
+    let of = s.local(a);
+    let other = s.borrow(of, TIRRefOp::Mut);
+    let one = assign(&mut s, place, other);
+    let body = s.block(vec![], Some(one));
+
+    let out = s.errors(body);
+    assert!(out.contains("error: `r` may not be assigned to"), "{}", out);
+}
