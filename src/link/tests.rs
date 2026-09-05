@@ -103,6 +103,28 @@ fn a_name_is_written_and_flushed_before_the_test_it_names() {
     assert!(said < flushed && flushed < called, "{}", out);
 }
 
+// The verdict is read from the runtime after the body has returned, an
+// assertion that fails having counted itself rather than stopped the test.
+#[test]
+fn every_test_is_cleared_before_it_runs_and_read_after() {
+    let out = runner(&["m::one"]);
+    let start = out.find("__rt_test_start();").expect("the clearing");
+    let called = out.find("__F1t6m::one();").expect("the call");
+    let read = out.find("__rt_test_failed()").expect("the reading");
+    assert!(start < called && called < read, "{}", out);
+    assert!(out.contains("extern void __rt_test_start(void);"), "{}", out);
+    assert!(out.contains("extern long __rt_test_failed(void);"), "{}", out);
+}
+
+// Whatever ran the tests is not reading the words, so the verdict is a status
+// as well as a line.
+#[test]
+fn a_suite_that_failed_says_so_in_the_status() {
+    let out = runner(&["m::one"]);
+    assert!(out.contains("return failed ? 1 : 0;"), "{}", out);
+    assert!(out.contains(r#"failed ? "FAILED" : "ok""#), "{}", out);
+}
+
 // A test with nothing to say still counts, and the count reads as English on
 // both sides of one.
 #[test]

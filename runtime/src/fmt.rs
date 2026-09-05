@@ -40,8 +40,8 @@ use std::io::Write as _;
 // would be reading two registers the caller never filled.
 #[repr(C)]
 pub struct Str {
-    at:  *const u8,
-    len: i64,
+    pub(crate) at:  *const u8,
+    pub(crate) len: i64,
 }
 
 // One thing to print, with a tag saying which of the fields means anything.
@@ -51,10 +51,10 @@ pub struct Str {
 // a value that lives for the length of one call.
 #[repr(C)]
 pub struct Arg {
-    tag:  i64,
-    word: i64,
-    real: f64,
-    held: Str,
+    pub(crate) tag:  i64,
+    pub(crate) word: i64,
+    pub(crate) real: f64,
+    pub(crate) held: Str,
 }
 
 // The tags, which `std/fmt.ft` writes and this reads. They are spelled out in
@@ -97,7 +97,7 @@ impl Str {
     // The bytes as a `&str`, or `None` where there are none to read or they are
     // not text. A null pointer is not a failure worth a message: it is what an
     // empty string may be, and an empty string reads as one.
-    fn read(&self) -> Option<&str> {
+    pub(crate) fn read(&self) -> Option<&str> {
         if self.len == 0 {
             return Some("");
         }
@@ -429,6 +429,38 @@ fn prefix_of(held: &str) -> usize {
         }
     }
     at
+}
+
+// What `{}` of one argument comes to, for a caller outside this file.
+//
+// `test` reports the two sides of a failed assertion with it, so that a value
+// reads there exactly the way it reads in the `println` beside it rather than
+// in a second spelling written for assertions.
+pub(crate) fn shown(arg: &Arg) -> String {
+    match arg.value() {
+        Some(v) => match body(&v, &Spec::default()) {
+            Ok(text) => text,
+            Err(why) => format!("<{}>", why),
+        },
+        None => "<not a kind of thing this can print>".to_string(),
+    }
+}
+
+// Whether two arguments are the same value.
+//
+// Two of different kinds never are, `int(1)` and `uint(1)` having been written
+// by somebody who meant two different things. Floats compare as floats, so two
+// NaNs are not equal and an assertion that they are fails -- which is Rust's
+// answer, and the one the reader gets everywhere else.
+pub(crate) fn same(a: &Arg, b: &Arg) -> bool {
+    match (a.value(), b.value()) {
+        (Some(Value::Int(x)), Some(Value::Int(y))) => x == y,
+        (Some(Value::Uint(x)), Some(Value::Uint(y))) => x == y,
+        (Some(Value::Real(x)), Some(Value::Real(y))) => x == y,
+        (Some(Value::Truth(x)), Some(Value::Truth(y))) => x == y,
+        (Some(Value::Text(x)), Some(Value::Text(y))) => x == y,
+        _ => false,
+    }
 }
 
 // ---- The format string -----------------------------------------------------

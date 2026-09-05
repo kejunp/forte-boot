@@ -102,25 +102,36 @@ fn program_shim(entry: &Entry) -> String {
     }
 }
 
-// The runner: `__rt_init`, then every test in the order they were collected.
+// The runner: `__rt_init`, then every test in the order they were collected,
+// each between a `__rt_test_start` that clears what has failed and a
+// `__rt_test_failed` that reads it back.
+//
+// A test fails by asserting something that does not hold (`std/test.ft`), and
+// what that does is count itself rather than stop the test -- so the verdict
+// cannot be read until the body has returned, and a test that fails four
+// assertions is one failure here.
 //
 // The name goes out *before* the test runs and the stream is flushed, which is
-// the whole design. Nothing in the language can fail a test yet -- there is no
-// assert and no panic, so a test either returns or takes the process down with
-// it -- and one that takes the process down leaves its own name as the last
-// thing on the screen. A name printed afterwards would name every test but the
-// one the reader is looking for.
+// the other half of the design. An assertion cannot stop a test but a
+// segmentation fault can, and a test that takes the process down leaves its own
+// name as the last thing on the screen. A name printed afterwards would name
+// every test but the one the reader is looking for.
 //
 // `<stdio.h>` rather than the bare `extern` declarations the other shim writes:
 // that one needs two names and this one needs `printf`, `fflush` and `stdout`,
 // and spelling a variadic and a `FILE *` out by hand would be three chances to
 // disagree with the header that is already there.
 fn tests_shim(tests: &[Test]) -> String {
-    let mut out = String::from("#include <stdio.h>\n\nextern void __rt_init(void);\n");
+    let mut out = String::from(
+        "#include <stdio.h>\n\n\
+         extern void __rt_init(void);\n\
+         extern void __rt_test_start(void);\n\
+         extern long __rt_test_failed(void);\n",
+    );
     for test in tests {
         out.push_str(&format!("extern void {}(void);\n", test.symbol));
     }
-    out.push_str("\nint main(void) {\n    __rt_init();\n");
+    out.push_str("\nint main(void) {\n    __rt_init();\n    long passed = 0, failed = 0;\n");
     out.push_str(&format!(
         "    printf(\"\\nrunning {} test{}\\n\");\n",
         tests.len(),
@@ -128,15 +139,16 @@ fn tests_shim(tests: &[Test]) -> String {
     ));
     for test in tests {
         out.push_str(&format!(
-            "    printf(\"test {} ... \");\n    fflush(stdout);\n    {}();\n             \x20   printf(\"ok\\n\");\n",
+            "    printf(\"test {} ... \");\n             \x20   fflush(stdout);\n             \x20   __rt_test_start();\n             \x20   {}();\n             \x20   if (__rt_test_failed()) {{ failed++; printf(\"FAILED\\n\"); }}\n             \x20   else {{ passed++; printf(\"ok\\n\"); }}\n",
             quoted(&test.name),
             test.symbol
         ));
     }
-    out.push_str(&format!(
-        "\n    printf(\"\\ntest result: ok. {} passed\\n\");\n    return 0;\n}}\n",
-        tests.len()
-    ));
+    // The verdict, and then the same thing again as a status: whatever ran this
+    // is not reading the words.
+    out.push_str(
+        "\n    printf(\"\\ntest result: %s. %ld passed; %ld failed\\n\",\n         \x20          failed ? \"FAILED\" : \"ok\", passed, failed);\n         \x20   return failed ? 1 : 0;\n}\n",
+    );
     out
 }
 

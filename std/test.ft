@@ -1,0 +1,67 @@
+// What a `%test` fails by.
+//
+//     %test
+//     fn doubling_a_number_gives_twice_it() {
+//         assert_eq(int(double(21)), int(42), "double(21)")
+//         assert(double(0) == 0, "double(0) is nothing")
+//     }
+//
+// `fortec <root.ft> --test -o t` builds these and an entry that runs them, and
+// `./t` says which passed. A test that fails no assertion passed; one that
+// failed any did not, and the runner exits non-zero so that whatever ran it
+// knows.
+//
+// **A failed assertion does not stop the test.** It says what went wrong,
+// counts itself, and returns, so the rest of the body runs on values the test
+// has just said are wrong. Nothing in the language unwinds -- there is no
+// panic and no exception, and a callee cannot return on its caller's behalf --
+// so the alternatives were taking the whole process down on the first failure,
+// which abandons every test after it, or jumping out over frames whose drops
+// are written and would not run. `runtime/src/test.rs` is the other half of
+// this file and argues it out at greater length.
+//
+// So a test that checks a length and then reads that many elements will fail
+// its assertion and then run off the end of something. Where the rest of a test
+// cannot survive the failure, write the `return`:
+//
+//     %test
+//     fn a_vector_holds_what_was_put_in_it() {
+//         var v: Vec<i64> = empty()
+//         push(*v, 7)
+//         assert_eq(int(len(&v)), int(1), "one thing was pushed")
+//         if len(&v) != 1 { return }
+//         assert_eq(int(at(&v, 0)), int(7), "and it is the thing")
+//     }
+
+import fmt::Arg;
+
+%symbol("__rt_assert")
+fn said(ok: i64, why: str): null;
+
+// One symbol for both sides of the question, `same` being which way round it
+// was asked -- the same shape `print` uses for its two flags.
+%symbol("__rt_assert_cmp")
+fn said_cmp(same: i64, a: Arg, b: Arg, why: str): null;
+
+// ---- Asserting ---------------------------------------------------------------
+
+// The plain one. `why` is what the reader is told when it does not hold, so it
+// says what was meant to be true rather than what was written -- the expression
+// is in the file and the intention is not.
+pub fn assert(ok: bool, why: str) {
+    said(ok as i64, why)
+}
+
+// The two-sided ones, which are worth having because they can say what the two
+// sides *were*: `assert(a == b, ...)` can only ever report that they differed.
+//
+// Each side is an `Arg`, built with `int`, `text` and the three beside them in
+// `fmt` -- so a value reads in a failure exactly the way it reads in a
+// `println`, and the reason it is wrapped at all is the reason given there.
+pub fn assert_eq(a: Arg, b: Arg, why: str) {
+    said_cmp(1, a, b, why)
+}
+
+pub fn assert_ne(a: Arg, b: Arg, why: str) {
+    said_cmp(0, a, b, why)
+}

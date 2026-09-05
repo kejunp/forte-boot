@@ -70,6 +70,7 @@ pub mod map;
 pub mod mem;
 pub mod set;
 pub mod shape;
+pub mod test;
 
 use heap::cache::{Cache, Central};
 use heap::large::Large;
