@@ -311,6 +311,53 @@ fn params(out: &mut String, b: &Body) {
         }
     }
     shuffle(out, b, &moves);
+
+    // The ones that arrived on the stack, read from above the frame pointer --
+    // and *after* the shuffle, which is the opposite of the order the call site
+    // wants. There a stack word is written from a register the shuffle is about
+    // to overwrite; here it is read into a register the shuffle still has to
+    // read. A load put first wrote the register the last argument had arrived
+    // in, and that argument was gone by the time the shuffle wanted it.
+    for (at, &reg) in b.held.params.iter().enumerate() {
+        let Some(Passed::On(which)) = held.get(at).copied() else { continue };
+        let bytes = b.bytes(reg);
+        let from = above_op(out, b.incoming_at(which), scratch(b, 2, Class::Int));
+        let what = load_of(b.class(reg), bytes);
+        match b.site(reg) {
+            Site::In(to) => {
+                let name = match bytes <= 4 && b.class(reg) == Class::Int {
+                    true => named(to, 4),
+                    false => named(to, bytes),
+                };
+                let _ = writeln!(out, "\t{}\t{}, {}", what, name, from);
+            }
+            Site::At(off) => {
+                let sc = scratch(b, 0, b.class(reg));
+                let name = match bytes <= 4 && b.class(reg) == Class::Int {
+                    true => named(sc, 4),
+                    false => named(sc, bytes),
+                };
+                let _ = writeln!(out, "\t{}\t{}, {}", what, name, from);
+                let one = frame_op(out, off, scratch(b, 1, Class::Int));
+                let _ = writeln!(out, "\t{}\t{}, {}", store_of(b.class(reg), bytes), name, one);
+            }
+            Site::Nowhere => {}
+        }
+    }
+}
+
+// A word the caller left *above* the frame pointer. The offset is positive and
+// small -- two words plus however many arguments ran out of registers -- so the
+// scaled unsigned form takes it as it is, which is the form `frame_op` cannot
+// reach going the other way.
+fn above_op(out: &mut String, off: usize, sc: Reg) -> String {
+    if off < 4096 {
+        return format!("[x29, #{}]", off);
+    }
+    let held = named(sc, 8);
+    immediate(out, &held, off as i64);
+    let _ = writeln!(out, "\tadd\t{}, x29, {}", held, held);
+    format!("[{}]", held)
 }
 
 fn shuffle(out: &mut String, b: &Body, moves: &[(Reg, Reg)]) {
@@ -822,12 +869,20 @@ fn call(
 ) -> Option<String> {
     let classes: Vec<Class> = args.iter().map(|&arg| b.class(arg)).collect();
     let want = passing(b.m, &classes);
-    if want.iter().any(|held| matches!(held, Passed::On(_))) {
-        return Some(format!(
-            "{}: a call with {} arguments is not emitted -- nothing here puts one on the stack",
-            b.held.symbol,
-            args.len()
-        ));
+
+    // The ones that go on the stack, before anything else is touched. An
+    // argument still living in a register the shuffle below is about to write
+    // over would otherwise be read after it had gone; a store reads a register
+    // and writes a word nothing else here reads, so first is always safe.
+    for (at, &arg) in args.iter().enumerate() {
+        let Some(Passed::On(which)) = want.get(at).copied() else { continue };
+        let bytes = b.bytes(arg);
+        // `read` gives the register it is already in, or loads it into the
+        // scratch. The scratch it uses for an address is the third one, and it
+        // is done with it before the destination below asks for it again.
+        let held = read(out, b, arg, scratch(b, 0, b.class(arg)));
+        let one = frame_op(out, b.outgoing_at(which), scratch(b, 2, Class::Int));
+        let _ = writeln!(out, "\t{}\t{}, {}", store_of(b.class(arg), bytes), held, one);
     }
 
     let mut moves: Vec<(Reg, Reg)> = Vec::new();

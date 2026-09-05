@@ -190,6 +190,24 @@ fn what_comes_out_assembles() {
         "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
          fn f(a: i64): i64 {\n    let p = P { a: a, b: a }\n    p.a + p.b\n}\n",
         "fn f(): str { \"hello\" }\n",
+        // More arguments than there are registers, in both files and in the
+        // two shapes that overflow before they look as though they do: a
+        // struct handed back takes a register for the room, and a method
+        // takes one for the receiver.
+        "fn f(a: i64, b: i64, c: i64, d: i64, e: i64, g: i64, h: i64, i: i64, j: i64): i64 {\n\
+         \x20   a + b + c + d + e + g + h + i + j\n}\n",
+        "fn f(a: f64, b: f64, c: f64, d: f64, e: f64, g: f64, h: f64, i: f64,\n\
+         \x20    j: f64, k: f64): f64 {\n    a + b + c + d + e + g + h + i + j + k\n}\n",
+        "fn f(a: i64, b: f64, c: i64, d: f64, e: i64, g: f64, h: i64, i: f64,\n\
+         \x20    j: i64, k: f64, l: i64, m: f64): f64 {\n\
+         \x20   (a + c + e + h + j + l) as f64 + b + d + g + i + k + m\n}\n",
+        "struct P {\n    pub x: i64,\n    pub y: i64,\n}\n\
+         fn mk(a: i64, b: i64, c: i64, d: i64, e: i64, g: i64): P {\n\
+         \x20   P { x: a + b + c, y: d + e + g }\n}\n\
+         fn f(a: i64): i64 {\n    let p = mk(a, a, a, a, a, a)\n    p.x + p.y\n}\n",
+        "fn g(a: i64, b: i64, c: i64, d: i64, e: i64, h: i64, i: i64, j: i64): i64 {\n\
+         \x20   a + b + c + d + e + h + i + j\n}\n\
+         fn f(a: i64): i64 { g(a, a, a, a, a, a, a, a) }\n",
         "fn f(n: i64): i32 { n as i32 }\n",
         "fn f(xs: &i32[], i: i32): i32 { xs[i] }\n",
         "fn g(x: i32): i32 { x }\nfn f(): i32 { g(1) }\n",
