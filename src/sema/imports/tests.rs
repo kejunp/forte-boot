@@ -346,6 +346,50 @@ fn a_file_knows_the_module_it_is() {
 }
 
 
+// And it knows it from the tree it was found in, not from the one the
+// compilation began in. A module reached through a search path is nobody's
+// subdirectory: naming it from the suite root would put every directory
+// between the two into the module's name -- and so into the symbol of every fn
+// in it, which is where a library's installed path used to end up.
+#[test]
+fn a_file_found_through_a_search_path_is_named_from_there() {
+    let lib = suite(&[("range.ft", "pub struct Range<T> {\n    pub start: T,\n}\n")]);
+    let dir = suite(&[("main.ft", "import range::Range;\n")]);
+    let root = dir.join("main.ft");
+
+    let mut r = ImportResolver::new(vec![lib.clone()]);
+    r.resolve(&root).expect("the root file");
+    assert_eq!(r.render(), "");
+
+    assert_eq!(r.module_of(&root), vec!["main"]);
+    // `range`, and not the directories `lib` happens to sit under.
+    assert_eq!(r.module_of(&lib.join("range.ft")), vec!["range"]);
+
+    let _ = fs::remove_dir_all(&lib);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+
+// The root file named with no directory in front of it, which is how one is
+// usually named: `fortec main.ft` leaves `root` empty, since that is what the
+// parent of a bare file name is. Stripping nothing off a path succeeds, so the
+// empty tree has to be skipped rather than tried -- tried, it answers for every
+// file and the search paths are never asked, which is the whole of the bug this
+// is here about.
+//
+// No suite is read: `module_of` is a question about a path, and the resolver
+// out of its constructor is already in the state a bare root leaves it in.
+#[test]
+fn an_empty_root_does_not_answer_for_the_search_paths() {
+    let r = ImportResolver::new(vec![PathBuf::from("/opt/forte/std")]);
+    assert_eq!(r.module_of(Path::new("/opt/forte/std/range.ft")), vec!["range"]);
+    // And a file of the suite's own is still named the way it was written,
+    // which is what the fallback is for.
+    assert_eq!(r.module_of(Path::new("main.ft")), vec!["main"]);
+    assert_eq!(r.module_of(Path::new("a/b/deep.ft")), vec!["a", "b", "deep"]);
+}
+
+
 // ---- The prelude ------------------------------------------------------------
 
 // A literal is syntax for a type a library declares, so the syntax is the

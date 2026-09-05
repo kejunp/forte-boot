@@ -326,17 +326,43 @@ impl ImportResolver {
         out
     }
 
-    // The module path a file is reached by, from the suite root: `a/b/deep.ft`
-    // is `a::b::deep`. A file is a module (section 1), so this is what stands
-    // in front of everything the file declares -- in a path a reader writes,
-    // and in the symbol a fn is compiled to (`sema::names::Mangler`).
+    // The module path a file is reached by, from the tree it was found in:
+    // `a/b/deep.ft` under the suite root is `a::b::deep`. A file is a module
+    // (section 1), so this is what stands in front of everything the file
+    // declares -- in a path a reader writes, and in the symbol a fn is compiled
+    // to (`sema::names::Mangler`).
+    //
+    // The trees are the suite root and every `-I` after it, asked in the order
+    // `find_module` searches them, so that a file is named the way the search
+    // that found it reached it. Naming everything from the root instead is what
+    // this used to do, and it only reads as the same thing while every file is
+    // under the root. A module found through a `-I` is nobody's subdirectory:
+    // `std/range.ft` named from the root carries however many directories
+    // separate the two, so `len` in it compiled to a symbol with the library's
+    // installed path inside it, and moving the compiler changed the program.
+    //
+    // Two trees holding a `range.ft` that the same suite imports is therefore
+    // two modules called `range`, where before it was two spelled apart by
+    // where they sat. That is the `-I` bargain everywhere it is offered, and it
+    // is not silent: the two compile to one symbol and the assembler refuses
+    // the second definition of it.
     //
     // The stem and not the file name: `.ft` is how the file is stored and no
     // part of what the module is called, which is the same answer `find_module`
     // gives when it goes the other way.
     pub fn module_of(&self, file: &Path) -> Vec<String> {
         let file = normalise(file);
-        let rest = file.strip_prefix(&self.root).unwrap_or(&file);
+        // The empty base is skipped rather than tried: a root file named with no
+        // directory in front of it leaves `root` empty, and stripping nothing
+        // off a path succeeds, so the first tree would answer for every file
+        // and none of the others would be asked. What such a suite wants is the
+        // fallback below anyway -- its own files are already written relative
+        // to where the compiler was run.
+        let rest = std::iter::once(&self.root)
+            .chain(self.search_paths.iter())
+            .filter(|base| !base.as_os_str().is_empty())
+            .find_map(|base| file.strip_prefix(base).ok())
+            .unwrap_or(&file);
         let mut out: Vec<String> = rest
             .parent()
             .map(|dirs| {
