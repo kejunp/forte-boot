@@ -185,3 +185,66 @@ fn a_struct_pattern_over_a_generic_binds_what_it_holds() {
         with
     ));
 }
+
+
+// ---- Slices ------------------------------------------------------------------
+
+// The `Range` a `..` builds. These tests declare their own, as the ones above
+// do: a literal is syntax for a type a library declares, and there is no
+// library here.
+const RANGE: &str = "struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n";
+
+// "A range is an expression, so a slice needs no rule of its own" (§5): the
+// same `[` indexes by one and slices by two, and what the index turned out to
+// be is what says which. "What a slice denotes is the run itself: `a[1..3]` is
+// a place of type `T[]`".
+#[test]
+fn indexing_by_a_range_denotes_the_run_and_not_an_element() {
+    clean(
+        &format!("{}{}", RANGE, "fn f(): i32 {\n\
+         \x20   let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let s: &i32[] = &a[1..3]\n\
+         \x20   s[0]\n\
+         }\n"),
+    );
+}
+
+// And by one value it is still the element, which is the half that must not
+// have moved.
+#[test]
+fn indexing_by_one_value_is_still_the_element() {
+    clean(
+        &format!("{}{}", RANGE, "fn f(): i32 {\n\
+         \x20   let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let one: &i32 = &a[1]\n\
+         \x20   a[2]\n\
+         }\n"),
+    );
+}
+
+// A view that writes is the other spelling, and it is the same rule.
+#[test]
+fn a_slice_may_be_borrowed_to_write_as_well_as_to_read() {
+    clean(
+        &format!("{}{}", RANGE, "fn f() {\n\
+         \x20   var a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let w: *i32[] = *a[1..3]\n\
+         }\n"),
+    );
+}
+
+// "`T[]` is a type of no known size, and nothing can hold one: no local, no
+// field, no parameter and no return may be a `T[]`. It exists only behind a
+// reference" (§3). A slice is where one turns up without being written, so it
+// is where that rule is felt.
+#[test]
+fn a_run_may_not_be_held_by_a_name() {
+    let out = refused(
+        &format!("{}{}", RANGE, "fn f() {\n\
+         \x20   let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let x = a[1..3]\n\
+         }\n"),
+    );
+    assert!(out.contains("is a run and nothing holds one"), "{}", out);
+    assert!(out.contains("borrows a view of it"), "{}", out);
+}

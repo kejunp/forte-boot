@@ -16,6 +16,7 @@
 // are where it is asked, and every read and write goes through one of them, so
 // no case in this file has to remember which kind it has in hand.
 
+use crate::tir::ttir_nodes::Ty;
 use crate::sir::sir_nodes::*;
 
 use super::super::mir_nodes::*;
@@ -84,6 +85,79 @@ impl<'a> Lowerer<'a> {
             SIRInstKind::IndexAddr { base, index } => {
                 let scale = self.element_of(*base);
                 let held = self.elements(*base, line, col);
+                // A slice rather than an element. "What a slice denotes is the
+                // run itself: `a[1..3]` is a place of type `T[]`" (§5), and a
+                // run is a view -- where the elements begin and how many there
+                // are. So this makes two words rather than an address, the same
+                // pair a `str` is, and for the same reason: a view that was
+                // only the pointer would be the one `T[]` in the language with
+                // nothing beside it, and indexing it would read the first
+                // element as the length.
+                //
+                // The index is the range, and its two fields are the two halves
+                // the view is made of: the start scales into the address and
+                // the difference is the length.
+                if matches!(
+                    self.made.ttir.types.get(self.bare(self.ty_of(value))),
+                    Some(Ty::Run(_))
+                ) {
+                    let word = self.machine.word;
+                    let range = self.of(*index);
+                    // The two bounds at the offsets and the width the range
+                    // really has. A `Range<i32>` is two four-byte fields, and
+                    // reading them as words would read the second one twice
+                    // over and the end of the value from past it.
+                    let (first, second) = (self.offset_of(*index, 0), self.offset_of(*index, 1));
+                    let wide = self.bound_width(*index).max(1);
+
+                    let front = self.push(
+                        MIRInstKind::Offset { base: range, bytes: first },
+                        line,
+                        col,
+                    );
+                    let start =
+                        self.push(MIRInstKind::Load { from: front, bytes: wide }, line, col);
+                    let up = self.push(
+                        MIRInstKind::Offset { base: range, bytes: second },
+                        line,
+                        col,
+                    );
+                    let end = self.push(MIRInstKind::Load { from: up, bytes: wide }, line, col);
+                    let at = self.push(
+                        MIRInstKind::Scaled { base: held, index: start, scale },
+                        line,
+                        col,
+                    );
+                    // The difference is already a word: a load writes the whole
+                    // register whatever it read, so two narrow bounds arrive
+                    // widened and the subtraction is a word's. A `Convert`
+                    // here would be naming a width the register does not have.
+                    let len = self.push(
+                        MIRInstKind::Bin { op: MIRBinOp::Sub, lhs: end, rhs: start },
+                        line,
+                        col,
+                    );
+
+                    let name = format!("${}", self.frame_len());
+                    let slot = self.slot(name, word * 2, word);
+                    self.making(def, MIRInstKind::Frame(slot), line, col);
+                    self.effect(
+                        MIRInstKind::Store { to: def, value: at, bytes: word },
+                        line,
+                        col,
+                    );
+                    let second = self.push(
+                        MIRInstKind::Offset { base: def, bytes: word as i64 },
+                        line,
+                        col,
+                    );
+                    self.effect(
+                        MIRInstKind::Store { to: second, value: len, bytes: word },
+                        line,
+                        col,
+                    );
+                    return;
+                }
                 let index = self.of(*index);
                 self.making(
                     def,
@@ -151,6 +225,16 @@ impl<'a> Lowerer<'a> {
     fn offset_of(&mut self, base: SIRValueId, index: usize) -> i64 {
         let ty = self.through(self.ty_of(base));
         self.field_at(ty, index)
+    }
+
+    // How wide each bound of a range is: the type it was made over, which is
+    // what `Range<T>` says and what its two fields are.
+    fn bound_width(&mut self, range: SIRValueId) -> usize {
+        let ty = self.through(self.ty_of(range));
+        match self.made.ttir.types.get(ty).cloned() {
+            Some(Ty::Named { args, .. }) if !args.is_empty() => self.bytes_of(args[0]),
+            _ => self.machine.word,
+        }
     }
 
     // The stride of what a run holds, which is what an index is multiplied by.

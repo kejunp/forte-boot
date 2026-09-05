@@ -319,6 +319,10 @@ impl<'a> Lowerer<'a> {
                 let b = self.expr(base);
                 let i = self.expr(index);
                 let bt = self.out.exprs[b].ty;
+                // "A range is an expression, so a slice needs no rule of its
+                // own" (§5): the same `[` indexes by one and slices by two, and
+                // which it did is what the index turned out to be.
+                let sliced = self.is_range(self.out.exprs[i].ty);
                 let ty = match self.types.get(bt).clone() {
                     Ty::Array { elem, .. } | Ty::Run(elem) => elem,
                     // A pointer is indexed like the run it stands at the front
@@ -353,6 +357,14 @@ impl<'a> Lowerer<'a> {
                     // on: one complaint about the same mistake is enough.
                     Ty::Error => bt,
                     _ => self.not_indexable(bt, id),
+                };
+                // "What a slice denotes is the run itself: `a[1..3]` is a
+                // place of type `T[]`" -- so the element type the arms above
+                // worked out is what the run is *of*, and the run is what this
+                // is.
+                let ty = match sliced && !matches!(self.types.get(ty), Ty::Error) {
+                    true => self.types.intern(Ty::Run(ty)),
+                    false => ty,
                 };
                 self.make(TTIRExprKind::Index { base: b, index: i }, ty, id)
             }
@@ -501,6 +513,28 @@ impl<'a> Lowerer<'a> {
                         // answer for" -- a hole, until something fills it.
                         (None, None) => self.types.fresh(),
                     };
+                    // "`T[]` is a type of no known size, and nothing can hold
+                    // one: no local, no field, no parameter and no return may
+                    // be a `T[]`. It exists only behind a reference" (§3).
+                    //
+                    // A slice is where one turns up without being written --
+                    // `a[1..3]` is a place of type `T[]` and `let x = a[1..3]`
+                    // asks a name to hold it -- so this is said here, where the
+                    // name is, rather than left to the layout to fail over.
+                    if matches!(self.types.get(ty), Ty::Run(_)) {
+                        let held = self.spell(ty);
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("`{}` is a run and nothing holds one", held),
+                                self.at(at),
+                            )
+                            .with_label("a name would have to know how many there are")
+                            .with_help(format!(
+                                "`&{}` borrows a view of it, which carries the length",
+                                held
+                            )),
+                        );
+                    }
                     let where_ = match init {
                         Some(init) => Span::at(
                             self.out.exprs[init].line,

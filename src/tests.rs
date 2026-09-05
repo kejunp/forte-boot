@@ -195,6 +195,73 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
     assert!(said.contains("running 3 tests"), "{}", said);
 }
 
+// ---- Slices --------------------------------------------------------------------
+
+// A slice, read and written, and the elements outside it left alone.
+//
+// The values are the point. A view is two words -- where the elements begin
+// and how many there are -- so a slice that took the address without the length
+// reads whatever is next in the frame as its length, and one that forgot to
+// scale the start by the stride reads the right array from the wrong place.
+// Both compile, link and run; only the answers tell them apart.
+#[test]
+fn a_slice_is_a_view_of_the_elements_it_names() {
+    let dir = std::env::temp_dir().join(format!("fortec-slice-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("slice.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         fn sum(xs: &i64[], n: i64): i64 {\n\
+         \x20   var t = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       t = t + xs[i]\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   t\n\
+         }\n\
+         \n\
+         fn bump(xs: *i64[], n: i64) {\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       xs[i] = xs[i] + 100\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_slice_reads_the_elements_it_names_and_no_others() {\n\
+         \x20   let a: i64[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   assert_eq(int(sum(&a[1..4], 3)), int(9), \"2 and 3 and 4\")\n\
+         \x20   assert_eq(int(sum(&a[0..8], 8)), int(36), \"the whole of it\")\n\
+         \x20   assert_eq(int(sum(&a[7..8], 1)), int(8), \"the last one alone\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_slice_that_writes_leaves_the_rest_alone() {\n\
+         \x20   var a: i64[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   bump(*a[2..4], 2)\n\
+         \x20   assert_eq(int(a[2]), int(103), \"the first it names\")\n\
+         \x20   assert_eq(int(a[3]), int(104), \"and the last\")\n\
+         \x20   assert_eq(int(a[1]), int(2), \"the one before is untouched\")\n\
+         \x20   assert_eq(int(a[4]), int(5), \"and the one after\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "slice");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "slices were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- Stopping ---------------------------------------------------------------------
 
 // A program that finds it cannot go on, and stops.

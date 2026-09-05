@@ -75,10 +75,7 @@ use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
     TIRProgram, TIRVis,
 };
-use crate::tir::ttir_nodes::{
-    TTIRCapture, TTIRFn, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule,
-    RegionId, TTIRBound, TTIRProgram, TyId,
-};
+use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRFn, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
 
 mod binds;
 mod bodies;
@@ -325,6 +322,15 @@ impl<'a> Lowerer<'a> {
     // that `option::Option` reaches without an import where `Option` needs
     // one. A leading `suite::` says the path starts at the root (§1), which is
     // where a full path starts anyway.
+    // Whether a type is the `Range` a library declares -- the one the prelude
+    // binds in every file, and the one a `..` builds (`containers.rs`). Asked by
+    // name for the reason everything about a literal's type is: the syntax is
+    // the language's and the type is not.
+    pub(super) fn is_range(&self, ty: TyId) -> bool {
+        let Ty::Named { item, .. } = self.types.get(ty) else { return false };
+        self.look("Range") == Some(*item)
+    }
+
     pub(super) fn look(&self, name: &str) -> Option<TTIRItemId> {
         self.look_in(self.at, name)
     }
