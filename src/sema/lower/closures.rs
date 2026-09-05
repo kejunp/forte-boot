@@ -167,6 +167,12 @@ impl<'a> Lowerer<'a> {
         };
         let of = match self.types.get(held).clone() {
             Ty::Named { item, .. } => item,
+            // A parameter of the declaration being walked. There is no impl to
+            // find -- what the parameter will turn out to be is the caller's to
+            // say -- so what answers is the trait a bound named, and the member
+            // is the trait's. Which impl that becomes is settled where the
+            // caller's type is known, in `mir::mono`.
+            Ty::Param { index, .. } => return self.bound_method(index, name, ty),
             _ => return None,
         };
         for item in &self.out.items {
@@ -186,5 +192,50 @@ impl<'a> Lowerer<'a> {
             }
         }
         None
+    }
+
+    // The method of that name among the traits this parameter is held to.
+    //
+    // Every bound is asked and not just the first, so that a parameter held to
+    // two traits that each declare the name is a mistake said out loud rather
+    // than one of them silently winning. There is no rule anywhere for choosing
+    // between them, and the reader has a spelling for saying which they meant
+    // once there is: none of this is reached for a concrete type.
+    fn bound_method(&mut self, index: usize, name: &str, ty: TyId) -> Option<TTIRItemId> {
+        let mut found: Vec<(TTIRItemId, String)> = Vec::new();
+        for bound in self.param_bounds(index) {
+            let TTIRBound::Trait(held) = bound else { continue };
+            let Ty::Named { item, .. } = self.types.get(held).clone() else { continue };
+            let TTIRItemKind::Trait { members, name: trait_name, .. } =
+                self.out.items[item].kind.clone()
+            else {
+                continue;
+            };
+            for member in members {
+                if let TTIRItemKind::Fn(f) = &self.out.items[member].kind {
+                    if f.name == name {
+                        found.push((member, trait_name.clone()));
+                    }
+                }
+            }
+        }
+        match found.len() {
+            0 => None,
+            1 => Some(found[0].0),
+            _ => {
+                let names: Vec<String> =
+                    found.iter().map(|(_, held)| format!("`{}`", held)).collect();
+                let held = self.spell(ty);
+                self.errors.push(
+                    Diagnostic::error(
+                        format!("`{}` has more than one `{}`", held, name),
+                        self.here,
+                    )
+                    .with_label("which of them was meant is not said")
+                    .with_note(format!("{} each declare one", names.join(" and "))),
+                );
+                None
+            }
+        }
     }
 }

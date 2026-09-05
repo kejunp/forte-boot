@@ -127,3 +127,42 @@ fn an_impl_answers_a_trait_and_not_a_name() {
          impl Drop for Buf {\n    pub fn drop(*self) {\n    }\n}\n",
     );
 }
+
+
+// ---- Calling through a bound -----------------------------------------------
+
+// What the bound is *for*. Every test above asks whether a type answers a
+// trait; none of them called the method the trait declares, which is the thing
+// a bound exists to let a generic do.
+//
+// The member found is the trait's. Which impl answers it is not a question
+// `sema` can settle -- what the parameter stands for is the caller's to say --
+// so it is settled where the caller's type is known, in `mir::mono`.
+#[test]
+fn a_method_of_a_bound_is_found_on_the_parameter() {
+    let with = "trait Show {\n    fn show(&self): i64;\n}\n\
+                struct Buf {\n    pub n: i32,\n}\n\
+                impl Show for Buf {\n    fn show(&self): i64 { 1 }\n}\n";
+    clean(&format!("{}fn tell<T: Show>(x: &T): i64 {{ x.show() }}\n", with));
+}
+
+// And a parameter held to nothing has no methods at all: the message is the
+// ordinary one, because there is no bound to have looked in.
+#[test]
+fn a_parameter_with_no_bound_has_no_methods() {
+    let out = refused("fn tell<T>(x: &T): i64 { x.show() }\n");
+    assert!(out.contains("has no field `show`"), "{}", out);
+}
+
+// Two bounds each declaring the name is a mistake said out loud rather than one
+// of them quietly winning: there is no rule for choosing, and none is invented.
+#[test]
+fn a_name_two_bounds_both_declare_is_refused() {
+    let out = refused(
+        "trait Show {\n    fn tell(&self): i64;\n}\n\
+         trait Say {\n    fn tell(&self): i64;\n}\n\
+         fn both<T: Show + Say>(x: &T): i64 { x.tell() }\n",
+    );
+    assert!(out.contains("more than one `tell`"), "{}", out);
+    assert!(out.contains("`Show`") && out.contains("`Say`"), "{}", out);
+}

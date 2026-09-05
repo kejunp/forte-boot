@@ -178,6 +178,69 @@ impl<'a> Mono<'a> {
         }
     }
 
+    // The impl member that answers this one for this receiver, or the member as
+    // it stands.
+    //
+    // Everything but a trait member is itself: a method written in an ordinary
+    // `impl` was resolved by `sema` and there is nothing here to choose. A trait
+    // member is the one case `sema` had to leave open, and it is closed by the
+    // receiver -- the type is concrete by now, `mono` having substituted it.
+    //
+    // `mir::lower::glue::drop_method` does this same walk for `Drop`, by the
+    // trait's name, and is what this generalises.
+    fn answering(&mut self, member: usize, recv: Option<TyId>) -> usize {
+        let Some(of) = self.trait_of(member) else { return member };
+        let Some(recv) = recv else { return member };
+        let TTIRItemKind::Fn(f) = &self.p.items[member].kind else { return member };
+        let name = f.name.clone();
+
+        // A receiver stands for what it refers to, so a method of the referent
+        // is a method of the reference -- the same rule `sema` resolves by.
+        let mut held = recv;
+        while let Some(Ty::Ref { inner, .. }) = self.p.types.get(held) {
+            held = *inner;
+        }
+        let Some(Ty::Named { item: want, .. }) = self.p.types.get(held).cloned() else {
+            return member;
+        };
+
+        for at in 0..self.p.items.len() {
+            let TTIRItemKind::Impl { ty, of: Some(answers), members, .. } =
+                self.p.items[at].kind.clone()
+            else {
+                continue;
+            };
+            if answers != of {
+                continue;
+            }
+            let Some(Ty::Named { item: subject, .. }) = self.p.types.get(ty).cloned() else {
+                continue;
+            };
+            if subject != want {
+                continue;
+            }
+            for one in members {
+                if let TTIRItemKind::Fn(held) = &self.p.items[one].kind {
+                    if held.name == name {
+                        return one;
+                    }
+                }
+            }
+        }
+        // No impl answers it. `sema` holds every argument to its bounds and
+        // every impl to the members its trait declares, so a program that
+        // reaches here is one those two checks did not cover -- naming the
+        // trait member is the honest answer, and the linker says the rest.
+        member
+    }
+
+    // The trait a member was declared in, where it was declared in one.
+    fn trait_of(&self, member: usize) -> Option<usize> {
+        self.p.items.iter().position(|item| {
+            matches!(&item.kind, TTIRItemKind::Trait { members, .. } if members.contains(&member))
+        })
+    }
+
     // Ask for one instance, and say where it went. Asking twice gives the same
     // answer both times, which is what stops a recursive declaration.
     fn want(&mut self, from: SIRBodyId, args: Vec<TyId>, name: String, depth: usize) -> SIRBodyId {
@@ -311,8 +374,15 @@ impl<'a> Mono<'a> {
                 let mut params: Vec<TyId> = Vec::with_capacity(args.len() + 1);
                 params.extend(ty_of(*recv));
                 params.extend(args.iter().filter_map(|&arg| ty_of(arg)));
+                // A method reached through a bound names the *trait's* member,
+                // which has no body: `sema` could not say which impl answered
+                // because what the parameter stood for was the caller's to say.
+                // Here it has been said -- the receiver's type is substituted --
+                // so this is where the impl that answers is chosen.
+                let held = params.first().copied();
+                let item = self.answering(*item, held);
                 let said = Said::Parts { params, ret: inst.def.and_then(ty_of) };
-                self.declaration(*item, said, job)
+                self.declaration(item, said, job)
             }
             // A closure is part of the body that wrote it, so it is made
             // wherever that body was made and with the same arguments. Its name

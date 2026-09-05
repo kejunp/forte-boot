@@ -184,6 +184,78 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
     assert!(said.contains("running 3 tests"), "{}", said);
 }
 
+// ---- Dispatch through a bound ---------------------------------------------------
+
+// A method called through a trait bound, and the generic it is called in made
+// once per type it is used with.
+//
+// Two types answering one trait is the whole of it. A test with one impl passes
+// on a compiler that ignores the receiver entirely and calls whatever it found
+// first -- and one did: `share` merged the two `Item` values that named the
+// generic, because a generic names its declaration and nothing about what it
+// stands for, so both calls ran the second instance and neither the assembler
+// nor the linker had anything to say.
+#[test]
+fn a_method_reached_through_a_bound_runs_the_impl_of_the_type_it_was_given() {
+    let dir = std::env::temp_dir().join(format!("fortec-bound-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("bound.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         trait Show {\n\
+         \x20   fn show(&self): i64\n\
+         \x20   fn scaled(&self, by: i64): i64\n\
+         }\n\
+         \n\
+         struct P { pub x: i64 }\n\
+         struct Q { pub y: i64 }\n\
+         \n\
+         impl Show for P {\n\
+         \x20   fn show(&self): i64 { self.x * 2 }\n\
+         \x20   fn scaled(&self, by: i64): i64 { self.x * by }\n\
+         }\n\
+         \n\
+         impl Show for Q {\n\
+         \x20   fn show(&self): i64 { self.y + 100 }\n\
+         \x20   fn scaled(&self, by: i64): i64 { self.y + by }\n\
+         }\n\
+         \n\
+         fn twice<T: Show>(v: &T): i64 { v.show() }\n\
+         \n\
+         // A generic handing its own parameter on to another bounded generic.\n\
+         fn through<T: Show>(v: &T): i64 { twice(v) + v.scaled(10) }\n\
+         \n\
+         %test\n\
+         fn a_bound_dispatches_to_the_impl_of_the_receiver() {\n\
+         \x20   let p = P { x: 21 }\n\
+         \x20   let q = Q { y: 5 }\n\
+         \x20   assert_eq(int(twice(&p)), int(42), \"P answers Show\")\n\
+         \x20   assert_eq(int(twice(&q)), int(105), \"and so does Q, differently\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_generic_may_hand_its_own_parameter_on() {\n\
+         \x20   let p = P { x: 21 }\n\
+         \x20   let q = Q { y: 5 }\n\
+         \x20   assert_eq(int(through(&p)), int(252), \"42 and 21 by ten\")\n\
+         \x20   assert_eq(int(through(&q)), int(120), \"105 and 5 and ten\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "bound");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a method through a bound was meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- The runner itself -------------------------------------------------------
 
 // And that it would have said so. A suite whose tests all pass says nothing

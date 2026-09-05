@@ -1,3 +1,4 @@
+use crate::tir::ttir_nodes::{TTIRGeneric, TTIRItemId, TTIRItemKind};
 // Two values that turn out to be one value.
 //
 // Two rewrites and one idea. A phi whose edges all name one value is a join
@@ -100,6 +101,23 @@ pub(super) fn share(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -
             if !known(ttir, &kind) {
                 continue;
             }
+            // An `Item` naming a generic is not one value however alike two of
+            // them look.
+            //
+            // What a generic stands for is not in the instruction -- it names
+            // the declaration and nothing else. `mir::mono` works it out from
+            // the *call* that uses the value and files the answer under where
+            // the `Item` stands, so two calls at two types want two `Item`s
+            // standing in two places. Merged, both calls point at one place,
+            // one of the two instantiations is written there, and the other
+            // call is quietly handed the wrong body: `only(&a)` and `only(&b)`
+            // both ran `only<B>`, and neither the assembler nor the linker had
+            // anything to say about it.
+            if let SIRInstKind::Item(item) | SIRInstKind::ItemAddr(item) = kind {
+                if generic(ttir, item) {
+                    continue;
+                }
+            }
             let ty = body.values[def].ty;
             // An address is a place and not a thing: two names for one place
             // are one name whatever is kept there, which is why the addresses
@@ -144,4 +162,14 @@ pub(super) fn share(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -
     }
     replace(body, &subst);
     true
+}
+
+
+// Whether a declaration wants types said before it is a fn at all. A lifetime
+// is not one of them: a region is worked out rather than written, and two uses
+// differing only in one are the same code (§8).
+fn generic(ttir: &TTIRProgram, item: TTIRItemId) -> bool {
+    let Some(held) = ttir.items.get(item) else { return false };
+    let TTIRItemKind::Fn(f) = &held.kind else { return false };
+    f.generics.iter().any(|g| matches!(g, TTIRGeneric::Type { .. }))
 }

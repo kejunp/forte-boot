@@ -28,6 +28,21 @@ impl<'a> Lowerer<'a> {
                     let Some(value) = f.body else { continue };
                     self.here = self.span(id);
                     self.params = type_names_of(&f.generics);
+                    // The bounds as the checker made them, which is where a
+                    // `TTIRBound` exists at all -- `f` here is still the tree
+                    // as it was written. Type parameters only, so that the
+                    // index is the one a `Ty::Param` carries.
+                    self.bounds = match &self.out.items[made].kind {
+                        TTIRItemKind::Fn(held) => held
+                            .generics
+                            .iter()
+                            .filter_map(|g| match g {
+                                TTIRGeneric::Type { bounds, .. } => Some(bounds.clone()),
+                                TTIRGeneric::Life { .. } => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
                     self.open_regions(&f.generics);
                     self.close_regions();
                     let body = self.body(made, &f, value);
@@ -36,6 +51,7 @@ impl<'a> Lowerer<'a> {
                     };
                     held.body = Some(body);
                     self.params.clear();
+                    self.bounds.clear();
                 }
                 TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
                     self.open_regions(&generics);

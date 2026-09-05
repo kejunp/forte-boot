@@ -69,17 +69,9 @@ impl<'a> Lowerer<'a> {
     }
 
     // What the declaration being walked holds its own parameter at `index` to.
-    fn param_bounds(&self, index: usize) -> Vec<TTIRBound> {
-        let Some(name) = self.params.get(index) else { return Vec::new() };
-        for item in &self.out.items {
-            let TTIRItemKind::Fn(f) = &item.kind else { continue };
-            if let Some(TTIRGeneric::Type { name: held, bounds }) = f.generics.get(index) {
-                if held == name {
-                    return bounds.clone();
-                }
-            }
-        }
-        Vec::new()
+    // Carried on the walk rather than searched for -- see `Lowerer::bounds`.
+    pub(super) fn param_bounds(&self, index: usize) -> Vec<TTIRBound> {
+        self.bounds.get(index).cloned().unwrap_or_default()
     }
 }
 

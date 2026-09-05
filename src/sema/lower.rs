@@ -176,6 +176,17 @@ pub struct Lowerer<'a> {
     frames: Vec<Frame>,
     // The parameters of the declaration being walked, for a `Ty::Param`.
     params: Vec<String>,
+    // And what that declaration holds each of them to, in the same order, so
+    // that `index` means the same thing in both.
+    //
+    // Kept beside the names rather than looked up when wanted, because looking
+    // one up is not a thing that can be done: a `Ty::Param` carries a name and
+    // a number and nothing that says which declaration it came from, so the
+    // only way back to the bounds is to have been holding them. This was a
+    // search over every fn in the program for one whose parameter at that index
+    // had the same name, which is right until two declarations share a
+    // parameter name -- and `T` is what most of them are called.
+    bounds: Vec<Vec<TTIRBound>>,
     // How many `unsafe` statements are open around what is being walked.
     //
     // `tir::lower` answers the same question for `addr` and `deref`, which it
@@ -289,6 +300,7 @@ impl<'a> Lowerer<'a> {
             made,
             frames: Vec::new(),
             params: Vec::new(),
+            bounds: Vec::new(),
             guarded: 0,
             consts: HashMap::new(),
             answers: HashMap::new(),
