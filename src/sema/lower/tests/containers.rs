@@ -248,3 +248,48 @@ fn a_run_may_not_be_held_by_a_name() {
     assert!(out.contains("is a run and nothing holds one"), "{}", out);
     assert!(out.contains("borrows a view of it"), "{}", out);
 }
+
+// ---- A reference to an array is a view of it -----------------------------------
+
+// "A reference to a fixed array is a view of it: `&i32[8]` is a `&i32[]` and
+// `*i32[8]` a `*i32[]`, the length moving out of the type and into the value"
+// (§3) -- at a name that says so, and at a parameter that does.
+#[test]
+fn a_reference_to_an_array_stands_where_a_view_is_wanted() {
+    clean(
+        "fn takes(xs: &i32[]): i32 { xs[0] }\n\
+         fn f(): i32 {\n\
+         \x20   let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let s: &i32[] = &a\n\
+         \x20   takes(&a)\n\
+         }\n",
+    );
+}
+
+// And the writing one the same way, which is the other half of the sentence.
+#[test]
+fn a_writing_reference_to_an_array_is_a_writing_view() {
+    clean(
+        "fn takes(xs: *i32[]) {}\n\
+         fn f() {\n\
+         \x20   var a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let w: *i32[] = *a\n\
+         \x20   takes(*a)\n\
+         }\n",
+    );
+}
+
+// "That conversion is the only one, and it runs one way -- a view has forgotten
+// how many there are as a matter of type, so nothing turns it back."
+#[test]
+fn a_view_does_not_turn_back_into_an_array() {
+    let out = refused(
+        "fn takes(xs: &i32[8]): i32 { xs[0] }\n\
+         fn f(): i32 {\n\
+         \x20   let a: i32[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         \x20   let v: &i32[] = &a\n\
+         \x20   takes(v)\n\
+         }\n",
+    );
+    assert!(out.contains("`&i32[]` and it takes `&i32[8]`"), "{}", out);
+}

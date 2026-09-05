@@ -165,7 +165,8 @@ impl<'a> Lowerer<'a> {
                 }
                 let c = self.expr(callee);
                 let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
-                let ty = self.calling(c, &made, id);
+                let mut made = made;
+                let ty = self.calling(c, &mut made, id);
                 self.make(TTIRExprKind::Call { callee: c, args: made }, ty, id)
             }
 
@@ -486,13 +487,20 @@ impl<'a> Lowerer<'a> {
             match stmt {
                 TIRStmt::Let { is_unsafe, intro, name, ty, init, .. } => {
                     self.guarded += usize::from(*is_unsafe);
-                    let init = init.map(|i| self.expr(i));
+                    let mut init = init.map(|i| self.expr(i));
                     self.guarded -= usize::from(*is_unsafe);
                     let written = ty.map(|t| self.ty(t));
+                    // A reference to an array where the name says a view: the
+                    // binding keeps the conversion and not what was written.
+                    if let (Some(want), Some(got)) = (written, init) {
+                        init = Some(self.viewed(got, want));
+                    }
                     let ty = match (written, init) {
                         (Some(want), Some(got)) => {
                             let found = self.out.exprs[got].ty;
-                            if self.types.unify(found, want).is_err() {
+                            if self.types.unify(found, want).is_err()
+                                && !self.views(found, want)
+                            {
                                 let (found, want) = (self.spell(found), self.spell(want));
                                 self.errors.push(
                                     Diagnostic::error(
@@ -572,7 +580,10 @@ impl<'a> Lowerer<'a> {
 
     // What a call comes to: the callee has to be a fn, and what it takes has to
     // agree with what it was handed.
-    fn calling(&mut self, callee: TTIRExprId, args: &[TTIRExprId], at: TIRExprId) -> TyId {
+    // `args` is taken to be written to: an argument that is a reference to an
+    // array where a view was wanted is rewritten into one (`viewed`), and the
+    // node the caller goes on to build has to be the rewritten one.
+    fn calling(&mut self, callee: TTIRExprId, args: &mut [TTIRExprId], at: TIRExprId) -> TyId {
         // Every parameter of what is called gets a hole, so `id(1)` works out
         // its own `T` -- "what it stands for is settled at the call and not at
         // the declaration".
@@ -597,9 +608,13 @@ impl<'a> Lowerer<'a> {
             );
             return ret;
         }
-        for (i, (&want, &got)) in params.iter().zip(args.iter()).enumerate() {
+        for (i, &want) in params.iter().enumerate() {
+            let Some(&got) = args.get(i) else { continue };
             let found = self.out.exprs[got].ty;
-            if self.types.unify(found, want).is_err() && !self.weakens(found, want) {
+            if self.types.unify(found, want).is_err()
+                && !self.weakens(found, want)
+                && !self.views(found, want)
+            {
                 let (found, want) = (self.spell(found), self.spell(want));
                 self.errors.push(
                     Diagnostic::error(
@@ -609,6 +624,7 @@ impl<'a> Lowerer<'a> {
                     .with_label("this is what it was handed"),
                 );
             }
+            args[i] = self.viewed(got, want);
             let at = self.at(at);
             self.stands_as(found, want, at);
         }
@@ -669,6 +685,64 @@ impl<'a> Lowerer<'a> {
             ) => self.types.unify(from, to).is_ok(),
             _ => false,
         }
+    }
+
+    // Whether a reference to a fixed array stands where a view was wanted.
+    //
+    // "A reference to a fixed array is a view of it: `&i32[8]` is a `&i32[]`
+    // and `*i32[8]` a `*i32[]`, the length moving out of the type and into the
+    // value. That conversion is the only one, and it runs one way -- a view has
+    // forgotten how many there are as a matter of type, so nothing turns it
+    // back" (§3). So this is asked of `(found, want)` and never of the pair the
+    // other way about.
+    //
+    // A view that writes wants a reference that writes; one that reads takes
+    // either, which is the weakening `weakens` already allows and is allowed
+    // here for the same reason rather than a second time.
+    pub(super) fn views(&mut self, found: TyId, want: TyId) -> bool {
+        let (
+            Ty::Ref { op: from_op, inner: from, .. },
+            Ty::Ref { op: want_op, inner: to, .. },
+        ) = (self.types.get(found).clone(), self.types.get(want).clone())
+        else {
+            return false;
+        };
+        let kept = from_op == want_op
+            || (from_op == TIRRefOp::Mut && want_op == TIRRefOp::Imm);
+        if !kept {
+            return false;
+        }
+        let (Ty::Array { elem, .. }, Ty::Run(held)) =
+            (self.types.get(from).clone(), self.types.get(to).clone())
+        else {
+            return false;
+        };
+        self.types.unify(elem, held).is_ok()
+    }
+
+    // The expression as a view, where a view is what was wanted and what it is
+    // is a reference to an array. Anything else comes back as it was.
+    //
+    // The node is a `Cast`, which is not a lie about what this is: a cast is
+    // the tree's word for a value that keeps what it means and changes how it
+    // is written down, and `&i32[8]` to `&i32[]` is exactly that. It flows
+    // through every IR already, and `mir::lower` is where the length actually
+    // moves out of the type and into the value.
+    pub(super) fn viewed(&mut self, got: TTIRExprId, want: TyId) -> TTIRExprId {
+        let found = self.out.exprs[got].ty;
+        if !self.views(found, want) {
+            return got;
+        }
+        // Where the operand stands, for the reason `read_through` gives: nobody
+        // wrote this conversion, so it has no place of its own in the source.
+        let (line, col) = (self.out.exprs[got].line, self.out.exprs[got].col);
+        self.out.exprs.push(TTIRExpr {
+            kind: TTIRExprKind::Cast(got),
+            ty: want,
+            line,
+            col,
+        });
+        self.out.exprs.len() - 1
     }
 
     // An expression with the references taken off it, which is one read out

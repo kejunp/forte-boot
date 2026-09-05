@@ -8,9 +8,9 @@
 // again to know what an instruction does -- which is the whole reason
 // `MIRBinOp` is longer than `TIRBinOp`.
 
+use crate::tir::ttir_nodes::{Ty, TyId};
 use crate::sir::sir_nodes::*;
 use crate::tir::tir_nodes::{TIRBinOp, TIRLit, TIRRefOp, TIRUnaryOp};
-use crate::tir::ttir_nodes::Ty;
 
 use super::super::mir_nodes::*;
 use super::Lowerer;
@@ -90,6 +90,17 @@ impl<'a> Lowerer<'a> {
             SIRInstKind::Cast(of) => {
                 let from = self.ty_of(*of);
                 let to = self.ty_of(value);
+                // A reference to a fixed array standing where a view was
+                // wanted. "The length moving out of the type and into the
+                // value" (§3) is this, and it is the whole of the work: the
+                // address is already the elements, and how many there are is
+                // in the type this came from and in no register yet.
+                if self.viewing(from, to) {
+                    let held = self.of(*of);
+                    let held_len = self.run_length(from);
+                    self.view(def, held, held_len, line, col);
+                    return;
+                }
                 let (from, to) = (self.scalar_of(from), self.scalar_of(to));
                 let of = self.of(*of);
                 self.making(def, MIRInstKind::Convert { of, from, to }, line, col);
@@ -324,5 +335,46 @@ fn arithmetic(op: TIRBinOp, float: bool, signed: bool) -> MIRBinOp {
         // orderings never reach this. Neither is a shape the checker makes.
         (B::Rem, true) => FDiv,
         (B::Eq, _) | (B::Ne, _) | (B::Lt, _) | (B::Le, _) | (B::Gt, _) | (B::Ge, _) => Add,
+    }
+}
+
+impl Lowerer<'_> {
+    // Whether this cast is the one conversion §3 gives: a reference to a fixed
+    // array becoming a view of it.
+    fn viewing(&mut self, from: TyId, to: TyId) -> bool {
+        let (from, to) = (self.bare(from), self.bare(to));
+        matches!(self.made.ttir.types.get(from), Some(Ty::Array { .. }))
+            && matches!(self.made.ttir.types.get(to), Some(Ty::Run(_)))
+    }
+
+    // How many elements the array had, which is the number the type carried and
+    // the value is about to.
+    fn run_length(&mut self, from: TyId) -> usize {
+        let from = self.bare(from);
+        match self.made.ttir.types.get(from) {
+            Some(Ty::Array { len, .. }) => *len as usize,
+            _ => 0,
+        }
+    }
+
+    // A view built out of where the elements are and how many there are: the
+    // same two words a `str` is and a slice is, written the same way.
+    fn view(
+        &mut self,
+        def: MIRRegId,
+        at: MIRRegId,
+        held: usize,
+        line: usize,
+        col: usize,
+    ) {
+        let word = self.machine.word;
+        let name = format!("${}", self.frame_len());
+        let slot = self.slot(name, word * 2, word);
+        self.making(def, MIRInstKind::Frame(slot), line, col);
+        self.effect(MIRInstKind::Store { to: def, value: at, bytes: word }, line, col);
+        let len = self.push(MIRInstKind::Const(MIRConst::Int(held as i64)), line, col);
+        let second =
+            self.push(MIRInstKind::Offset { base: def, bytes: word as i64 }, line, col);
+        self.effect(MIRInstKind::Store { to: second, value: len, bytes: word }, line, col);
     }
 }

@@ -262,6 +262,68 @@ fn a_slice_is_a_view_of_the_elements_it_names() {
     assert!(said.contains("running 2 tests"), "{}", said);
 }
 
+// ---- A reference to an array is a view of it ------------------------------------
+
+// "The length moving out of the type and into the value" (§3), which is the
+// half only a running program can check: a conversion that took the address and
+// left the length behind still compiles, links, and reads whatever was next in
+// the frame as how many there are.
+#[test]
+fn a_reference_to_an_array_carries_the_length_it_left_behind() {
+    let dir = std::env::temp_dir().join(format!("fortec-view-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("view.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         fn sum(xs: &i64[], n: i64): i64 {\n\
+         \x20   var t = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       t = t + xs[i]\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   t\n\
+         }\n\
+         \n\
+         fn bump(xs: *i64[], n: i64) {\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       xs[i] = xs[i] + 1\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn an_array_stands_where_a_view_is_wanted() {\n\
+         \x20   let a: i64[4] = [10, 20, 30, 40]\n\
+         \x20   let s: &i64[] = &a\n\
+         \x20   assert_eq(int(sum(s, 4)), int(100), \"through a name that says so\")\n\
+         \x20   assert_eq(int(sum(&a, 4)), int(100), \"and at a parameter that does\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_writing_reference_to_an_array_writes_through_the_view() {\n\
+         \x20   var a: i64[4] = [10, 20, 30, 40]\n\
+         \x20   bump(*a, 4)\n\
+         \x20   assert_eq(int(a[0]), int(11), \"the first\")\n\
+         \x20   assert_eq(int(a[3]), int(41), \"and the last\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "view");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a reference to an array was meant to be a view:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- Stopping ---------------------------------------------------------------------
 
 // A program that finds it cannot go on, and stops.
