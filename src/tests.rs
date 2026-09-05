@@ -65,6 +65,17 @@ fn out_at(what: &str) -> PathBuf {
 // the standard library is named rather than found, because `std_beside` looks
 // beside the compiler and the compiler here is a test binary.
 fn ran(root: &Path, what: &str) -> Option<(bool, String)> {
+    built(root, what, true)
+}
+
+// And the same for an ordinary build, which starts at the suite's own `main`
+// rather than at a runner over its tests. What a program *does* is the only way
+// to ask some things -- whether a `never` really does stop one, above all.
+fn ran_program(root: &Path, what: &str) -> Option<(bool, String)> {
+    built(root, what, false)
+}
+
+fn built(root: &Path, what: &str, tests: bool) -> Option<(bool, String)> {
     let (Some(runtime), true) = (archive(), have_cc()) else { return None };
     let at = out_at(what);
     let _ = std::fs::remove_file(&at);
@@ -77,7 +88,7 @@ fn ran(root: &Path, what: &str) -> Option<(bool, String)> {
         None,
         Some(at.clone()),
         Some(runtime),
-        true,
+        tests,
     );
     assert!(built, "{} was meant to compile", root.display());
 
@@ -182,6 +193,52 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
     assert!(ok, "a call past the registers was meant to work:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
+}
+
+// ---- Stopping ---------------------------------------------------------------------
+
+// A program that finds it cannot go on, and stops.
+//
+// §8 named this as the gap and said an external `exit` was "not an answer for
+// this one", so what is checked is the whole of the answer: the words reach the
+// error stream, the status is not nought, and *nothing after the call runs* --
+// which is the part a `never` return type promises and the only part a reader
+// cannot see for themselves.
+#[test]
+fn a_program_that_cannot_go_on_says_so_and_stops() {
+    let dir = std::env::temp_dir().join(format!("fortec-stop-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("stop.ft");
+    std::fs::write(
+        &root,
+        "import panic::panic;\n\
+         import fmt::println;\n\
+         \n\
+         fn checked(n: i64): i64 {\n\
+         \x20   if n < 0 {\n\
+         \x20       panic(\"a length cannot be negative\")\n\
+         \x20   }\n\
+         \x20   n * 2\n\
+         }\n\
+         \n\
+         fn main(): i32 {\n\
+         \x20   println(\"BEFORE\")\n\
+         \x20   let held = checked(-1)\n\
+         \x20   println(\"AFTER\")\n\
+         \x20   held as i32\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran_program(&root, "stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(!ok, "a program that panicked was meant to exit non-zero:\n{}", said);
+    assert!(said.contains("BEFORE"), "what ran before it should still be there:\n{}", said);
+    assert!(!said.contains("AFTER"), "nothing after a `never` may run:\n{}", said);
+    assert!(said.contains("a length cannot be negative"), "{}", said);
 }
 
 // ---- Dispatch through a bound ---------------------------------------------------

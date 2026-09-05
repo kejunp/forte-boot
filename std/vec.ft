@@ -29,6 +29,7 @@
 //     let one = at(&v, 0)
 
 import mem::{room, stride};
+import panic::panic;
 
 pub struct Vec<T> {
     // Where the values are. Nothing outside this file reads it: it is `pub`
@@ -60,15 +61,26 @@ pub fn is_empty<T>(v: &Vec<T>): bool {
     v.len == 0
 }
 
-// What is at a place. Nothing here checks the index against the length: that
-// is the one thing a caller can check and this cannot answer for, there being
-// no way yet to stop a program that asked for what is not there.
+// What is at a place, and the place has to be one.
+//
+// This file used to say that the index was "the one thing a caller can check
+// and this cannot answer for, there being no way yet to stop a program that
+// asked for what is not there". There is one now (`panic.ft`), so the check is
+// here: reading past the end is a bug in the caller, and the two ways to
+// answer a bug are to say so and to carry on with whatever was at that
+// address. The first is worth a compare and a branch.
 pub fn at<T>(v: &Vec<T>, i: i64): T {
+    if i < 0 || i >= v.len {
+        panic("a vector was read past its end")
+    }
     unsafe let out = v.at[i]
     out
 }
 
 pub fn put<T>(v: &Vec<T>, i: i64, x: T) {
+    if i < 0 || i >= v.len {
+        panic("a vector was written past its end")
+    }
     unsafe v.at[i] = x
 }
 

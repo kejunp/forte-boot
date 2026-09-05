@@ -10,6 +10,8 @@
 // an `impl` introduces is not yet in scope inside its own members. Until it is,
 // `is_some(o)` is what `o.is_some()` would have been.
 
+import panic::panic;
+
 pub enum Option<T> {
     None,
     Some(T),
@@ -37,5 +39,23 @@ pub fn unwrap_or<T>(o: Option<T>, fallback: T): T {
     match o {
         Option::Some(v) => v,
         Option::None => fallback,
+    }
+}
+
+// What is in it, or a stop.
+//
+// The file used to say there was "no routine that takes the value out without
+// being told what to do when there is none: that would be a routine with
+// nothing to answer with, and the language has no way to stop". It has one now
+// (`panic.ft`), and this is that routine: what it answers with is that the
+// program does not go on.
+//
+// `why` rather than a message of this file's own, because what is worth saying
+// is what the caller expected to be there -- "the name of the file" says more
+// at the end of a program than "unwrapped a None" ever does.
+pub fn unwrap<T>(o: Option<T>, why: str): T {
+    match o {
+        Option::Some(v) => v,
+        Option::None => panic(why),
     }
 }

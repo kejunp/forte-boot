@@ -1,0 +1,29 @@
+// The way out of the middle of a program.
+//
+//     if n < 0 {
+//         panic("a length cannot be negative")
+//     }
+//
+// Section 8 named this as the gap: "a fn deep in a program that has found it
+// cannot go on returns `never` and has nothing to call", and said that a
+// `%symbol` declaration of somebody else's `exit` is not an answer for it.
+// This is the answer -- the runtime's own, which says why before it goes.
+//
+// **It returns `never`, and that is what makes it useful.** `never` is the
+// empty type, so an expression of it agrees with anything beside it: a call to
+// this stands where a value of any type was wanted, and nothing after it is
+// reached. That is what lets it be the other arm of a match, or the end of a
+// fn that has no answer to give.
+//
+// **It stops the process rather than unwinding.** Nothing here unwinds -- no
+// exception, no `catch`, and no way for a callee to return on its caller's
+// behalf -- so a program that panics ends, with the status 101 and the message
+// on the error stream. `runtime/src/stop.rs` is the other half of this file.
+//
+// It is *not* what a failing test uses. `test.ft` counts an assertion that did
+// not hold and lets the test go on, because stopping there would abandon every
+// test after it; the reason is argued out in that file. This is for a program
+// that has found it cannot go on, which is the other thing.
+
+%symbol("__rt_panic")
+pub fn panic(why: str): never;

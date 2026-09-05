@@ -8,6 +8,8 @@
 //
 // Free functions rather than methods, for the reason `option.ft` gives.
 
+import panic::panic;
+
 pub enum Result<T, E> {
     Ok(T),
     Err(E),
@@ -31,5 +33,14 @@ pub fn unwrap_or<T, E>(r: Result<T, E>, fallback: T): T {
     match r {
         Result::Ok(v) => v,
         Result::Err(_) => fallback,
+    }
+}
+
+// The answer, or a stop. `Option`'s `unwrap` says why this is worth having and
+// why the message is the caller's.
+pub fn unwrap<T, E>(r: Result<T, E>, why: str): T {
+    match r {
+        Result::Ok(v) => v,
+        Result::Err(_) => panic(why),
     }
 }

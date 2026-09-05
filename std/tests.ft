@@ -22,6 +22,7 @@ import test::{assert, assert_eq};
 import fmt::{int, text, truth};
 import vec::Vec;
 import option::Option;
+import panic::panic;
 import result::Result;
 import range::Range;
 import order::less_i64;
@@ -84,6 +85,24 @@ fn popping_takes_the_last_one_and_shortens_the_vector() {
     assert(vec::is_empty(&v), "and the vector is empty again")
 }
 
+// Every index the vector has is still readable: the check added for the ones it
+// does not have must not turn down the ones it does, and off by one at either
+// end is how that goes wrong.
+%test
+fn every_index_a_vector_has_is_still_readable() {
+    var v: Vec<i64> = vec::empty()
+    for i in 0..8 {
+        vec::push(*v, i)
+    }
+    var seen = 0
+    for i in 0..8 {
+        if vec::at(&v, i) == i {
+            seen = seen + 1
+        }
+    }
+    assert_eq(int(seen), int(8), "the first and the last among them")
+}
+
 %test
 fn a_place_written_reads_back_as_what_was_written() {
     var v: Vec<i64> = vec::empty()
@@ -121,6 +140,16 @@ fn unwrapping_gives_the_value_or_what_was_offered_instead() {
     assert_eq(int(option::unwrap_or(none, 0)), int(0), "None gives the fallback")
 }
 
+// The path that does not stop. What `unwrap` does when there is nothing to
+// unwrap cannot be asked here -- it ends the process, and a test that ended the
+// process would take every test after it -- so that half is asked by running a
+// program, in `src/tests.rs`.
+%test
+fn unwrapping_a_some_gives_what_is_in_it() {
+    let some: Option<i64> = Option::Some(7)
+    assert_eq(int(option::unwrap(some, "there is one")), int(7), "Some unwraps")
+}
+
 // ---- Result ---------------------------------------------------------------------
 
 %test
@@ -144,6 +173,12 @@ fn unwrapping_a_result_gives_the_answer_or_the_fallback() {
     assert_eq(int(result::unwrap_or(ok, 9)), int(1), "Ok gives what is in it")
     let err: Result<i64, i64> = Result::Err(2)
     assert_eq(int(result::unwrap_or(err, 9)), int(9), "Err gives the fallback")
+}
+
+%test
+fn unwrapping_an_ok_gives_the_answer() {
+    let ok: Result<i64, i64> = Result::Ok(1)
+    assert_eq(int(result::unwrap(ok, "there is one")), int(1), "Ok unwraps")
 }
 
 // ---- Range ------------------------------------------------------------------------
