@@ -31,7 +31,7 @@ use std::fmt::Write;
 use super::super::linear::Line;
 use super::super::machine::{Class, Reg};
 use super::super::mir_nodes::*;
-use super::{label, ordered, passing, refuses, symbol, Body, Site, Step};
+use super::{Body, Passed, Site, Step, label, ordered, passing, refuses, symbol};
 
 // ---- Naming ----------------------------------------------------------------
 
@@ -293,7 +293,7 @@ fn params(out: &mut String, b: &Body) {
     let mut moves: Vec<(Reg, Reg)> = Vec::new();
 
     for (at, &reg) in b.held.params.iter().enumerate() {
-        let Some(Some(from)) = held.get(at).copied() else { continue };
+        let Some(Passed::In(from)) = held.get(at).copied() else { continue };
         match b.site(reg) {
             Site::At(off) => {
                 let bytes = b.bytes(reg);
@@ -822,7 +822,7 @@ fn call(
 ) -> Option<String> {
     let classes: Vec<Class> = args.iter().map(|&arg| b.class(arg)).collect();
     let want = passing(b.m, &classes);
-    if want.iter().any(|held| held.is_none()) {
+    if want.iter().any(|held| matches!(held, Passed::On(_))) {
         return Some(format!(
             "{}: a call with {} arguments is not emitted -- nothing here puts one on the stack",
             b.held.symbol,
@@ -832,14 +832,14 @@ fn call(
 
     let mut moves: Vec<(Reg, Reg)> = Vec::new();
     for (at, &arg) in args.iter().enumerate() {
-        let Some(Some(into_reg)) = want.get(at).copied() else { continue };
+        let Some(Passed::In(into_reg)) = want.get(at).copied() else { continue };
         if let Site::In(from) = b.site(arg) {
             moves.push((into_reg, from));
         }
     }
     shuffle(out, b, &moves);
     for (at, &arg) in args.iter().enumerate() {
-        let Some(Some(into_reg)) = want.get(at).copied() else { continue };
+        let Some(Passed::In(into_reg)) = want.get(at).copied() else { continue };
         let Site::At(off) = b.site(arg) else { continue };
         let bytes = b.bytes(arg);
         let one = frame_op(out, off, scratch(b, 2, Class::Int));

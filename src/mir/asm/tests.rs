@@ -205,25 +205,58 @@ fn nothing_is_put_aside_where_no_cycle_needs_it() {
 #[test]
 fn the_two_files_are_counted_separately() {
     let held = passing(X86_64, &[Class::Int, Class::Float, Class::Int]);
-    assert_eq!(held[0], Some(X86_64.args[0]));
-    assert_eq!(held[1], Some(X86_64.fargs[0]));
-    assert_eq!(held[2], Some(X86_64.args[1]), "the float did not use up an integer one");
+    assert_eq!(held[0], Passed::In(X86_64.args[0]));
+    assert_eq!(held[1], Passed::In(X86_64.fargs[0]));
+    assert_eq!(
+        held[2],
+        Passed::In(X86_64.args[1]),
+        "the float did not use up an integer one"
+    );
 }
 
-// More than there are registers for, which is the case nothing here emits.
+// Past the registers of its class an argument goes on the stack, and the words
+// are counted from nought in the order the arguments are written.
 #[test]
-fn a_class_that_runs_out_of_registers_says_so() {
-    let many = vec![Class::Int; X86_64.args.len() + 1];
+fn a_class_that_runs_out_of_registers_goes_on_the_stack() {
+    let many = vec![Class::Int; X86_64.args.len() + 2];
     let held = passing(X86_64, &many);
-    assert!(held.last().expect("one").is_none());
-    assert!(held[..many.len() - 1].iter().all(|one| one.is_some()));
+    assert!(
+        held[..X86_64.args.len()].iter().all(|one| matches!(one, Passed::In(_))),
+        "{:?}",
+        held
+    );
+    assert_eq!(held[X86_64.args.len()], Passed::On(0));
+    assert_eq!(held[X86_64.args.len() + 1], Passed::On(1));
+}
+
+// The two files run out separately and then share one run of words, in the
+// order the arguments were written and not in the order they ran out.
+#[test]
+fn the_two_files_share_one_run_of_stack_words() {
+    let mut classes = vec![Class::Int; X86_64.args.len() + 1];
+    classes.extend(vec![Class::Float; X86_64.fargs.len() + 1]);
+    let held = passing(X86_64, &classes);
+
+    // The integer that overflowed was written first, so it has the first word.
+    assert_eq!(held[X86_64.args.len()], Passed::On(0));
+    assert_eq!(held.last().copied().expect("one"), Passed::On(1));
+}
+
+// How much room the words come to, which is what a frame has to hold.
+#[test]
+fn the_outgoing_room_is_a_word_for_each_that_did_not_fit() {
+    for m in [X86_64, AARCH64, RISCV64] {
+        assert_eq!(outgoing(m, &[Class::Int, Class::Float]), 0, "{}", m.name);
+        let many = vec![Class::Int; m.args.len() + 3];
+        assert_eq!(outgoing(m, &many), 3 * m.word, "{}", m.name);
+    }
 }
 
 #[test]
 fn every_machine_passes_its_first_argument_in_its_first_register() {
     for m in [X86_64, AARCH64, RISCV64] {
         let held = passing(m, &[Class::Int]);
-        assert_eq!(held[0], Some(m.args[0]), "{}", m.name);
+        assert_eq!(held[0], Passed::In(m.args[0]), "{}", m.name);
     }
 }
 

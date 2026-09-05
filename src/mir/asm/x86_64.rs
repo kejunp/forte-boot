@@ -36,7 +36,7 @@ use std::fmt::Write;
 use super::super::linear::Line;
 use super::super::machine::{Class, Reg};
 use super::super::mir_nodes::*;
-use super::{label, ordered, passing, refuses, symbol, Body, Site, Step};
+use super::{Body, Passed, Site, Step, label, ordered, passing, refuses, symbol};
 
 // ---- Naming ----------------------------------------------------------------
 
@@ -82,6 +82,15 @@ fn named(reg: Reg, bytes: usize) -> String {
         _ => 0,
     };
     format!("%{}", held[at])
+}
+
+// And the other way: a word the caller left *above* the frame pointer, which is
+// the one address in this file that is not below it. It is spelled here and
+// used in one place -- `params` copies such an argument into wherever the
+// allocator put it, and after that it is an ordinary value with an ordinary
+// site.
+fn frame_at_above(off: usize) -> String {
+    format!("{}(%rbp)", off)
 }
 
 fn frame_at(off: usize) -> String {
@@ -252,7 +261,7 @@ fn params(out: &mut String, b: &Body) {
     let mut moves: Vec<(Reg, Reg)> = Vec::new();
 
     for (at, &reg) in b.held.params.iter().enumerate() {
-        let Some(Some(from)) = held.get(at).copied() else { continue };
+        let Some(Passed::In(from)) = held.get(at).copied() else { continue };
         match b.site(reg) {
             Site::At(off) => {
                 let _ = writeln!(
@@ -268,6 +277,38 @@ fn params(out: &mut String, b: &Body) {
         }
     }
     shuffle(out, b, &moves);
+
+    // The ones that arrived on the stack, read from above the frame pointer.
+    //
+    // *After* the shuffle, and this is the opposite of the order the call site
+    // wants -- for the mirror reason. There the stack words are written from
+    // registers the shuffle is about to overwrite, so they go first; here they
+    // are read into registers the shuffle still has to read, so they go last. A
+    // load placed first wrote `%r9` while `%r9` was still the sixth argument,
+    // and the sixth argument was gone by the time the shuffle wanted it.
+    //
+    // A load reads nothing but the frame pointer, so once the shuffle is done
+    // there is nothing left for it to disturb: every parameter is in its own
+    // register by then, and no two share one.
+    for (at, &reg) in b.held.params.iter().enumerate() {
+        let Some(Passed::On(which)) = held.get(at).copied() else { continue };
+        let bytes = b.bytes(reg);
+        let from = frame_at_above(b.incoming_at(which));
+        match b.site(reg) {
+            Site::In(to) => {
+                let _ = writeln!(out, "\t{}\t{}, {}", mov(b, reg), from, named(to, bytes));
+            }
+            Site::At(off) => {
+                // Through a scratch of the parameter's own file, for the reason
+                // the call site gives: memory to memory is two instructions
+                // here, and a float goes through an `xmm`.
+                let sc = named(scratch(b, 0, b.class(reg)), bytes);
+                let _ = writeln!(out, "\t{}\t{}, {}", mov(b, reg), from, sc);
+                let _ = writeln!(out, "\t{}\t{}, {}", mov(b, reg), sc, frame_at(off));
+            }
+            Site::Nowhere => {}
+        }
+    }
 }
 
 // A set of register-to-register moves, in an order where none writes over
@@ -1033,12 +1074,42 @@ fn call(
 ) -> Option<String> {
     let classes: Vec<Class> = args.iter().map(|&arg| b.class(arg)).collect();
     let want = passing(b.m, &classes);
-    if want.iter().any(|held| held.is_none()) {
-        return Some(format!(
-            "{}: a call with {} arguments is not emitted -- nothing here puts one on the stack",
-            b.held.symbol,
-            args.len()
-        ));
+
+    // The ones that go on the stack, *before* anything else is touched.
+    //
+    // The order is not tidiness. An argument still sitting in a register that
+    // the shuffle below is about to write over would be read after it had gone:
+    // a call whose first argument moves into `rdi` and whose seventh is living
+    // in `rdi` would store whatever the first argument turned out to be. A
+    // store reads a register and writes a word of the frame that nothing else
+    // here reads, so doing every one of them first is always safe.
+    //
+    // Load and store one at a time rather than loading them all and then
+    // storing: this machine has two scratch registers, and the one used here is
+    // wanted again below for an indirect callee.
+    for (at, &arg) in args.iter().enumerate() {
+        let Some(Passed::On(which)) = want.get(at).copied() else { continue };
+        let bytes = b.bytes(arg);
+        let held = match b.site(arg) {
+            // Already in a register, so it goes straight out.
+            Site::In(from) => named(from, bytes),
+            // In the frame or nowhere, so it comes through a scratch: this
+            // machine will not move memory to memory in one instruction. The
+            // scratch is of the argument's own file -- a float goes through an
+            // `xmm`, and `movsd` will not name an integer register.
+            _ => {
+                let sc = named(scratch(b, 0, b.class(arg)), bytes);
+                let _ = writeln!(out, "\t{}\t{}, {}", mov(b, arg), place(b, arg), sc);
+                sc
+            }
+        };
+        let _ = writeln!(
+            out,
+            "\t{}\t{}, {}",
+            mov(b, arg),
+            held,
+            frame_at(b.outgoing_at(which))
+        );
     }
 
     // The ones already in registers first, ordered so that none writes over a
@@ -1047,14 +1118,14 @@ fn call(
     // load writes is still wanted.
     let mut moves: Vec<(Reg, Reg)> = Vec::new();
     for (at, &arg) in args.iter().enumerate() {
-        let Some(Some(into_reg)) = want.get(at).copied() else { continue };
+        let Some(Passed::In(into_reg)) = want.get(at).copied() else { continue };
         if let Site::In(from) = b.site(arg) {
             moves.push((into_reg, from));
         }
     }
     shuffle(out, b, &moves);
     for (at, &arg) in args.iter().enumerate() {
-        let Some(Some(into_reg)) = want.get(at).copied() else { continue };
+        let Some(Passed::In(into_reg)) = want.get(at).copied() else { continue };
         if !matches!(b.site(arg), Site::In(_)) {
             let _ = writeln!(
                 out,

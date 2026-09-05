@@ -45,7 +45,7 @@
 
 use std::fmt::Write;
 
-use super::linear::{linearise, Linear};
+use super::linear::{linearise, Line, Linear};
 use super::machine::{Class, Machine, Reg};
 use super::mir_nodes::*;
 use super::regalloc::{allocate, Allocation, Where};
@@ -79,6 +79,10 @@ pub struct Body<'a> {
     // frame is once the saved registers and the alignment are in it.
     pub offsets: Vec<usize>,
     pub frame:   usize,
+    // Room at the bottom of the frame for the arguments of the widest call this
+    // body makes, in bytes. Nought where every call fits in registers, which is
+    // what keeps a body that hands nothing over from moving the stack for it.
+    pub outgoing: usize,
     // The callee-saved registers this body writes, which are exactly the ones
     // it has to put back. A body that touches none saves none.
     pub saved:   Vec<Reg>,
@@ -97,16 +101,42 @@ impl<'a> Body<'a> {
         let above = saved.len() * m.word;
         let (offsets, size) = text::frame(&held.frame, m);
         let offsets: Vec<usize> = offsets.iter().map(|held| held + above).collect();
+        // The arguments this body hands over go at the *bottom* of the frame,
+        // under the slots, so that a slot's offset does not depend on them
+        // either -- and so that the stack pointer, which is what they are
+        // counted from, moves once in the prologue and never again.
+        let outgoing = widest(held, m);
         let stack = m.stack.max(1);
         Body {
             held,
             at,
             m,
             offsets,
-            frame: (above + size).div_ceil(stack) * stack,
+            frame: (above + size + outgoing).div_ceil(stack) * stack,
+            outgoing,
             saved,
             index,
         }
+    }
+
+    // How far below the frame pointer the nth word this body hands over sits.
+    //
+    // The frame is rounded, so its whole depth is where the stack pointer is at
+    // a call, and the words are counted up from there. Word nought is therefore
+    // the deepest thing in the frame.
+    pub fn outgoing_at(&self, which: usize) -> usize {
+        self.frame - which * self.m.word
+    }
+
+    // And how far *above* it the nth word this body was handed sits, which is
+    // the only thing in any of this that is above the frame pointer.
+    //
+    // Two words, on all three machines and by three different routes: each
+    // prologue leaves the frame pointer on the saved frame pointer with the
+    // return address one word above it. `2 * word` is therefore where the
+    // caller's arguments begin.
+    pub fn incoming_at(&self, which: usize) -> usize {
+        (2 + which) * self.m.word
     }
 
     // Where a virtual register ended up.
@@ -157,16 +187,36 @@ fn kept(held: &Linear, at: &Allocation, m: Machine) -> Vec<Reg> {
 
 // ---- Where the arguments go ------------------------------------------------
 
-// Which register each argument of a call goes in, by the order of the two
-// files. The third integer argument goes in the third integer register
-// however many floats came before it, which is what `Machine::passing` means
-// by keeping two lists.
+// Where one argument of a call is handed over.
 //
-// `None` where a call has more arguments of a class than there are registers
-// for. Nothing here puts one on the stack -- see `render`, which refuses such
-// a call rather than emitting one that would run and be wrong.
-pub fn passing(m: Machine, classes: &[Class]) -> Vec<Option<Reg>> {
-    let (mut ints, mut floats) = (0usize, 0usize);
+// `On` is a word of the outgoing area, counted up from the stack pointer at the
+// call -- and it is the same word the callee finds counted up from its own
+// frame pointer, two words along. Both sides work it out by asking this
+// function the same question about the same classes, which is the only thing
+// that keeps them agreeing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Passed {
+    In(Reg),
+    // Which word of the outgoing area, counted from nought.
+    On(usize),
+}
+
+// Where each argument of a call is handed over, by the order of the two files.
+// The third integer argument goes in the third integer register however many
+// floats came before it, which is what `Machine::passing` means by keeping two
+// lists.
+//
+// Past the registers of its class an argument goes on the stack. The words are
+// handed out in the order the arguments are written, both files sharing one
+// run of them -- so a call of seven integers and nine floats puts the seventh
+// integer in word nought and the ninth float in word one.
+//
+// **Every argument here is one word.** `mir::lower::indirect` makes a pointer
+// of every aggregate before this is ever asked, so nothing is ever half in a
+// register and half on the stack, and there are no pairs. That is what makes
+// this a counter rather than a classification.
+pub fn passing(m: Machine, classes: &[Class]) -> Vec<Passed> {
+    let (mut ints, mut floats, mut stacked) = (0usize, 0usize, 0usize);
     classes
         .iter()
         .map(|class| {
@@ -174,11 +224,56 @@ pub fn passing(m: Machine, classes: &[Class]) -> Vec<Option<Reg>> {
                 Class::Int => (&mut ints, m.args),
                 Class::Float => (&mut floats, m.fargs),
             };
-            let out = held.get(*which).copied();
-            *which += 1;
-            out
+            match held.get(*which).copied() {
+                Some(reg) => {
+                    *which += 1;
+                    Passed::In(reg)
+                }
+                None => {
+                    // The counter is not bumped: there is no register to run
+                    // out of twice, and the words are counted on their own.
+                    let out = Passed::On(stacked);
+                    stacked += 1;
+                    out
+                }
+            }
         })
         .collect()
+}
+
+// How many bytes of outgoing area a call handing over these classes wants.
+// Nought where every one of them fits in a register, which is why a body whose
+// calls all fit moves the stack no further than its own slots.
+pub fn outgoing(m: Machine, classes: &[Class]) -> usize {
+    passing(m, classes)
+        .iter()
+        .filter(|held| matches!(held, Passed::On(_)))
+        .count()
+        * m.word
+}
+
+// The widest call a body makes, in bytes of outgoing area. Every call shares
+// one area rather than each having its own, so the room is what the widest one
+// wants and the stack pointer moves once.
+fn widest(held: &Linear, m: Machine) -> usize {
+    held.lines
+        .iter()
+        .filter_map(|line| match line {
+            Line::Inst(inst) => match &inst.kind {
+                MIRInstKind::Call { args, .. } => Some(args),
+                _ => None,
+            },
+            _ => None,
+        })
+        .map(|args| {
+            let classes: Vec<Class> = args
+                .iter()
+                .map(|&arg| held.regs.get(arg).map_or(Class::Int, |one| one.class))
+                .collect();
+            outgoing(m, &classes)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 // ---- Moving several registers at once --------------------------------------

@@ -106,6 +106,84 @@ fn the_standard_library_passes_its_own_tests() {
     assert!(ok, "the standard library's own tests did not pass:\n{}", said);
 }
 
+// ---- Arguments past the registers ----------------------------------------------
+
+// A call with more arguments than the machine has registers for.
+//
+// The one-hot cases are the point of it. A test that only summed nine ones
+// would pass on a compiler that handed the same argument over twice, or dropped
+// one and read a leftover that happened to be right; asking what the seventh
+// alone comes to says *which slot each argument arrived in*, which is the whole
+// of what the stack-argument path has to get right.
+//
+// It runs on this machine only. What the other two back ends emit is checked by
+// an assembler in `mir::asm`'s tests and not by running it, so a wrong offset
+// there is caught as an instruction that will not encode and not as a wrong
+// answer.
+#[test]
+fn every_argument_past_the_registers_arrives_where_it_was_put() {
+    let dir = std::env::temp_dir().join(format!("fortec-many-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("many.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::{int, float};\n\
+         \n\
+         %noinline\n\
+         fn nine(a: i64, b: i64, c: i64, d: i64, e: i64,\n\
+         \x20       f: i64, g: i64, h: i64, i: i64): i64 {\n\
+         \x20   a + b*2 + c*3 + d*4 + e*5 + f*6 + g*7 + h*8 + i*9\n\
+         }\n\
+         \n\
+         %noinline\n\
+         fn ten(a: f64, b: f64, c: f64, d: f64, e: f64,\n\
+         \x20      f: f64, g: f64, h: f64, i: f64, j: f64): f64 {\n\
+         \x20   a + b + c + d + e + f + g + h + i + j*10.0\n\
+         }\n\
+         \n\
+         struct P {\n    pub x: i64,\n    pub y: i64,\n}\n\
+         \n\
+         %noinline\n\
+         fn six(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64): P {\n\
+         \x20   P { x: a + b + c, y: d + e + f }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn every_one_of_them_arrives_where_it_was_put() {\n\
+         \x20   assert_eq(int(nine(1,1,1,1,1,1,1,1,1)), int(45), \"all nine\")\n\
+         \x20   assert_eq(int(nine(0,0,0,0,0,1,0,0,0)), int(6), \"the last in a register\")\n\
+         \x20   assert_eq(int(nine(0,0,0,0,0,0,1,0,0)), int(7), \"the first on the stack\")\n\
+         \x20   assert_eq(int(nine(0,0,0,0,0,0,0,0,1)), int(9), \"the last on the stack\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_two_files_run_out_of_registers_apart() {\n\
+         \x20   assert_eq(float(ten(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1.0)), float(10.0),\n\
+         \x20             \"the tenth float\")\n\
+         }\n\
+         \n\
+         // Six written arguments and seven handed over: the room for the answer\n\
+         // takes a register of its own, so this overflows before it looks like it.\n\
+         %test\n\
+         fn a_struct_handed_back_takes_a_register_too() {\n\
+         \x20   let p = six(1, 2, 3, 4, 5, 6)\n\
+         \x20   assert_eq(int(p.x), int(6), \"the first three\")\n\
+         \x20   assert_eq(int(p.y), int(15), \"and the last three\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "many");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a call past the registers was meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- The runner itself -------------------------------------------------------
 
 // And that it would have said so. A suite whose tests all pass says nothing

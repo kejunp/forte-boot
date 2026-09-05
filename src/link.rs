@@ -241,9 +241,17 @@ pub fn link(
 
     // Two files the reader never asked for, so they go where such things go and
     // are taken away again. The pid is in the name because two compilations at
-    // once must not be one another's.
+    // once must not be one another's -- and a count after it because "at once"
+    // includes twice inside one process, which is what a test binary linking
+    // two programs on two threads does. The pid alone was enough until there
+    // was something that did.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir();
-    let tag = format!("fortec-{}", std::process::id());
+    let tag = format!(
+        "fortec-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let at_s = dir.join(format!("{}.s", tag));
     let at_c = dir.join(format!("{}.c", tag));
 
