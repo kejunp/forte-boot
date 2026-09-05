@@ -76,25 +76,29 @@ pub fn text(s: str): Arg {
 
 // ---- What the runtime does --------------------------------------------------
 
-// One symbol per arity, and two flags rather than a symbol per pair of them.
-// `nl` is whether a newline goes on the end, which is all that separates
-// `print` from `println`; `err` is whether it goes to the error stream, which
-// is all that separates `print` from `eprint`. Four ladders of five would be
-// twenty names for five things.
+// One symbol per arity, and one word rather than a flag each for the two
+// questions. `how` is 1 for a newline on the end and 2 for the error stream, so
+// the four names below are the four numbers 0 to 3.
+//
+// One word and not two, because six is how many arguments this machine hands
+// over in registers: the word, the format string and four `Arg`s is six exactly,
+// and a seventh is a call the back end declines to write. Two flags made the
+// four-argument rung one of those, and what it left was a `print4` that printed
+// nothing at all.
 %symbol("__rt_print0")
-fn out0(nl: i64, err: i64, f: str): null;
+fn out0(how: i64, f: str): null;
 
 %symbol("__rt_print1")
-fn out1(nl: i64, err: i64, f: str, a: Arg): null;
+fn out1(how: i64, f: str, a: Arg): null;
 
 %symbol("__rt_print2")
-fn out2(nl: i64, err: i64, f: str, a: Arg, b: Arg): null;
+fn out2(how: i64, f: str, a: Arg, b: Arg): null;
 
 %symbol("__rt_print3")
-fn out3(nl: i64, err: i64, f: str, a: Arg, b: Arg, c: Arg): null;
+fn out3(how: i64, f: str, a: Arg, b: Arg, c: Arg): null;
 
 %symbol("__rt_print4")
-fn out4(nl: i64, err: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
+fn out4(how: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
 
 // ---- Printing ---------------------------------------------------------------
 
@@ -102,45 +106,45 @@ fn out4(nl: i64, err: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
 // brace here as it is everywhere else and a stray `{}` is reported rather than
 // printed.
 pub fn print(f: str) {
-    out0(0, 0, f)
+    out0(0, f)
 }
 
 pub fn print1(f: str, a: Arg) {
-    out1(0, 0, f, a)
+    out1(0, f, a)
 }
 
 pub fn print2(f: str, a: Arg, b: Arg) {
-    out2(0, 0, f, a, b)
+    out2(0, f, a, b)
 }
 
 pub fn print3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(0, 0, f, a, b, c)
+    out3(0, f, a, b, c)
 }
 
 pub fn print4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(0, 0, f, a, b, c, d)
+    out4(0, f, a, b, c, d)
 }
 
 // ---- Printing, with the line ended ------------------------------------------
 
 pub fn println(f: str) {
-    out0(1, 0, f)
+    out0(1, f)
 }
 
 pub fn println1(f: str, a: Arg) {
-    out1(1, 0, f, a)
+    out1(1, f, a)
 }
 
 pub fn println2(f: str, a: Arg, b: Arg) {
-    out2(1, 0, f, a, b)
+    out2(1, f, a, b)
 }
 
 pub fn println3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(1, 0, f, a, b, c)
+    out3(1, f, a, b, c)
 }
 
 pub fn println4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(1, 0, f, a, b, c, d)
+    out4(1, f, a, b, c, d)
 }
 
 // ---- Printing to the error stream --------------------------------------------
@@ -149,43 +153,43 @@ pub fn println4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
 // reader can see it -- there is nothing here that a `print` needs a newline or
 // the end of the program to flush.
 pub fn eprint(f: str) {
-    out0(0, 1, f)
+    out0(2, f)
 }
 
 pub fn eprint1(f: str, a: Arg) {
-    out1(0, 1, f, a)
+    out1(2, f, a)
 }
 
 pub fn eprint2(f: str, a: Arg, b: Arg) {
-    out2(0, 1, f, a, b)
+    out2(2, f, a, b)
 }
 
 pub fn eprint3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(0, 1, f, a, b, c)
+    out3(2, f, a, b, c)
 }
 
 pub fn eprint4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(0, 1, f, a, b, c, d)
+    out4(2, f, a, b, c, d)
 }
 
 // ---- Printing to the error stream, with the line ended ------------------------
 
 pub fn eprintln(f: str) {
-    out0(1, 1, f)
+    out0(3, f)
 }
 
 pub fn eprintln1(f: str, a: Arg) {
-    out1(1, 1, f, a)
+    out1(3, f, a)
 }
 
 pub fn eprintln2(f: str, a: Arg, b: Arg) {
-    out2(1, 1, f, a, b)
+    out2(3, f, a, b)
 }
 
 pub fn eprintln3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(1, 1, f, a, b, c)
+    out3(3, f, a, b, c)
 }
 
 pub fn eprintln4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(1, 1, f, a, b, c, d)
+    out4(3, f, a, b, c, d)
 }

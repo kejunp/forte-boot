@@ -572,30 +572,37 @@ fn one(inner: &str, args: &[&Arg], next: &mut usize) -> Result<String, String> {
 
 // ---- What the program calls ------------------------------------------------
 
-// Everything the five entry points do, once. `nl` is whether a newline goes on
-// the end -- the whole of the difference between `print` and `println` -- and
-// `err` is which of the two streams it goes to, which is the whole of the
-// difference between `print` and `eprint`.
+// What a call asked for, in one word: whether a newline goes on the end -- the
+// difference between `print` and `println` -- and which of the two streams it
+// goes to, the difference between `print` and `eprint`.
 //
-// Two flags and not four symbols: what a line ends with and where it goes are
-// two questions about one line, and a ladder of five for each of the four
-// answers would be twenty symbols for what five and two words already say.
+// One word and not two parameters, which is what this was and could not stay.
+// A call here carries the word, the format string and up to four arguments, and
+// this machine hands the first six over in registers and has nothing that puts
+// a seventh anywhere: two flags made the four-argument rung a call of seven,
+// and a call of seven is one `mir::asm` declines to write. It said so, and what
+// it left behind was a `print4` that printed nothing.
+const NEWLINE: i64 = 1;
+const TO_ERROR: i64 = 2;
+
+// Everything the five entry points do, once.
 //
 // The line goes out in one write. Two would let another thread's line land
 // between the text and its newline, and the lock a single `print!` takes is not
 // held across two of them.
-fn emit(nl: i64, err: i64, fmt: *const Str, args: &[&Arg]) {
+fn emit(how: i64, fmt: *const Str, args: &[&Arg]) {
     let Some(fmt) = (unsafe { fmt.as_ref() }).and_then(Str::read) else {
         eprintln!("fortec: print: the format string is not text");
         return;
     };
     let (mut text, wrong) = render(fmt, args);
-    if nl != 0 {
+    let nl = how & NEWLINE != 0;
+    if nl {
         text.push('\n');
     }
 
-    if err != 0 {
-        // The error stream is not buffered, here as in Rust, so a half line on
+    if how & TO_ERROR != 0 {
+        // The error stream is not buffered, here as in Rust, so half a line on
         // it is already where the reader can see it.
         let stderr = std::io::stderr();
         let mut held = stderr.lock();
@@ -606,7 +613,7 @@ fn emit(nl: i64, err: i64, fmt: *const Str, args: &[&Arg]) {
         let _ = held.write_all(text.as_bytes());
         // Where a line has no newline on it the reader is being shown a prompt
         // or half a line, and either way they are meant to see it now.
-        if nl == 0 {
+        if !nl {
             let _ = held.flush();
         }
     }
@@ -628,49 +635,46 @@ fn gather<'a>(held: &[*const Arg]) -> Vec<&'a Arg> {
 // take "a format string and whatever follows it" (see the head of this file),
 // so the arity is in the name on the Forte side and in the symbol here.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print0(nl: i64, err: i64, fmt: *const Str) {
-    emit(nl, err, fmt, &[]);
+pub extern "C" fn __rt_print0(how: i64, fmt: *const Str) {
+    emit(how, fmt, &[]);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print1(nl: i64, err: i64, fmt: *const Str, a: *const Arg) {
-    emit(nl, err, fmt, &gather(&[a]));
+pub extern "C" fn __rt_print1(how: i64, fmt: *const Str, a: *const Arg) {
+    emit(how, fmt, &gather(&[a]));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_print2(
-    nl: i64,
-    err: i64,
+    how: i64,
     fmt: *const Str,
     a: *const Arg,
     b: *const Arg,
 ) {
-    emit(nl, err, fmt, &gather(&[a, b]));
+    emit(how, fmt, &gather(&[a, b]));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_print3(
-    nl: i64,
-    err: i64,
+    how: i64,
     fmt: *const Str,
     a: *const Arg,
     b: *const Arg,
     c: *const Arg,
 ) {
-    emit(nl, err, fmt, &gather(&[a, b, c]));
+    emit(how, fmt, &gather(&[a, b, c]));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_print4(
-    nl: i64,
-    err: i64,
+    how: i64,
     fmt: *const Str,
     a: *const Arg,
     b: *const Arg,
     c: *const Arg,
     d: *const Arg,
 ) {
-    emit(nl, err, fmt, &gather(&[a, b, c, d]));
+    emit(how, fmt, &gather(&[a, b, c, d]));
 }
 
 #[cfg(test)]
