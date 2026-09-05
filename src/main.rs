@@ -301,7 +301,8 @@ fn compile(
             false => println!("{}", line),
         };
         said(format!(
-            "{}: {} items, {} symbols, {} types, {} bodies, {} blocks ({} after opt), \
+            "{}: {} items, {} symbols in {} scopes, {} types, {} bodies, \
+             {} blocks ({} after opt), \
              {} values ({} of {} slots promoted), \
              {} instructions ({} after {:?} for {}: {} calls written out, {} loops unrolled, \
              {} lifted out of a loop, {} widened, {} folded, {} shared, {} forwarded, \
@@ -312,6 +313,7 @@ fn compile(
             name.display(),
             ttir.items.len(),
             symbols.len(),
+            scopes.len(),
             ttir.types.len(),
             ttir.bodies.len(),
             blocks,
@@ -390,7 +392,6 @@ fn compile(
         for (symbol, _) in symbols.sorted() {
             said(format!("    {}", symbol));
         }
-        let _ = scopes;
     }
     true
 }
@@ -461,12 +462,6 @@ fn instructions(ssa: &sir::sir_nodes::SIRProgram) -> usize {
         .sum()
 }
 
-// `fortec <root.ft> [-I <dir>]...`. A `-I` adds somewhere else to look for a
-// module whose path starts at no root; the file's own directory is looked in
-// first either way, and is what `suite` names.
-// The declaration a body belongs to, for the parts of `gir` that answer a
-// `Ty::Param` -- what a type parameter comes to is the declaration's and not
-// the body's.
 // What `--emit` may be asked for. Two things and they are two different
 // readers: the listing is for a person and the assembly is for `as`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,6 +470,9 @@ enum What {
     Asm,
 }
 
+// The declaration a body belongs to, for the parts of `gir` that answer a
+// `Ty::Param` -- what a type parameter comes to is the declaration's and not
+// the body's.
 fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_nodes::TTIRGeneric> {
     for item in &p.items {
         if let tir::ttir_nodes::TTIRItemKind::Fn(f) = &item.kind {
@@ -486,6 +484,62 @@ fn generics_of(p: &tir::ttir_nodes::TTIRProgram, body: usize) -> Vec<tir::ttir_n
     Vec::new()
 }
 
+// The standard library, which is where the five names of the prelude live.
+//
+// `link` finds the runtime archive by looking beside this compiler, and this
+// looks for the library that goes with it in the two places `cargo` can have
+// left it: beside the executable, which is where an installed compiler keeps
+// it, and two directories above, which is where a build tree has it -- `cargo`
+// writes the compiler into `target/<profile>` and leaves `std` at the top of
+// the workspace. Nothing looks any further, for the reason nothing looks
+// further for the archive: a library found by searching is one nobody chose.
+//
+// `None` is not a failure and nothing is said about it. A suite that writes no
+// literal never asks; one that does gets the error it would have got anyway,
+// which is that the type its syntax builds is declared nowhere.
+fn std_beside() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let beside = exe.parent()?;
+    let mut tried = vec![beside.join("std")];
+    if let Some(top) = beside.parent().and_then(Path::parent) {
+        tried.push(top.join("std"));
+    }
+    tried.into_iter().find(|at| at.is_dir())
+}
+
+// What the command line is, for a reader who asked for it and for one who gave
+// nothing to compile. One wording for both: a usage that has drifted from the
+// help is a usage nobody kept up.
+fn usage() -> String {
+    format!(
+        "usage: fortec <root.ft> [-o <file>] [-O<0-3>] [--target <name>] \
+         [--emit mir|asm]\n\
+         \x20              [--std <dir>] [--no-std] [--runtime <archive>] \
+         [-I <dir>]...\n\
+         \n\
+         \x20 -o with no --emit assembles and links an executable; with one \
+         it writes\n\
+         \x20 what was emitted to the file instead of the standard output.\n\
+         \n\
+         \x20 -I adds somewhere else to look for a module. The root file's own \
+         directory\n\
+         \x20 is looked in first either way, and the standard library last, so \
+         that a\n\
+         \x20 module the suite writes wins over one of the same name here.\n\
+         \n\
+         \x20 targets: {}",
+        sir::target::NAMES.join(", ")
+    )
+}
+
+// The command line, which `usage` above spells out and this one reads.
+//
+// The one thing worth saying twice is where a module is looked for, since three
+// things say where and the order they are asked in is what settles a name. The
+// root file's own directory is first and is what `suite` names; then every `-I`
+// in the order they were written, which is for a module whose path starts at no
+// root; then the standard library, which is therefore what is left when nothing
+// nearer had the name.
 fn run(args: &[String]) -> bool {
     let mut root: Option<PathBuf> = None;
     let mut search_paths = Vec::new();
@@ -507,9 +561,22 @@ fn run(args: &[String]) -> bool {
     // And what runtime to put beside it, for the one case where the archive is
     // not the one next to this compiler.
     let mut runtime: Option<PathBuf> = None;
+    // Where the standard library is, and whether to have one at all. Nothing
+    // here does not mean none: it means the one `std_beside` goes and finds,
+    // which is what makes `for i in 0..10` compile in a file that imported
+    // nothing.
+    let mut std_at: Option<PathBuf> = None;
+    let mut no_std = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
+            "-h" | "--help" => {
+                // Asked for, so it is the output and not a complaint about the
+                // command line: it goes to the standard output and the compiler
+                // has done what it was told.
+                println!("{}", usage());
+                return true;
+            }
             "-I" => match rest.next() {
                 Some(dir) => search_paths.push(PathBuf::from(dir)),
                 None => {
@@ -566,6 +633,17 @@ fn run(args: &[String]) -> bool {
                     return false;
                 }
             },
+            // Where the library is, for a layout this compiler was not put
+            // into, and whether to look for one at all. `--no-std` wins where
+            // both are written, being the narrower of the two things to say.
+            "--std" => match rest.next() {
+                Some(at) => std_at = Some(PathBuf::from(at)),
+                None => {
+                    eprintln!("--std wants a directory after it");
+                    return false;
+                }
+            },
+            "--no-std" => no_std = true,
             "--target" => match rest.next() {
                 Some(name) => match sir::target::of(name) {
                     Some(held) => target = held,
@@ -594,17 +672,28 @@ fn run(args: &[String]) -> bool {
             }
         }
     }
+    // Last of all the places a module is looked for, so that the root file's
+    // own directory and every `-I` are looked in first: a suite that writes its
+    // own `range.ft` gets its own, the same way round a prelude name loses to
+    // everything written.
+    //
+    // A directory named and not there is a mistake worth stopping for -- the
+    // reader said where the library was -- while one nobody named and not found
+    // is not, since a suite that never asks is none the worse for it.
+    if !no_std {
+        match std_at {
+            Some(at) if !at.is_dir() => {
+                eprintln!("no standard library at {}", at.display());
+                return false;
+            }
+            Some(at) => search_paths.push(at),
+            None => search_paths.extend(std_beside()),
+        }
+    }
     match root {
         Some(root) => compile(&root, search_paths, level, target, emit, out, runtime),
         None => {
-            eprintln!(
-                "usage: fortec <root.ft> [-o <file>] [-O<0-3>] [--target <name>] \
-                 [--emit mir|asm] [--runtime <archive>] [-I <dir>]...\n\
-                 \n\
-                 \x20 -o with no --emit assembles and links an executable; with one \
-                 it writes\n\
-                 \x20 what was emitted to the file instead of the standard output."
-            );
+            eprintln!("{}", usage());
             false
         }
     }
@@ -883,6 +972,5 @@ fn demos() {
     dump_parse("gcok.ft", "fn f(b: Buf) {\n    unsafe let gc p = addr b.p\n}\n");
 
     // Simplification: the arithmetic folds, the fold settles the branch, the
-    // branch leaves one value, and the value lands where the name was.
-    dump_parse("opt.ft", "fn main() {\n    let n = if 2 * 3 > 5 { 10 + 1 } else { 0 }\n    g(n);\n    return;\n    h();\n}\n");
+    // branch leaves one value, and the value lands where the nam    dump_parse("opt.ft", "fn main() {\n    let n = if 2 * 3 > 5 { 10 + 1 } else { 0 }\n    g(n);\n    return;\n    h();\n}\n");e was.
 }
