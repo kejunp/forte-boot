@@ -186,6 +186,47 @@ fn what_comes_out_assembles() {
     }
 }
 
+// ---- Widening ----------------------------------------------------------------
+
+// A narrow unsigned value widened to eight bytes. `movzlq` is the one extension
+// that was never written -- a four-byte write already zeroes the top half -- so
+// widening from four is a plain `movl`. Widening from one or two is not: those
+// have `movzbq` and `movzwq`, and the `movl` shortcut taken for them named a
+// byte register and a four-byte one in the same instruction.
+//
+// `bool` is the value this happens to, being the one-byte unsigned type a
+// program actually writes: `v as i64` of one assembled as `movl %al, %ecx`,
+// which the assembler refuses and no test caught, there being none that widened
+// anything narrower than four.
+#[test]
+fn a_byte_widened_to_eight_does_not_name_two_widths_in_one_move() {
+    let text = shown("fn f(v: bool): i64 {\n    v as i64\n}\n");
+    assert!(!has(&text, "movl\t%al,"), "{}", text);
+    assert!(has(&text, "movzb"), "{}", text);
+}
+
+#[test]
+fn every_width_widens_to_something_an_assembler_takes() {
+    let held = [
+        "fn f(v: bool): i64 {\n    v as i64\n}\n",
+        "fn f(v: u8): i64 {\n    v as i64\n}\n",
+        "fn f(v: u16): i64 {\n    v as i64\n}\n",
+        "fn f(v: u32): i64 {\n    v as i64\n}\n",
+        "fn f(v: u8): u64 {\n    v as u64\n}\n",
+        "fn f(v: i8): i64 {\n    v as i64\n}\n",
+        "fn f(v: i16): i64 {\n    v as i64\n}\n",
+        "fn f(v: i32): i64 {\n    v as i64\n}\n",
+        "fn f(v: u8): i32 {\n    v as i32\n}\n",
+        "fn f(v: bool): i32 {\n    v as i32\n}\n",
+    ];
+    for source in held {
+        let text = render(&lowered(source), X86_64).0;
+        if let Some(said) = tried(&text, "x86_64-linux-gnu") {
+            panic!("{}\n---- from ----\n{}", said, source);
+        }
+    }
+}
+
 // ---- The three registers a copy insists on -----------------------------------
 
 // `rep movsb` wants its two addresses in `rdi` and `rsi` and its count in

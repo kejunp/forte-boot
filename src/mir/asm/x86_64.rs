@@ -964,7 +964,14 @@ fn convert(
                 // Widening to eight from four has no unsigned form: a
                 // four-byte write zeroes the top half of the register on this
                 // machine, so a plain move is the extension.
-                if !signed && tb == 8 {
+                //
+                // From four and not from anything narrower. `movzbq` and
+                // `movzwq` are both instructions and do the whole job, and it
+                // is only `movzlq` that was never written -- so a byte widened
+                // through this arm assembled as `movl %al, %ecx`, which names
+                // two widths that do not go together and is not an
+                // instruction at all.
+                if !signed && tb == 8 && fb == 4 {
                     let _ = writeln!(out, "\tmovl\t{}, {}", place(b, of), named(reg_of(b, def, sc), 4));
                 } else {
                     let _ = writeln!(
