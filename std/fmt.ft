@@ -1,0 +1,135 @@
+// `print` and `println`, whose format strings are Rust's.
+//
+//     println1("x is {}", int(x))
+//     println2("{:>8.3} {:#x}", float(ratio), int(mask))
+//
+// What a `{}` may say is what `println!` lets it say -- the argument by number,
+// a fill and an alignment, a sign, `#`, a zero flag, a width, a precision, and
+// a kind of formatting -- and it means the same thing here, because the same
+// grammar is parsed and the value is written out by the `Display`, `Debug`,
+// `LowerHex` and the rest that Rust already has. `runtime/src/fmt.rs` is the
+// other half of this file and says how, and what a bad format string does.
+//
+// **Why the arity is in the name.** `println!` takes a format string and
+// however many arguments follow it. Nothing here can: a Forte macro takes a
+// fixed list of `$name:fragment` and has no repetition (section 2), a fn has no
+// variadic form, and two fns may not share a name, so there is no one `println`
+// that takes both one argument and three. The number is therefore written on
+// the end of the name, and the ladder stops at four because a line with five
+// things in it is a line to break in two.
+//
+// **Why an argument is wrapped.** `int(x)`, `text(s)` and the three beside them
+// make an `Arg`, which is a value with a tag saying what it is. A trait would
+// be how this is done in a language that ran the code behind one, and section 8
+// says that is what a trait here is still waiting for. Until then the tag is
+// the dispatch, and it is written at the call because there is nowhere else to
+// write it.
+
+// One thing to print. The tag says which field means anything; the others are
+// there because a struct has all of its fields whatever it holds.
+//
+// It agrees field for field with the `Arg` in `runtime/src/fmt.rs`, which reads
+// this through a pointer. Nothing checks that agreement -- it is two programs
+// compiled separately, as `shape.rs` says of the descriptors -- so the tags
+// below are the numbers that file names and neither set may move alone.
+pub struct Arg {
+    // Which of the five it is. `pub` for the reason `Vec`'s fields are: there
+    // is no visibility that reaches the runtime and not the reader.
+    pub tag:  i64,
+    // A whole number, an unsigned one read back through its bits, or a bool.
+    pub word: i64,
+    pub real: f64,
+    pub held: str,
+}
+
+// ---- Making one -------------------------------------------------------------
+
+pub fn int(n: i64): Arg {
+    Arg { tag: 1, word: n, real: 0.0, held: "" }
+}
+
+// The bits and not the number: an unsigned value above what an i64 holds comes
+// back out of the same bits on the other side, where the tag says to read them
+// unsigned. `{}` of one is therefore never a negative number.
+pub fn uint(n: u64): Arg {
+    Arg { tag: 2, word: n as i64, real: 0.0, held: "" }
+}
+
+pub fn float(x: f64): Arg {
+    Arg { tag: 3, word: 0, real: x, held: "" }
+}
+
+pub fn truth(v: bool): Arg {
+    Arg { tag: 4, word: v as i64, real: 0.0, held: "" }
+}
+
+pub fn text(s: str): Arg {
+    Arg { tag: 5, word: 0, real: 0.0, held: s }
+}
+
+// ---- What the runtime does --------------------------------------------------
+
+// One symbol per arity, and `nl` rather than a symbol per line ending: whether
+// a newline goes on the end is the whole of the difference between `print` and
+// `println`, and two ladders of five would be ten names for five things.
+%symbol("__rt_print0")
+fn out0(nl: i64, f: str): null;
+
+%symbol("__rt_print1")
+fn out1(nl: i64, f: str, a: Arg): null;
+
+%symbol("__rt_print2")
+fn out2(nl: i64, f: str, a: Arg, b: Arg): null;
+
+%symbol("__rt_print3")
+fn out3(nl: i64, f: str, a: Arg, b: Arg, c: Arg): null;
+
+%symbol("__rt_print4")
+fn out4(nl: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
+
+// ---- Printing ---------------------------------------------------------------
+
+// The format string is read even where nothing follows it, so that `{{` is a
+// brace here as it is everywhere else and a stray `{}` is reported rather than
+// printed.
+pub fn print(f: str) {
+    out0(0, f)
+}
+
+pub fn print1(f: str, a: Arg) {
+    out1(0, f, a)
+}
+
+pub fn print2(f: str, a: Arg, b: Arg) {
+    out2(0, f, a, b)
+}
+
+pub fn print3(f: str, a: Arg, b: Arg, c: Arg) {
+    out3(0, f, a, b, c)
+}
+
+pub fn print4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
+    out4(0, f, a, b, c, d)
+}
+
+// ---- Printing, with the line ended ------------------------------------------
+
+pub fn println(f: str) {
+    out0(1, f)
+}
+
+pub fn println1(f: str, a: Arg) {
+    out1(1, f, a)
+}
+
+pub fn println2(f: str, a: Arg, b: Arg) {
+    out2(1, f, a, b)
+}
+
+pub fn println3(f: str, a: Arg, b: Arg, c: Arg) {
+    out3(1, f, a, b, c)
+}
+
+pub fn println4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
+    out4(1, f, a, b, c, d)
+}
