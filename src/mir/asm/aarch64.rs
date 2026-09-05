@@ -58,16 +58,37 @@ fn scratch(b: &Body, which: usize, class: Class) -> Reg {
     held[which.min(held.len() - 1)]
 }
 
+// How far the offsets of a block copy may run before the two addresses have to
+// step instead. The word form of a load reaches 32760 and the byte form only
+// 4095, so the window is under the smaller of the two with room for a step.
+const WINDOW: usize = 4032;
+
 // ---- Building an address ---------------------------------------------------
 
-// `x29` less an offset. The immediate on a load or a store is twelve bits and
-// is scaled by the width, so most offsets fit as they are and a big frame is
-// reached by working the address out first.
-fn frame_op(out: &mut String, off: usize, bytes: usize, sc: Reg) -> String {
-    if off % bytes == 0 && off / bytes < 4096 && off < 32768 {
+// `x29` less an offset, which is always a *negative* displacement -- and that
+// is the whole of what is delicate here.
+//
+// A load or a store has two immediate forms and only one of them takes a
+// negative number. The twelve-bit one is scaled by the width and is unsigned,
+// so it reaches a long way up and nowhere at all down; the one that goes down
+// is the unscaled form, and its immediate is nine bits signed -- `-256..255`
+// and no further. This file used to test the offset against the twelve-bit
+// form and then write the nine-bit one, so every frame over 256 bytes emitted
+// `[x29, #-408]` and an assembler refused it. A struct of forty fields was
+// enough.
+//
+// So: the short way down where it fits, and otherwise the address worked out
+// first. `sub` takes twelve bits unsigned, which covers every frame under
+// 4096 in one instruction; above that the constant is built a piece at a time.
+fn frame_op(out: &mut String, off: usize, sc: Reg) -> String {
+    if off <= 256 {
         return format!("[x29, #-{}]", off);
     }
     let held = named(sc, 8);
+    if off < 4096 {
+        let _ = writeln!(out, "\tsub\t{}, x29, #{}", held, off);
+        return format!("[{}]", held);
+    }
     immediate(out, &held, off as i64);
     let _ = writeln!(out, "\tsub\t{}, x29, {}", held, held);
     format!("[{}]", held)
@@ -191,7 +212,7 @@ fn read(out: &mut String, b: &Body, reg: MIRRegId, sc: Reg) -> String {
             } else {
                 held.clone()
             };
-            let at = frame_op(out, off, bytes.max(1), scratch(b, 2, Class::Int));
+            let at = frame_op(out, off, scratch(b, 2, Class::Int));
             let _ = writeln!(out, "\t{}\t{}, {}", load_of(b.class(reg), bytes), name, at);
             held
         }
@@ -210,7 +231,7 @@ fn writing(b: &Body, def: MIRRegId, sc: Reg) -> (String, Option<usize>) {
 fn stored(out: &mut String, b: &Body, def: MIRRegId, held: &str, back: Option<usize>) {
     let Some(off) = back else { return };
     let bytes = b.bytes(def);
-    let at = frame_op(out, off, bytes.max(1), scratch(b, 2, Class::Int));
+    let at = frame_op(out, off, scratch(b, 2, Class::Int));
     let _ = writeln!(out, "\t{}\t{}, {}", store_of(b.class(def), bytes), held, at);
 }
 
@@ -260,7 +281,7 @@ fn prologue(out: &mut String, b: &Body) {
     }
     for (which, held) in b.saved.iter().enumerate() {
         let at = b.saved_at(which);
-        let one = frame_op(out, at, 8, scratch(b, 2, Class::Int));
+        let one = frame_op(out, at, scratch(b, 2, Class::Int));
         let _ = writeln!(out, "\tstr\t{}, {}", named(*held, 8), one);
     }
     params(out, b);
@@ -276,7 +297,7 @@ fn params(out: &mut String, b: &Body) {
         match b.site(reg) {
             Site::At(off) => {
                 let bytes = b.bytes(reg);
-                let one = frame_op(out, off, bytes.max(1), scratch(b, 2, Class::Int));
+                let one = frame_op(out, off, scratch(b, 2, Class::Int));
                 let _ = writeln!(
                     out,
                     "\t{}\t{}, {}",
@@ -312,7 +333,7 @@ fn shuffle(out: &mut String, b: &Body, moves: &[(Reg, Reg)]) {
 fn epilogue(out: &mut String, b: &Body) {
     for (which, held) in b.saved.iter().enumerate() {
         let at = b.saved_at(which);
-        let one = frame_op(out, at, 8, scratch(b, 2, Class::Int));
+        let one = frame_op(out, at, scratch(b, 2, Class::Int));
         let _ = writeln!(out, "\tldr\t{}, {}", named(*held, 8), one);
     }
     // The stack back to where the frame pointer says, and then the pair out of
@@ -599,9 +620,36 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
             let a = wide_name(&read(out, b, *from, scratch(b, 1, Class::Int)));
             let c = wide_name(&read(out, b, *to, scratch(b, 0, Class::Int)));
             let held = named(scratch(b, 2, Class::Int), 8);
-            let mut at = 0usize;
+            // The offset on a load or a store is a small field, so a copy of
+            // more than a few kilobytes cannot be written as one run of offsets
+            // off the two addresses -- past the window the addresses step
+            // instead. They step into the scratch registers, which is where
+            // `read` would have put them had they not already been somewhere:
+            // an allocated register is never a scratch, so neither of these can
+            // be the other's.
+            let (a, c) = match *bytes > WINDOW {
+                false => (a, c),
+                true => {
+                    let one = named(scratch(b, 1, Class::Int), 8);
+                    let two = named(scratch(b, 0, Class::Int), 8);
+                    if a != one {
+                        let _ = writeln!(out, "\tmov\t{}, {}", one, a);
+                    }
+                    if c != two {
+                        let _ = writeln!(out, "\tmov\t{}, {}", two, c);
+                    }
+                    (one, two)
+                }
+            };
+            let (mut at, mut base) = (0usize, 0usize);
             for step in [8usize, 4, 2, 1] {
                 while at + step <= *bytes {
+                    if at - base >= WINDOW {
+                        let by = at - base;
+                        let _ = writeln!(out, "\tadd\t{}, {}, #{}", a, a, by);
+                        let _ = writeln!(out, "\tadd\t{}, {}, #{}", c, c, by);
+                        base = at;
+                    }
                     let (one, keep) = match step {
                         8 => ("ldr", "str"),
                         4 => ("ldr", "str"),
@@ -609,8 +657,8 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
                         _ => ("ldrb", "strb"),
                     };
                     let name = if step >= 8 { held.clone() } else { narrow(&held) };
-                    let _ = writeln!(out, "\t{}\t{}, [{}, #{}]", one, name, a, at);
-                    let _ = writeln!(out, "\t{}\t{}, [{}, #{}]", keep, name, c, at);
+                    let _ = writeln!(out, "\t{}\t{}, [{}, #{}]", one, name, a, at - base);
+                    let _ = writeln!(out, "\t{}\t{}, [{}, #{}]", keep, name, c, at - base);
                     at += step;
                 }
             }
@@ -733,6 +781,12 @@ fn convert(
                 } else {
                     let _ = writeln!(out, "\t{}\t{}, {}", what, one, narrow(&a));
                 }
+            } else if tb < fb {
+                // Narrowing, so the `w` view of both. A write of a `w` clears
+                // the top half on its own, which is the truncation the cast
+                // asks for -- and the two have to be named at one width, since
+                // `mov w3, x2` reads as this and is not an instruction.
+                let _ = writeln!(out, "\tmov\t{}, {}", narrow(&one), narrow(&a));
             } else {
                 let _ = writeln!(out, "\tmov\t{}, {}", one, a);
             }
@@ -788,7 +842,7 @@ fn call(
         let Some(Some(into_reg)) = want.get(at).copied() else { continue };
         let Site::At(off) = b.site(arg) else { continue };
         let bytes = b.bytes(arg);
-        let one = frame_op(out, off, bytes.max(1), scratch(b, 2, Class::Int));
+        let one = frame_op(out, off, scratch(b, 2, Class::Int));
         let name = if bytes <= 4 && b.class(arg) == Class::Int {
             named(into_reg, 4)
         } else {

@@ -83,6 +83,46 @@ fn a_bitwise_operation_has_no_narrow_form() {
 
 // ---- And whether it is really assembly -------------------------------------
 
+// A struct of `n` words, one body making one and another holding what it made.
+// Enough of them and both a frame offset and the offsets of the copy that
+// carries the value back run past the small immediate a load has.
+fn wide(n: usize) -> String {
+    let mut out = String::from("struct Wide {\n");
+    for at in 0..n {
+        out.push_str(&format!("    pub a{}: i64,\n", at));
+    }
+    out.push_str("}\n\nfn make(x: i64): Wide {\n    Wide {\n");
+    for at in 0..n {
+        out.push_str(&format!("        a{}: x + {},\n", at, at));
+    }
+    out.push_str(&format!(
+        "    }}\n}}\n\nfn f(x: i64): i64 {{\n    let w = make(x)\n    w.a0 + w.a{}\n}}\n",
+        n - 1
+    ));
+    out
+}
+
+// A copy bigger than the offsets can reach. The unrolled block copy walked one
+// running offset off each address, and a load or a store here has twelve bits
+// signed for it -- so a struct of a few hundred words emitted `ld t2, 2048(t1)`
+// and no assembler would take it. Past the window the addresses step instead.
+#[test]
+fn a_copy_too_big_for_one_run_of_offsets_steps_the_addresses() {
+    let text = shown(&wide(400));
+    for line in text.lines() {
+        let held = line.trim();
+        let Some(at) = held.rfind(", ") else { continue };
+        let rest = &held[at + 2..];
+        let Some(end) = rest.find('(') else { continue };
+        let Ok(off) = rest[..end].parse::<i64>() else { continue };
+        assert!(
+            (-2048..=2047).contains(&off),
+            "`{}` is past the twelve bits signed an offset here has",
+            held
+        );
+    }
+}
+
 #[test]
 fn what_comes_out_assembles() {
     let held = [
@@ -112,7 +152,9 @@ fn what_comes_out_assembles() {
          fn f() {\n    let e = E::One(H { n: 1 })\n}\n",
         "fn f(a: i32): i32 {\n    let g = |x: i32| x + a\n    g(2)\n}\n",
     ];
-    for source in held {
+    // A frame and a copy both deeper than one run of offsets reaches.
+    let deep = wide(400);
+    for source in held.iter().copied().chain(std::iter::once(deep.as_str())) {
         let text = render(&lowered(source), RISCV64).0;
         if let Some(said) = tried(&text, "riscv64-linux-gnu") {
             panic!("{}\n---- from ----\n{}", said, source);

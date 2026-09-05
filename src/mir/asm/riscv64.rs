@@ -52,6 +52,11 @@ fn scratch(b: &Body, which: usize, class: Class) -> Reg {
     held[which.min(held.len() - 1)]
 }
 
+// How far the offsets of a block copy may run before the two addresses have to
+// step instead. Two kilobytes is the twelve bits signed that a load or a store
+// here has, and the window is under it with room for the widest step.
+const WINDOW: usize = 2016;
+
 // ---- Addresses -------------------------------------------------------------
 
 // The offset on a load or a store is twelve bits with a sign, so a frame under
@@ -470,17 +475,45 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
             let a = read(out, b, *from, scratch(b, 1, Class::Int));
             let c = read(out, b, *to, scratch(b, 0, Class::Int));
             let held = named(scratch(b, 2, Class::Int), 8);
-            let mut at = 0usize;
+            // The offset on a load or a store is a small field -- twelve bits
+            // signed here, and scaled-unsigned on aarch64 -- so a copy of more
+            // than a couple of kilobytes cannot be written as one run of
+            // offsets off the two addresses. Past that the addresses themselves
+            // step, which keeps every offset inside the window. The two step
+            // into the scratch registers, which is where `read` would have put
+            // them had they not already been somewhere: an allocated register
+            // is never a scratch, so neither can be the other's.
+            let (a, c) = match *bytes > WINDOW {
+                false => (a, c),
+                true => {
+                    let one = named(scratch(b, 1, Class::Int), 8);
+                    let two = named(scratch(b, 0, Class::Int), 8);
+                    if a != one {
+                        let _ = writeln!(out, "\tmv\t{}, {}", one, a);
+                    }
+                    if c != two {
+                        let _ = writeln!(out, "\tmv\t{}, {}", two, c);
+                    }
+                    (one, two)
+                }
+            };
+            let (mut at, mut base) = (0usize, 0usize);
             for step in [8usize, 4, 2, 1] {
                 while at + step <= *bytes {
+                    if at - base >= WINDOW {
+                        let by = at - base;
+                        let _ = writeln!(out, "\taddi\t{}, {}, {}", a, a, by);
+                        let _ = writeln!(out, "\taddi\t{}, {}, {}", c, c, by);
+                        base = at;
+                    }
                     let (one, keep) = match step {
                         8 => ("ld", "sd"),
                         4 => ("lw", "sw"),
                         2 => ("lhu", "sh"),
                         _ => ("lbu", "sb"),
                     };
-                    let _ = writeln!(out, "\t{}\t{}, {}({})", one, held, at, a);
-                    let _ = writeln!(out, "\t{}\t{}, {}({})", keep, held, at, c);
+                    let _ = writeln!(out, "\t{}\t{}, {}({})", one, held, at - base, a);
+                    let _ = writeln!(out, "\t{}\t{}, {}({})", keep, held, at - base, c);
                     at += step;
                 }
             }

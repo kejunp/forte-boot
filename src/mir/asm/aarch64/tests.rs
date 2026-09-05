@@ -21,6 +21,30 @@ fn has(text: &str, want: &str) -> bool {
     text.lines().any(|line| line.contains(want))
 }
 
+// A struct of `n` words, one body making one and another holding what it made.
+// Enough of them and the frame is deeper than the offset on a load that goes
+// down can reach.
+//
+// Two bodies and not one: a struct built and read in the same body is a set of
+// slots the passes can take apart, and what is wanted here is the whole of it
+// standing in one frame. Handing it back from a call is what does that -- the
+// caller keeps room for the answer.
+fn wide(n: usize) -> String {
+    let mut out = String::from("struct Wide {\n");
+    for at in 0..n {
+        out.push_str(&format!("    pub a{}: i64,\n", at));
+    }
+    out.push_str("}\n\nfn make(x: i64): Wide {\n    Wide {\n");
+    for at in 0..n {
+        out.push_str(&format!("        a{}: x + {},\n", at, at));
+    }
+    out.push_str(&format!(
+        "    }}\n}}\n\nfn f(x: i64): i64 {{\n    let w = make(x)\n    w.a0 + w.a{}\n}}\n",
+        n - 1
+    ));
+    out
+}
+
 // ---- The frame -------------------------------------------------------------
 
 #[test]
@@ -32,6 +56,59 @@ fn every_body_saves_what_it_has_to_and_puts_it_back() {
     assert!(has(&text, "mov\tx29, sp"), "{}", text);
     assert!(has(&text, "ldp\tx29, x30, [sp], #16"), "{}", text);
     assert!(has(&text, "ret"), "{}", text);
+}
+
+// ---- Two widths in one instruction -------------------------------------------
+
+// A negative offset can only use the *unscaled* form of a load or a store, and
+// its immediate is nine bits signed: `-256..255`. This file used to check the
+// offset against the twelve-bit scaled form -- which is unsigned, and reaches
+// only upwards -- and then write the nine-bit one, so a frame over 256 bytes
+// emitted `[x29, #-408]` and an assembler refused the whole body. A struct of
+// forty fields was enough to do it, and nothing here had a frame that deep.
+#[test]
+fn no_offset_below_the_frame_pointer_is_out_of_a_loads_reach() {
+    let text = shown(&wide(40));
+    for line in text.lines() {
+        let Some(at) = line.find("[x29, #-") else { continue };
+        let held: String =
+            line[at + 8..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        let off: usize = held.parse().expect("an offset");
+        assert!(
+            off <= 256,
+            "`{}` is past the nine bits a negative offset has:\n{}",
+            line.trim(),
+            text
+        );
+    }
+    // And it is reached by working the address out, not by giving up.
+    assert!(has(&text, "sub\tx"), "{}", text);
+}
+
+// The other half of the same mistake: a register named at one width beside a
+// register named at another. Narrowing wrote the destination's `w` and the
+// source's `x` -- `mov w3, x2`, which reads as a truncation and is not an
+// instruction. Both have to be the `w`, and writing a `w` clears the top half
+// on its own, which is the truncation.
+#[test]
+fn a_narrowing_cast_names_both_registers_at_one_width() {
+    for source in ["fn f(n: i64): i32 { n as i32 }\n", "fn f(n: i64): i16 { n as i16 }\n"] {
+        let text = shown(source);
+        for line in text.lines() {
+            let held = line.trim();
+            let Some(rest) = held.strip_prefix("mov\t") else { continue };
+            let Some((to, from)) = rest.split_once(", ") else { continue };
+            // `sp` is the stack pointer at its only width, and is as wide as
+            // an `x`. Everything else says which half it is by its letter.
+            let wide = |held: &str| held.starts_with('x') || held == "sp";
+            assert!(
+                wide(to) == wide(from),
+                "`{}` names two widths in one instruction:\n{}",
+                held,
+                text
+            );
+        }
+    }
 }
 
 // ---- The instructions ------------------------------------------------------
@@ -113,6 +190,7 @@ fn what_comes_out_assembles() {
         "struct P {\n    pub a: i64,\n    pub b: i64,\n}\n\
          fn f(a: i64): i64 {\n    let p = P { a: a, b: a }\n    p.a + p.b\n}\n",
         "fn f(): str { \"hello\" }\n",
+        "fn f(n: i64): i32 { n as i32 }\n",
         "fn f(xs: &i32[], i: i32): i32 { xs[i] }\n",
         "fn g(x: i32): i32 { x }\nfn f(): i32 { g(1) }\n",
         "trait Drop {\n    fn drop(self)\n}\n\
@@ -122,6 +200,10 @@ fn what_comes_out_assembles() {
          fn f() {\n    let e = E::One(H { n: 1 })\n}\n",
         "fn f(a: i32): i32 {\n    let g = |x: i32| x + a\n    g(2)\n}\n",
     ];
+    // A frame deeper than a load reaches down, and a copy longer than one run
+    // of offsets reaches along -- neither of which anything else here has.
+    let (deep, deeper) = (wide(40), wide(400));
+    let held = held.iter().copied().chain([deep.as_str(), deeper.as_str()]);
     for source in held {
         let text = render(&lowered(source), AARCH64).0;
         if let Some(said) = tried(&text, "aarch64-linux-gnu") {
