@@ -10,6 +10,12 @@ mod prep;
 mod tir;
 mod sema;
 
+// The whole of it, run over Forte rather than over a tree built to look like
+// one. See the head of the file: it needs a C toolchain and skips itself where
+// there is none.
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 
 use lex::lexer::Lexer;
