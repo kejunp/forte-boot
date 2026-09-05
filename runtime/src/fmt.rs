@@ -541,12 +541,18 @@ fn one(inner: &str, args: &[&Arg], next: &mut usize) -> Result<String, String> {
 // ---- What the program calls ------------------------------------------------
 
 // Everything the five entry points do, once. `nl` is whether a newline goes on
-// the end, which is the whole of the difference between `print` and `println`.
+// the end -- the whole of the difference between `print` and `println` -- and
+// `err` is which of the two streams it goes to, which is the whole of the
+// difference between `print` and `eprint`.
+//
+// Two flags and not four symbols: what a line ends with and where it goes are
+// two questions about one line, and a ladder of five for each of the four
+// answers would be twenty symbols for what five and two words already say.
 //
 // The line goes out in one write. Two would let another thread's line land
 // between the text and its newline, and the lock a single `print!` takes is not
 // held across two of them.
-fn emit(nl: i64, fmt: *const Str, args: &[&Arg]) {
+fn emit(nl: i64, err: i64, fmt: *const Str, args: &[&Arg]) {
     let Some(fmt) = (unsafe { fmt.as_ref() }).and_then(Str::read) else {
         eprintln!("fortec: print: the format string is not text");
         return;
@@ -556,13 +562,21 @@ fn emit(nl: i64, fmt: *const Str, args: &[&Arg]) {
         text.push('\n');
     }
 
-    let stdout = std::io::stdout();
-    let mut held = stdout.lock();
-    let _ = held.write_all(text.as_bytes());
-    // Where a line has no newline on it the reader is being shown a prompt or
-    // half a line, and either way they are meant to see it now.
-    if nl == 0 {
-        let _ = held.flush();
+    if err != 0 {
+        // The error stream is not buffered, here as in Rust, so a half line on
+        // it is already where the reader can see it.
+        let stderr = std::io::stderr();
+        let mut held = stderr.lock();
+        let _ = held.write_all(text.as_bytes());
+    } else {
+        let stdout = std::io::stdout();
+        let mut held = stdout.lock();
+        let _ = held.write_all(text.as_bytes());
+        // Where a line has no newline on it the reader is being shown a prompt
+        // or half a line, and either way they are meant to see it now.
+        if nl == 0 {
+            let _ = held.flush();
+        }
     }
 
     for why in wrong {
@@ -582,41 +596,49 @@ fn gather<'a>(held: &[*const Arg]) -> Vec<&'a Arg> {
 // take "a format string and whatever follows it" (see the head of this file),
 // so the arity is in the name on the Forte side and in the symbol here.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print0(nl: i64, fmt: *const Str) {
-    emit(nl, fmt, &[]);
+pub extern "C" fn __rt_print0(nl: i64, err: i64, fmt: *const Str) {
+    emit(nl, err, fmt, &[]);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print1(nl: i64, fmt: *const Str, a: *const Arg) {
-    emit(nl, fmt, &gather(&[a]));
+pub extern "C" fn __rt_print1(nl: i64, err: i64, fmt: *const Str, a: *const Arg) {
+    emit(nl, err, fmt, &gather(&[a]));
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print2(nl: i64, fmt: *const Str, a: *const Arg, b: *const Arg) {
-    emit(nl, fmt, &gather(&[a, b]));
+pub extern "C" fn __rt_print2(
+    nl: i64,
+    err: i64,
+    fmt: *const Str,
+    a: *const Arg,
+    b: *const Arg,
+) {
+    emit(nl, err, fmt, &gather(&[a, b]));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_print3(
     nl: i64,
+    err: i64,
     fmt: *const Str,
     a: *const Arg,
     b: *const Arg,
     c: *const Arg,
 ) {
-    emit(nl, fmt, &gather(&[a, b, c]));
+    emit(nl, err, fmt, &gather(&[a, b, c]));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_print4(
     nl: i64,
+    err: i64,
     fmt: *const Str,
     a: *const Arg,
     b: *const Arg,
     c: *const Arg,
     d: *const Arg,
 ) {
-    emit(nl, fmt, &gather(&[a, b, c, d]));
+    emit(nl, err, fmt, &gather(&[a, b, c, d]));
 }
 
 #[cfg(test)]

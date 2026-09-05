@@ -1,7 +1,13 @@
-// `print` and `println`, whose format strings are Rust's.
+// `print` and `println`, and `eprint` and `eprintln` beside them, whose format
+// strings are Rust's.
 //
 //     println1("x is {}", int(x))
 //     println2("{:>8.3} {:#x}", float(ratio), int(mask))
+//     eprintln1("cannot read {}", text(name))
+//
+// The `e` ones write to the error stream and are otherwise the same fn: what a
+// line says and where it goes are two questions, and the second is answered by
+// which of the four names is written.
 //
 // What a `{}` may say is what `println!` lets it say -- the argument by number,
 // a fill and an alignment, a sign, `#`, a zero flag, a width, a precision, and
@@ -16,7 +22,8 @@
 // variadic form, and two fns may not share a name, so there is no one `println`
 // that takes both one argument and three. The number is therefore written on
 // the end of the name, and the ladder stops at four because a line with five
-// things in it is a line to break in two.
+// things in it is a line to break in two. Four ladders of five is what that
+// comes to, and every rung of them is one call to the runtime.
 //
 // **Why an argument is wrapped.** `int(x)`, `text(s)` and the three beside them
 // make an `Arg`, which is a value with a tag saying what it is. A trait would
@@ -69,23 +76,25 @@ pub fn text(s: str): Arg {
 
 // ---- What the runtime does --------------------------------------------------
 
-// One symbol per arity, and `nl` rather than a symbol per line ending: whether
-// a newline goes on the end is the whole of the difference between `print` and
-// `println`, and two ladders of five would be ten names for five things.
+// One symbol per arity, and two flags rather than a symbol per pair of them.
+// `nl` is whether a newline goes on the end, which is all that separates
+// `print` from `println`; `err` is whether it goes to the error stream, which
+// is all that separates `print` from `eprint`. Four ladders of five would be
+// twenty names for five things.
 %symbol("__rt_print0")
-fn out0(nl: i64, f: str): null;
+fn out0(nl: i64, err: i64, f: str): null;
 
 %symbol("__rt_print1")
-fn out1(nl: i64, f: str, a: Arg): null;
+fn out1(nl: i64, err: i64, f: str, a: Arg): null;
 
 %symbol("__rt_print2")
-fn out2(nl: i64, f: str, a: Arg, b: Arg): null;
+fn out2(nl: i64, err: i64, f: str, a: Arg, b: Arg): null;
 
 %symbol("__rt_print3")
-fn out3(nl: i64, f: str, a: Arg, b: Arg, c: Arg): null;
+fn out3(nl: i64, err: i64, f: str, a: Arg, b: Arg, c: Arg): null;
 
 %symbol("__rt_print4")
-fn out4(nl: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
+fn out4(nl: i64, err: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
 
 // ---- Printing ---------------------------------------------------------------
 
@@ -93,43 +102,90 @@ fn out4(nl: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
 // brace here as it is everywhere else and a stray `{}` is reported rather than
 // printed.
 pub fn print(f: str) {
-    out0(0, f)
+    out0(0, 0, f)
 }
 
 pub fn print1(f: str, a: Arg) {
-    out1(0, f, a)
+    out1(0, 0, f, a)
 }
 
 pub fn print2(f: str, a: Arg, b: Arg) {
-    out2(0, f, a, b)
+    out2(0, 0, f, a, b)
 }
 
 pub fn print3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(0, f, a, b, c)
+    out3(0, 0, f, a, b, c)
 }
 
 pub fn print4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(0, f, a, b, c, d)
+    out4(0, 0, f, a, b, c, d)
 }
 
 // ---- Printing, with the line ended ------------------------------------------
 
 pub fn println(f: str) {
-    out0(1, f)
+    out0(1, 0, f)
 }
 
 pub fn println1(f: str, a: Arg) {
-    out1(1, f, a)
+    out1(1, 0, f, a)
 }
 
 pub fn println2(f: str, a: Arg, b: Arg) {
-    out2(1, f, a, b)
+    out2(1, 0, f, a, b)
 }
 
 pub fn println3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(1, f, a, b, c)
+    out3(1, 0, f, a, b, c)
 }
 
 pub fn println4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(1, f, a, b, c, d)
+    out4(1, 0, f, a, b, c, d)
+}
+
+// ---- Printing to the error stream --------------------------------------------
+
+// Which is not buffered, so half a line written to it is already where the
+// reader can see it -- there is nothing here that a `print` needs a newline or
+// the end of the program to flush.
+pub fn eprint(f: str) {
+    out0(0, 1, f)
+}
+
+pub fn eprint1(f: str, a: Arg) {
+    out1(0, 1, f, a)
+}
+
+pub fn eprint2(f: str, a: Arg, b: Arg) {
+    out2(0, 1, f, a, b)
+}
+
+pub fn eprint3(f: str, a: Arg, b: Arg, c: Arg) {
+    out3(0, 1, f, a, b, c)
+}
+
+pub fn eprint4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
+    out4(0, 1, f, a, b, c, d)
+}
+
+// ---- Printing to the error stream, with the line ended ------------------------
+
+pub fn eprintln(f: str) {
+    out0(1, 1, f)
+}
+
+pub fn eprintln1(f: str, a: Arg) {
+    out1(1, 1, f, a)
+}
+
+pub fn eprintln2(f: str, a: Arg, b: Arg) {
+    out2(1, 1, f, a, b)
+}
+
+pub fn eprintln3(f: str, a: Arg, b: Arg, c: Arg) {
+    out3(1, 1, f, a, b, c)
+}
+
+pub fn eprintln4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
+    out4(1, 1, f, a, b, c, d)
 }
