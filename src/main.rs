@@ -128,6 +128,7 @@ fn compile(
     emit: Option<What>,
     out: Option<PathBuf>,
     runtime: Option<PathBuf>,
+    tests: bool,
 ) -> bool {
     let mut resolver = ImportResolver::new(search_paths);
     // The one failure with no source to quote: nothing imported the root file,
@@ -250,7 +251,9 @@ fn compile(
         // once per set of types it is used with, every type turned into a
         // number of bytes, and every register the body wanted met with the
         // ones a machine has.
-        let made = mir::mono::monomorphise(&ttir, &ssa);
+        // A `%test` is a root of a test build and of nothing else, so what is
+        // compiled here is not the same set of bodies either way.
+        let made = mir::mono::monomorphise(&ttir, &ssa, tests);
         for said in &made.refused {
             eprintln!("{}: {}", name.display(), said);
         }
@@ -373,16 +376,44 @@ fn compile(
             }
             // Nothing named to emit and a file to make: the whole way down.
             (None, Some(at)) => {
-                let Some(entry) = entry_of(&ttir) else {
-                    eprintln!(
-                        "{}: nothing to run -- there is no `main` taking no arguments \
-                         at the top of this file, and a program needs one to start at",
-                        name.display()
-                    );
-                    return false;
+                let start = match tests {
+                    true => {
+                        let (found, wrong) = tests_of(&ttir);
+                        for said in &wrong {
+                            eprintln!("{}: {}", name.display(), said);
+                        }
+                        if !wrong.is_empty() {
+                            return false;
+                        }
+                        // Nothing to run is not a failure -- a suite may not
+                        // have got round to a test yet -- but it is the one
+                        // thing a reader who asked for tests will not see from
+                        // the output, an empty run looking much like a quiet
+                        // one.
+                        if found.is_empty() {
+                            eprintln!(
+                                "{}: no `%test` anywhere in this suite; the runner \
+                                 will have nothing to call",
+                                name.display()
+                            );
+                        }
+                        link::Start::Tests(found)
+                    }
+                    false => {
+                        let Some(entry) = entry_of(&ttir) else {
+                            eprintln!(
+                                "{}: nothing to run -- there is no `main` taking no \
+                                 arguments at the top of this file, and a program needs \
+                                 one to start at",
+                                name.display()
+                            );
+                            return false;
+                        };
+                        link::Start::Program(entry)
+                    }
                 };
                 let text = assembly();
-                if let Err(why) = link::link(&text, &entry, m, at, runtime.as_deref()) {
+                if let Err(why) = link::link(&text, &start, m, at, runtime.as_deref()) {
                     eprintln!("{}: {}", name.display(), why);
                     return false;
                 }
@@ -441,6 +472,74 @@ fn entry_of(ttir: &tir::ttir_nodes::TTIRProgram) -> Option<link::Entry> {
         return Some(link::Entry { symbol: mangler.symbol_of(item, ttir)?, answers });
     }
     None
+}
+
+// Every `%test` in the suite, and everything wrong with one that is not shaped
+// like a test.
+//
+// Every module and not the root only, which is the opposite of `entry_of`
+// above and for the same reason read the other way. A program has one beginning
+// and it is the file that was named; a suite has as many tests as it wrote, and
+// they are written beside the thing each is about -- a `%test` reachable only
+// from `hashmap.ft` is the test of `hashmap.ft` and is exactly the one a reader
+// of that file wanted to run.
+//
+// "No parameters, `null` returned" (section 2) is checked here rather than
+// taken on trust. The runner calls one as `void f(void)` and C is not going to
+// notice: a test declared to take an i64 would be called with whatever was in
+// the register, and one declared to give something back would leave it there.
+//
+// A generic is turned down for the reason `mir::mono` gives about a root -- a
+// generic is not a fn until something says what its parameters are, and nothing
+// here can say it.
+fn tests_of(ttir: &tir::ttir_nodes::TTIRProgram) -> (Vec<link::Test>, Vec<String>) {
+    use tir::tir_nodes::TIRPrim;
+    use tir::ttir_nodes::{TTIRItemKind, Ty};
+
+    let mangler = names::Mangler::new(ttir);
+    let (mut found, mut wrong) = (Vec::new(), Vec::new());
+    for module in &ttir.modules {
+        let where_at = module.path.join("::");
+        for &item in &module.roots {
+            let TTIRItemKind::Fn(f) = &ttir.items[item].kind else { continue };
+            if !f.attrs.is_test {
+                continue;
+            }
+            let name = format!("{}::{}", where_at, f.name);
+            let said = |what: &str| {
+                format!(
+                    "{}:{}: `{}` is marked `%test` and {}",
+                    ttir.items[item].line, ttir.items[item].col, name, what
+                )
+            };
+            if !f.params.is_empty() {
+                wrong.push(said(
+                    "takes parameters; a test takes none, there being nowhere for an \
+                     argument to come from",
+                ));
+                continue;
+            }
+            if !matches!(ttir.types.get(f.ret), Some(Ty::Prim(TIRPrim::Null))) {
+                wrong.push(said(
+                    "gives something back; a test returns `null`, there being nobody to \
+                     hand an answer to",
+                ));
+                continue;
+            }
+            if !f.generics.is_empty() {
+                wrong.push(said(
+                    "is generic; nothing here can say what its parameters stand for",
+                ));
+                continue;
+            }
+            let Some(symbol) = mangler.symbol_of(item, ttir) else {
+                wrong.push(said("compiles to no symbol the runner could call"));
+                continue;
+            };
+            found.push(link::Test { name, symbol });
+        }
+    }
+    (found, wrong)
 }
 
 // Every instruction the bodies can still reach, which is what `sir::opt`
@@ -514,12 +613,18 @@ fn usage() -> String {
     format!(
         "usage: fortec <root.ft> [-o <file>] [-O<0-3>] [--target <name>] \
          [--emit mir|asm]\n\
-         \x20              [--std <dir>] [--no-std] [--runtime <archive>] \
+         \x20              [--test] [--std <dir>] [--no-std] [--runtime <archive>] \
          [-I <dir>]...\n\
          \n\
          \x20 -o with no --emit assembles and links an executable; with one \
          it writes\n\
          \x20 what was emitted to the file instead of the standard output.\n\
+         \n\
+         \x20 --test builds the `%test` fns of the suite and an entry that runs \
+         them,\n\
+         \x20 in place of the program and its `main`. Without it a `%test` is \
+         compiled\n\
+         \x20 into nothing at all.\n\
          \n\
          \x20 -I adds somewhere else to look for a module. The root file's own \
          directory\n\
@@ -567,6 +672,10 @@ fn run(args: &[String]) -> bool {
     // nothing.
     let mut std_at: Option<PathBuf> = None;
     let mut no_std = false;
+    // Whether to build the tests rather than the program. It changes two
+    // things and they are the two halves of what `%test` means: which bodies
+    // are compiled, and what the output starts at.
+    let mut tests = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -644,6 +753,7 @@ fn run(args: &[String]) -> bool {
                 }
             },
             "--no-std" => no_std = true,
+            "--test" => tests = true,
             "--target" => match rest.next() {
                 Some(name) => match sir::target::of(name) {
                     Some(held) => target = held,
@@ -691,7 +801,9 @@ fn run(args: &[String]) -> bool {
         }
     }
     match root {
-        Some(root) => compile(&root, search_paths, level, target, emit, out, runtime),
+        Some(root) => {
+            compile(&root, search_paths, level, target, emit, out, runtime, tests)
+        }
         None => {
             eprintln!("{}", usage());
             false

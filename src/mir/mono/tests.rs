@@ -12,7 +12,7 @@ use super::*;
 
 fn made(source: &str) -> Made {
     let (ttir, sir) = compiled(source);
-    monomorphise(&ttir, &sir)
+    monomorphise(&ttir, &sir, false)
 }
 
 // Whether any body still has a type parameter standing in it, which is the one
@@ -25,6 +25,43 @@ fn parameters_left(m: &Made) -> bool {
             .chain(body.slots.iter().map(|slot| slot.ty))
             .any(|ty| matches!(m.ttir.types.get(ty), Some(Ty::Param { .. })))
     })
+}
+
+// ---- What a `%test` is a root of -------------------------------------------
+
+// "Collected and run on its own rather than compiled into an ordinary build"
+// (section 2): a test is a root of a test build and of nothing else, so an
+// ordinary build carries no body for one.
+//
+// Only for the test itself. A fn only a test calls is compiled either way,
+// because `roots` takes every non-generic fn there is and not every one
+// something reaches -- this pass has never been the one that drops what nobody
+// calls, and a `%test` is not where it would start being.
+#[test]
+fn a_test_is_no_root_of_an_ordinary_build() {
+    let source = "fn helper(): i32 { 2 }\n\
+                  %test\n\
+                  fn a_test() {\n    helper();\n}\n\
+                  fn f(): i32 { helper() }\n";
+    let (ttir, sir) = compiled(source);
+
+    let ordinary = monomorphise(&ttir, &sir, false);
+    assert!(!said(&ordinary, "a_test"), "{:#?}", ordinary.symbols);
+    assert!(said(&ordinary, "f"), "{:#?}", ordinary.symbols);
+    assert!(said(&ordinary, "helper"), "{:#?}", ordinary.symbols);
+
+    let tests = monomorphise(&ttir, &sir, true);
+    assert!(said(&tests, "a_test"), "{:#?}", tests.symbols);
+    assert!(said(&tests, "f"), "{:#?}", tests.symbols);
+    assert_eq!(tests.sir.bodies.len(), ordinary.sir.bodies.len() + 1, "{:#?}", tests.symbols);
+}
+
+// Whether a fn of this name compiled to anything. The written name is matched
+// with the length the mangler puts in front of it, so that `a_test` is not
+// found inside `only_a_test_calls_this`.
+fn said(m: &Made, name: &str) -> bool {
+    let held = format!("{}{}", name.len(), name);
+    m.symbols.iter().any(|symbol| symbol.ends_with(&held))
 }
 
 // ---- Nothing generic -------------------------------------------------------

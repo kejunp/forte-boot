@@ -46,9 +46,38 @@ pub struct Entry {
     pub answers: bool,
 }
 
-// What the shim is, given the entry. Kept apart from running the tools so that
-// what is handed to the C compiler can be looked at, and asserted on.
-pub fn shim(entry: &Entry) -> String {
+// One `%test`: what it is called where it was written, and what it compiled to.
+//
+// The name is for the reader and is never the symbol -- a mangled name carries
+// the parameter types and the module path spelled as lengths, and a runner that
+// printed one would be asking the reader to decode it.
+pub struct Test {
+    pub name:   String,
+    pub symbol: String,
+}
+
+// What the program the linker makes begins at: the `main` somebody wrote, or a
+// runner over the tests they wrote instead.
+//
+// Two shapes and not a flag, because they have nothing in common past
+// `__rt_init`: one calls a single fn and may hand its answer to the kernel, and
+// the other calls however many and hands back nothing.
+pub enum Start {
+    Program(Entry),
+    Tests(Vec<Test>),
+}
+
+// What the shim is, given what the program starts at. Kept apart from running
+// the tools so that what is handed to the C compiler can be looked at, and
+// asserted on.
+pub fn shim(start: &Start) -> String {
+    match start {
+        Start::Program(entry) => program_shim(entry),
+        Start::Tests(tests) => tests_shim(tests),
+    }
+}
+
+fn program_shim(entry: &Entry) -> String {
     if entry.answers {
         format!(
             "extern void __rt_init(void);\n\
@@ -71,6 +100,62 @@ pub fn shim(entry: &Entry) -> String {
             sym = entry.symbol
         )
     }
+}
+
+// The runner: `__rt_init`, then every test in the order they were collected.
+//
+// The name goes out *before* the test runs and the stream is flushed, which is
+// the whole design. Nothing in the language can fail a test yet -- there is no
+// assert and no panic, so a test either returns or takes the process down with
+// it -- and one that takes the process down leaves its own name as the last
+// thing on the screen. A name printed afterwards would name every test but the
+// one the reader is looking for.
+//
+// `<stdio.h>` rather than the bare `extern` declarations the other shim writes:
+// that one needs two names and this one needs `printf`, `fflush` and `stdout`,
+// and spelling a variadic and a `FILE *` out by hand would be three chances to
+// disagree with the header that is already there.
+fn tests_shim(tests: &[Test]) -> String {
+    let mut out = String::from("#include <stdio.h>\n\nextern void __rt_init(void);\n");
+    for test in tests {
+        out.push_str(&format!("extern void {}(void);\n", test.symbol));
+    }
+    out.push_str("\nint main(void) {\n    __rt_init();\n");
+    out.push_str(&format!(
+        "    printf(\"\\nrunning {} test{}\\n\");\n",
+        tests.len(),
+        if tests.len() == 1 { "" } else { "s" }
+    ));
+    for test in tests {
+        out.push_str(&format!(
+            "    printf(\"test {} ... \");\n    fflush(stdout);\n    {}();\n             \x20   printf(\"ok\\n\");\n",
+            quoted(&test.name),
+            test.symbol
+        ));
+    }
+    out.push_str(&format!(
+        "\n    printf(\"\\ntest result: ok. {} passed\\n\");\n    return 0;\n}}\n",
+        tests.len()
+    ));
+    out
+}
+
+// A name as C spells a string. Nothing the mangler makes needs it -- a Forte
+// path is letters, digits, `_` and `::` -- and it is escaped anyway, because
+// that is a fact about the mangler and not a promise this file should rest on.
+fn quoted(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\{:03o}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // Which machine this is running on, said the way `Machine::name` says it.
@@ -108,7 +193,7 @@ fn runtime_beside() -> Option<PathBuf> {
 // refusal is this compiler's.
 pub fn link(
     asm: &str,
-    entry: &Entry,
+    start: &Start,
     m: Machine,
     out: &Path,
     runtime: Option<&Path>,
@@ -150,7 +235,7 @@ pub fn link(
     let at_s = dir.join(format!("{}.s", tag));
     let at_c = dir.join(format!("{}.c", tag));
 
-    let written = std::fs::write(&at_s, asm).and_then(|()| std::fs::write(&at_c, shim(entry)));
+    let written = std::fs::write(&at_s, asm).and_then(|()| std::fs::write(&at_c, shim(start)));
     if let Err(why) = written {
         let _ = std::fs::remove_file(&at_s);
         let _ = std::fs::remove_file(&at_c);

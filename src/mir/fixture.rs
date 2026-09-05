@@ -247,7 +247,7 @@ pub fn count(body: &MIRBody, want: impl Fn(&MIRInstKind) -> bool) -> usize {
 // this is the pass most able to leave a body that walks and is wrong.
 pub fn lowered(source: &str) -> MIRProgram {
     let (ttir, sir) = compiled(source);
-    let made = super::mono::monomorphise(&ttir, &sir);
+    let made = super::mono::monomorphise(&ttir, &sir, false);
     assert!(made.refused.is_empty(), "{:#?}", made.refused);
     let mut lowerer = super::lower::Lowerer::new(&made, machine());
     lowerer.lower();

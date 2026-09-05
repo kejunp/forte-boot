@@ -124,7 +124,17 @@ struct Mono<'a> {
     made:    usize,
 }
 
-pub fn monomorphise(ttir: &TTIRProgram, sir: &SIRProgram) -> Made {
+// `tests` is whether a `%test` is a fn to compile. "Collected and run on its
+// own rather than compiled into an ordinary build" (section 2) is a rule about
+// what is in the output, and this is the pass that decides: a test is a root of
+// a test build and of nothing else, so an ordinary build carries no body for
+// one.
+//
+// The test and not what it called. `roots` takes every non-generic fn there is
+// rather than every one something reaches, so a helper only a test calls is
+// compiled either way -- dropping what nobody calls is a pass this compiler
+// does not have, and a `%test` is not where it would begin.
+pub fn monomorphise(ttir: &TTIRProgram, sir: &SIRProgram, tests: bool) -> Made {
     let mut m = Mono {
         sir,
         p: ttir.clone(),
@@ -137,7 +147,7 @@ pub fn monomorphise(ttir: &TTIRProgram, sir: &SIRProgram) -> Made {
         refused: Vec::new(),
         made: 0,
     };
-    m.roots();
+    m.roots(tests);
     m.drain();
     Made {
         ttir:      m.p,
@@ -153,9 +163,12 @@ impl<'a> Mono<'a> {
     // Every fn a program can reach without being told what a type is. A generic
     // is not one: there is nothing to compile until something says what its
     // parameters stand for, which is the whole of what this pass is about.
-    fn roots(&mut self) {
+    fn roots(&mut self, tests: bool) {
         for at in 0..self.p.items.len() {
             let TTIRItemKind::Fn(f) = &self.p.items[at].kind else { continue };
+            if f.attrs.is_test && !tests {
+                continue;
+            }
             let (Some(body), false) = (f.body, takes_types(&self.p, at)) else { continue };
             if body >= self.sir.bodies.len() {
                 continue;
