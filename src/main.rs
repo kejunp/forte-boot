@@ -345,15 +345,23 @@ fn compile(
             most,
             described
         ));
-        // The assembly, and whatever the emitters would not write. Worked out
-        // once: `--emit asm` writes it and a link step assembles it, and the
-        // two must not be able to differ.
+        // The assembly, or nothing where an emitter would not write part of it.
+        // Worked out once: `--emit asm` writes it and a link step assembles it,
+        // and the two must not be able to differ.
+        //
+        // A refusal ends the compilation. `mir::asm::render` says what it
+        // leaves out and emits the body around it, so the output assembles,
+        // links, runs, and quietly does not do the thing that was written --
+        // and a reader who did not catch one line on the error stream has a
+        // program that is wrong in a way nothing will tell them about again.
+        // The gaps above are the other shape and stay a warning: a routine with
+        // no body is a name nothing defines, and the linker says so.
         let assembly = || {
             let (text, said) = mir::asm::render(&machine_ir, m);
-            for one in said {
+            for one in &said {
                 eprintln!("{}: {}", name.display(), one);
             }
-            text
+            said.is_empty().then_some(text)
         };
         // A page to read, a page to assemble, or a file to run. The last is
         // the only one that is not simply text, and it is the only one that
@@ -362,7 +370,12 @@ fn compile(
             (Some(what), where_to) => {
                 let text = match what {
                     What::Mir => mir::text::render(&machine_ir, m),
-                    What::Asm => assembly(),
+                    // Nothing is written where the assembly is not all there,
+                    // rather than a page that reads whole and is not.
+                    What::Asm => match assembly() {
+                        Some(text) => text,
+                        None => return false,
+                    },
                 };
                 match where_to {
                     Some(at) => {
@@ -412,7 +425,7 @@ fn compile(
                         link::Start::Program(entry)
                     }
                 };
-                let text = assembly();
+                let Some(text) = assembly() else { return false };
                 if let Err(why) = link::link(&text, &start, m, at, runtime.as_deref()) {
                     eprintln!("{}: {}", name.display(), why);
                     return false;
