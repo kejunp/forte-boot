@@ -164,9 +164,28 @@ impl<'a> Mono<'a> {
     // is not one: there is nothing to compile until something says what its
     // parameters stand for, which is the whole of what this pass is about.
     fn roots(&mut self, tests: bool) {
+        // Where the program begins, and nothing else. Everything a program can
+        // reach is reached from here by `drain`, so a fn nothing calls is a fn
+        // nothing compiles -- `pr.ft` writes three of `fmt`'s twenty print
+        // routines and used to carry all twenty.
+        //
+        // A suite with nowhere to begin is not being run. A library on its own,
+        // or a `--emit` of one to look at, has no `main` and no tests, and
+        // pruning it to nothing would be answering a question nobody asked --
+        // so where there is no beginning, every fn is one.
+        // The beginnings, and the releases that are reached without being
+        // called. Only the first says whether there is anything to prune from:
+        // a suite with a `Drop` and no `main` is still a suite being looked at.
+        let (entries, kept) = self.beginnings(tests);
+        let every = entries.is_empty();
+        let held: Vec<usize> = entries.into_iter().chain(kept).collect();
+
         for at in 0..self.p.items.len() {
             let TTIRItemKind::Fn(f) = &self.p.items[at].kind else { continue };
             if f.attrs.is_test && !tests {
+                continue;
+            }
+            if !every && !held.contains(&at) {
                 continue;
             }
             let (Some(body), false) = (f.body, takes_types(&self.p, at)) else { continue };
@@ -176,6 +195,61 @@ impl<'a> Mono<'a> {
             let name = self.mangler.symbol(f, at, &self.p);
             self.want(body, Vec::new(), name, 0);
         }
+    }
+
+    // Every fn a program starts at, which is not the same list twice.
+    //
+    // An ordinary build starts at `main` in the root module taking nothing --
+    // the same fn `main.rs` hands the linker, worked out the same way and for
+    // the same reason. A test build starts at each `%test` instead, which is
+    // what "collected and run on its own rather than compiled into an ordinary
+    // build" comes to here.
+    //
+    // And a `Drop` either way. A release is not called by anything in the SIR:
+    // `mir::lower::glue` writes the call while lowering, long after this, and
+    // it writes it by *name* -- so a `drop` this pass never made is a symbol
+    // nothing defines and a link error at the end of a build that looked well.
+    // Every one of them is kept, since which types get released is not a
+    // question this pass can answer yet.
+    fn beginnings(&self, tests: bool) -> (Vec<usize>, Vec<usize>) {
+        let mut kept = Vec::new();
+        for at in 0..self.p.items.len() {
+            let TTIRItemKind::Impl { of: Some(held), members, .. } = &self.p.items[at].kind
+            else {
+                continue;
+            };
+            let named = match &self.p.items.get(*held).map(|one| &one.kind) {
+                Some(TTIRItemKind::Trait { name, .. }) => name.as_str(),
+                _ => continue,
+            };
+            if named == "Drop" {
+                kept.extend(members.iter().copied());
+            }
+        }
+
+        let mut out = Vec::new();
+        if tests {
+            for at in 0..self.p.items.len() {
+                if let TTIRItemKind::Fn(f) = &self.p.items[at].kind {
+                    if f.attrs.is_test {
+                        out.push(at);
+                    }
+                }
+            }
+            return (out, kept);
+        }
+
+        // `main` at the top of the root module, taking nothing. A `main` in
+        // something imported is a fn called `main` like any other.
+        let Some(module) = self.p.modules.first() else { return (out, kept) };
+        for &item in &module.roots {
+            if let TTIRItemKind::Fn(f) = &self.p.items[item].kind {
+                if f.name == "main" && f.params.is_empty() {
+                    out.push(item);
+                }
+            }
+        }
+        (out, kept)
     }
 
     // The impl member that answers this one for this receiver, or the member as

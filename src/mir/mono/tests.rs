@@ -27,33 +27,74 @@ fn parameters_left(m: &Made) -> bool {
     })
 }
 
-// ---- What a `%test` is a root of -------------------------------------------
+// ---- What a program starts at ----------------------------------------------
+
+// A fn nothing reaches is a fn nothing compiles.
+//
+// The roots are where the program begins and nothing else -- `main`, or the
+// `%test`s of a test build -- so everything else arrives by being called.
+#[test]
+fn a_fn_nothing_calls_is_not_compiled() {
+    let source = "fn used(): i32 { 1 }\n\
+                  fn never_called(): i32 { 2 }\n\
+                  fn main(): i32 { used() }\n";
+    let (ttir, sir) = compiled(source);
+    let m = monomorphise(&ttir, &sir, false);
+    assert!(said(&m, "main"), "{:#?}", m.symbols);
+    assert!(said(&m, "used"), "{:#?}", m.symbols);
+    assert!(!said(&m, "never_called"), "{:#?}", m.symbols);
+}
+
+// A suite with nowhere to begin is not being run: a library on its own, or a
+// `--emit` of one to look at. Pruning it to nothing would answer a question
+// nobody asked, so where there is no beginning every fn is one.
+#[test]
+fn a_suite_with_no_beginning_keeps_every_fn() {
+    let source = "pub fn one(): i32 { 1 }\npub fn two(): i32 { 2 }\n";
+    let (ttir, sir) = compiled(source);
+    let m = monomorphise(&ttir, &sir, false);
+    assert!(said(&m, "one"), "{:#?}", m.symbols);
+    assert!(said(&m, "two"), "{:#?}", m.symbols);
+}
 
 // "Collected and run on its own rather than compiled into an ordinary build"
-// (section 2): a test is a root of a test build and of nothing else, so an
-// ordinary build carries no body for one.
-//
-// Only for the test itself. A fn only a test calls is compiled either way,
-// because `roots` takes every non-generic fn there is and not every one
-// something reaches -- this pass has never been the one that drops what nobody
-// calls, and a `%test` is not where it would start being.
+// (section 2), which is now both halves: a test is no root of an ordinary
+// build, and an ordinary build's `main` is no root of a test one.
 #[test]
-fn a_test_is_no_root_of_an_ordinary_build() {
-    let source = "fn helper(): i32 { 2 }\n\
+fn a_test_and_a_main_are_each_the_others_dead_code() {
+    let source = "fn only_a_test_calls_this(): i32 { 2 }\n\
+                  fn only_main_calls_this(): i32 { 3 }\n\
                   %test\n\
-                  fn a_test() {\n    helper();\n}\n\
-                  fn f(): i32 { helper() }\n";
+                  fn a_test() {\n    only_a_test_calls_this();\n}\n\
+                  fn main(): i32 { only_main_calls_this() }\n";
     let (ttir, sir) = compiled(source);
 
     let ordinary = monomorphise(&ttir, &sir, false);
     assert!(!said(&ordinary, "a_test"), "{:#?}", ordinary.symbols);
-    assert!(said(&ordinary, "f"), "{:#?}", ordinary.symbols);
-    assert!(said(&ordinary, "helper"), "{:#?}", ordinary.symbols);
+    assert!(!said(&ordinary, "only_a_test_calls_this"), "{:#?}", ordinary.symbols);
+    assert!(said(&ordinary, "only_main_calls_this"), "{:#?}", ordinary.symbols);
 
     let tests = monomorphise(&ttir, &sir, true);
     assert!(said(&tests, "a_test"), "{:#?}", tests.symbols);
-    assert!(said(&tests, "f"), "{:#?}", tests.symbols);
-    assert_eq!(tests.sir.bodies.len(), ordinary.sir.bodies.len() + 1, "{:#?}", tests.symbols);
+    assert!(said(&tests, "only_a_test_calls_this"), "{:#?}", tests.symbols);
+    assert!(!said(&tests, "only_main_calls_this"), "{:#?}", tests.symbols);
+}
+
+// A release is not called by anything in the SIR -- `mir::lower::glue` writes
+// the call long after this pass and writes it by name -- so a `drop` this pass
+// never made is a symbol nothing defines. They are kept whatever reaches them.
+#[test]
+fn a_written_drop_is_kept_though_nothing_calls_it() {
+    let source = "trait Drop {\n    fn drop(self)\n}\n\
+                  struct H {\n    pub n: i32,\n}\n\
+                  impl Drop for H {\n    fn drop(self) {\n    }\n}\n\
+                  fn main(): i32 { 0 }\n";
+    let (ttir, sir) = compiled(source);
+    let m = monomorphise(&ttir, &sir, false);
+    // `said` reads the last name of a symbol, and a method's does not end
+    // there: the impl's type follows it. So this one looks for the name where
+    // it stands, which is in the middle.
+    assert!(m.symbols.iter().any(|held| held.contains("4drop")), "{:#?}", m.symbols);
 }
 
 // Whether a fn of this name compiled to anything. The written name is matched
