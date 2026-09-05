@@ -1,0 +1,447 @@
+// What the standard library is meant to do, asserted rather than assumed.
+//
+//     fortec std/tests.ft --test -o t && ./t
+//
+// **Why one file rather than a `%test` at the foot of each module.** A test
+// needs `test` and `fmt`, and a module that imports one imports it for every
+// program that imports the module: `roots` compiles every non-generic fn there
+// is, so a `%test` written inside `vec.ft` would put the whole of `fmt` into
+// every program that used a vector. The tests themselves are left out of an
+// ordinary build and their imports are not. So they live here, where nothing
+// but a test build reads them.
+//
+// Every module is reached by its name -- `vec::len`, `treemap::len` -- because
+// four of them declare a `len` and importing the four would be importing one
+// name four times. One leaf of each is imported to make the module read, and
+// what that leaf is does not matter.
+//
+// The `i64` comparisons come from `order`, which is where the operations a
+// container is handed live and why they are values rather than methods.
+
+import test::{assert, assert_eq};
+import fmt::{int, text, truth};
+import vec::Vec;
+import option::Option;
+import result::Result;
+import range::Range;
+import order::less_i64;
+import hashmap::HashMap;
+import hashset::HashSet;
+import treemap::TreeMap;
+import treeset::TreeSet;
+
+// ---- Vec ---------------------------------------------------------------------
+
+%test
+fn a_vector_starts_with_nothing_in_it() {
+    var v: Vec<i64> = vec::empty()
+    assert_eq(int(vec::len(&v)), int(0), "a new vector is empty")
+    assert(vec::is_empty(&v), "and says so")
+}
+
+%test
+fn a_vector_gives_back_what_was_put_in_it() {
+    var v: Vec<i64> = vec::empty()
+    vec::push(*v, 10)
+    vec::push(*v, 20)
+    vec::push(*v, 30)
+    assert_eq(int(vec::len(&v)), int(3), "three were pushed")
+    if vec::len(&v) != 3 { return }
+    assert_eq(int(vec::at(&v, 0)), int(10), "the first")
+    assert_eq(int(vec::at(&v, 1)), int(20), "the second")
+    assert_eq(int(vec::at(&v, 2)), int(30), "the third")
+}
+
+// The doubling is what makes a run of pushes cost a constant each, and what it
+// must not cost is an element: everything already in has to survive the move.
+%test
+fn everything_survives_a_vector_growing_many_times() {
+    var v: Vec<i64> = vec::empty()
+    for i in 0..200 {
+        vec::push(*v, i * 3)
+    }
+    assert_eq(int(vec::len(&v)), int(200), "two hundred were pushed")
+    if vec::len(&v) != 200 { return }
+    var wrong = 0
+    for i in 0..200 {
+        if vec::at(&v, i) != i * 3 {
+            wrong = wrong + 1
+        }
+    }
+    assert_eq(int(wrong), int(0), "every one of them is still what it was")
+}
+
+// `pop` takes the last one and shortens the vector, which is the half a caller
+// cannot see from the value it gets back.
+%test
+fn popping_takes_the_last_one_and_shortens_the_vector() {
+    var v: Vec<i64> = vec::empty()
+    vec::push(*v, 1)
+    vec::push(*v, 2)
+    assert_eq(int(vec::pop(*v)), int(2), "the last one comes back")
+    assert_eq(int(vec::len(&v)), int(1), "and is gone")
+    assert_eq(int(vec::pop(*v)), int(1), "then the one before it")
+    assert(vec::is_empty(&v), "and the vector is empty again")
+}
+
+%test
+fn a_place_written_reads_back_as_what_was_written() {
+    var v: Vec<i64> = vec::empty()
+    vec::push(*v, 1)
+    vec::put(&v, 0, 99)
+    assert_eq(int(vec::at(&v, 0)), int(99), "the place was written")
+    assert_eq(int(vec::len(&v)), int(1), "and writing one is not adding one")
+}
+
+// ---- Option --------------------------------------------------------------------
+
+// A fresh one for each call: an `Option` is not `Copy`, so handing one over
+// hands it away, and a test that asked two questions of one value would be
+// asking the second of a name that had been moved out of.
+%test
+fn an_option_knows_which_of_the_two_it_is() {
+    let some: Option<i64> = Option::Some(7)
+    assert(option::is_some(some), "Some is some")
+    let also_some: Option<i64> = Option::Some(7)
+    assert(!option::is_none(also_some), "and is not none")
+
+    let none: Option<i64> = Option::None
+    assert(option::is_none(none), "None is none")
+    let also_none: Option<i64> = Option::None
+    assert(!option::is_some(also_none), "and is not some")
+}
+
+// There is no routine that takes the value out without being told what to do
+// when there is none, so this is the only way out of one.
+%test
+fn unwrapping_gives_the_value_or_what_was_offered_instead() {
+    let some: Option<i64> = Option::Some(7)
+    assert_eq(int(option::unwrap_or(some, 0)), int(7), "Some gives what is in it")
+    let none: Option<i64> = Option::None
+    assert_eq(int(option::unwrap_or(none, 0)), int(0), "None gives the fallback")
+}
+
+// ---- Result ---------------------------------------------------------------------
+
+%test
+fn a_result_knows_which_of_the_two_it_is() {
+    let ok: Result<i64, i64> = Result::Ok(1)
+    assert(result::is_ok(ok), "Ok is ok")
+    let also_ok: Result<i64, i64> = Result::Ok(1)
+    assert(!result::is_err(also_ok), "and is not an error")
+
+    let err: Result<i64, i64> = Result::Err(2)
+    assert(result::is_err(err), "Err is an error")
+    let also_err: Result<i64, i64> = Result::Err(2)
+    assert(!result::is_ok(also_err), "and is not ok")
+}
+
+// What `Err` carries is why there is no answer, and is not an answer: the
+// fallback is what comes back, and never the 2 the error was carrying.
+%test
+fn unwrapping_a_result_gives_the_answer_or_the_fallback() {
+    let ok: Result<i64, i64> = Result::Ok(1)
+    assert_eq(int(result::unwrap_or(ok, 9)), int(1), "Ok gives what is in it")
+    let err: Result<i64, i64> = Result::Err(2)
+    assert_eq(int(result::unwrap_or(err, 9)), int(9), "Err gives the fallback")
+}
+
+// ---- Range ------------------------------------------------------------------------
+
+// The length is counted here the way the `for` lowering counts it, which is why
+// the file writes it out rather than leaving it to be assumed.
+%test
+fn a_range_is_as_long_as_the_turns_a_walk_over_it_has() {
+    assert_eq(int(range::len(Range { start: 0, end: 10 })), int(10), "0..10")
+    assert_eq(int(range::len(Range { start: 5, end: 8 })), int(3), "5..8")
+    assert_eq(int(range::len(Range { start: 4, end: 4 })), int(0), "4..4 is empty")
+
+    var turns = 0
+    for i in 0..10 {
+        turns = turns + 1
+    }
+    assert_eq(int(turns), int(10), "and a walk takes that many turns")
+}
+
+// Half open at the top, which is the whole of what there is to get wrong.
+%test
+fn a_range_holds_its_start_and_not_its_end() {
+    // One each, a `Range` being no more `Copy` than an `Option` is.
+    assert(range::holds(Range { start: 2, end: 5 }, 2), "the start is in it")
+    assert(range::holds(Range { start: 2, end: 5 }, 4), "and so is the one below the end")
+    assert(!range::holds(Range { start: 2, end: 5 }, 5), "the end is not")
+    assert(!range::holds(Range { start: 2, end: 5 }, 1), "nor is anything below the start")
+}
+
+// ---- order ----------------------------------------------------------------------
+
+// The comparisons are over what the references refer to and not over the two
+// addresses, which is the one thing about them worth asserting.
+%test
+fn the_comparisons_are_of_the_numbers_and_not_the_addresses() {
+    let a = 1
+    let b = 2
+    assert(order::less_i64(&a, &b), "1 is less than 2")
+    assert(!order::less_i64(&b, &a), "and 2 is not less than 1")
+    assert(!order::less_i64(&a, &a), "and nothing is less than itself")
+
+    let also_one = 1
+    assert(order::eq_i64(&a, &also_one), "two ones are equal")
+    assert(!order::eq_i64(&a, &b), "and one and two are not")
+}
+
+// The hash sends neighbouring keys somewhere unrelated, which is the whole
+// reason it is there: the tables probe forward, so an identity hash turns one
+// into a linear scan.
+%test
+fn the_hash_does_not_leave_neighbours_as_neighbours() {
+    var near = 0
+    for i in 0..64 {
+        let a = i
+        let b = i + 1
+        let apart = order::mix(&a) - order::mix(&b)
+        if apart < 4 && apart > -4 {
+            near = near + 1
+        }
+    }
+    assert_eq(int(near), int(0), "no two neighbours hash near each other")
+
+    let one = 1
+    let also_one = 1
+    assert_eq(int(order::mix(&one)), int(order::mix(&also_one)), "and one key hashes one way")
+}
+
+// ---- HashMap ----------------------------------------------------------------------
+
+fn map_of(): HashMap<i64, i64> {
+    hashmap::empty(order::mix, order::eq_i64)
+}
+
+%test
+fn a_map_gives_back_what_was_put_under_a_key() {
+    var m = map_of()
+    hashmap::insert(*m, 1, 10)
+    hashmap::insert(*m, 2, 20)
+    assert_eq(int(hashmap::len(&m)), int(2), "two keys went in")
+    assert(hashmap::has(&m, &1), "the first is there")
+    assert(hashmap::has(&m, &2), "and so is the second")
+    assert_eq(int(hashmap::get_or(&m, &1, 0)), int(10), "under the first")
+    assert_eq(int(hashmap::get_or(&m, &2, 0)), int(20), "under the second")
+}
+
+%test
+fn a_key_that_was_never_put_in_is_not_found() {
+    var m = map_of()
+    hashmap::insert(*m, 1, 10)
+    assert(!hashmap::has(&m, &99), "99 was never put in")
+    assert_eq(int(hashmap::find(&m, &99)), int(-1), "and is nowhere")
+    assert_eq(int(hashmap::get_or(&m, &99, -7)), int(-7), "so the fallback comes back")
+}
+
+// The same key twice is one key: the second value replaces the first rather
+// than standing beside it.
+%test
+fn putting_a_key_in_twice_replaces_what_was_under_it() {
+    var m = map_of()
+    hashmap::insert(*m, 1, 10)
+    hashmap::insert(*m, 1, 11)
+    assert_eq(int(hashmap::len(&m)), int(1), "one key, put in twice")
+    assert_eq(int(hashmap::get_or(&m, &1, 0)), int(11), "and the later value")
+}
+
+%test
+fn a_key_taken_out_is_gone_and_the_rest_are_not() {
+    var m = map_of()
+    hashmap::insert(*m, 1, 10)
+    hashmap::insert(*m, 2, 20)
+    assert(hashmap::remove(*m, &1), "taking one out says it was there")
+    assert(!hashmap::remove(*m, &1), "and taking it out again says it was not")
+    assert_eq(int(hashmap::len(&m)), int(1), "one is left")
+    assert(!hashmap::has(&m, &1), "and it is not the one taken out")
+    assert_eq(int(hashmap::get_or(&m, &2, 0)), int(20), "the other is untouched")
+}
+
+// A table grows rather than filling up, and what it must not lose while it does
+// is a key. The removals in the middle are what leaves `GONE` places behind,
+// which is the state a growing table has to walk through correctly.
+%test
+fn everything_survives_a_table_growing_many_times() {
+    var m = map_of()
+    for i in 0..300 {
+        hashmap::insert(*m, i, i * 2)
+    }
+    for i in 0..300 {
+        if i % 3 == 0 {
+            hashmap::remove(*m, &i)
+        }
+    }
+    var wrong = 0
+    for i in 0..300 {
+        let want_gone = i % 3 == 0
+        if hashmap::has(&m, &i) == want_gone {
+            wrong = wrong + 1
+        }
+        if !want_gone && hashmap::get_or(&m, &i, -1) != i * 2 {
+            wrong = wrong + 1
+        }
+    }
+    assert_eq(int(wrong), int(0), "every key is where it was left")
+    assert_eq(int(hashmap::len(&m)), int(200), "and the length is what was left in")
+}
+
+// ---- HashSet ------------------------------------------------------------------------
+
+fn set_of(): HashSet<i64> {
+    hashset::empty(order::mix, order::eq_i64)
+}
+
+%test
+fn a_set_holds_a_thing_once() {
+    var s = set_of()
+    assert(hashset::add(*s, 1), "the first time says it was new")
+    assert(!hashset::add(*s, 1), "and the second says it was not")
+    assert_eq(int(hashset::len(&s)), int(1), "so there is one of it")
+    assert(hashset::has(&s, &1), "and it is there")
+    assert(!hashset::has(&s, &2), "and nothing else is")
+}
+
+%test
+fn the_three_ways_of_putting_two_sets_together() {
+    var a = set_of()
+    var b = set_of()
+    for i in 0..6 {
+        hashset::add(*a, i)
+    }
+    for i in 3..9 {
+        hashset::add(*b, i)
+    }
+
+    let both = hashset::union(&a, &b)
+    assert_eq(int(hashset::len(&both)), int(9), "0..9 between them")
+
+    let shared = hashset::intersection(&a, &b)
+    assert_eq(int(hashset::len(&shared)), int(3), "3, 4 and 5 in both")
+    assert(hashset::has(&shared, &3), "3 is in both")
+    assert(!hashset::has(&shared, &2), "2 is only in the first")
+
+    let mine = hashset::difference(&a, &b)
+    assert_eq(int(hashset::len(&mine)), int(3), "0, 1 and 2 in the first alone")
+    assert(hashset::has(&mine, &0), "0 is the first's alone")
+    assert(!hashset::has(&mine, &4), "4 is not")
+}
+
+// ---- TreeMap --------------------------------------------------------------------------
+
+fn tree_of(): TreeMap<i64, i64> {
+    treemap::empty(less_i64)
+}
+
+%test
+fn a_tree_map_gives_back_what_was_put_under_a_key() {
+    var m = tree_of()
+    treemap::insert(*m, 2, 20)
+    treemap::insert(*m, 1, 10)
+    assert_eq(int(treemap::len(&m)), int(2), "two keys went in")
+    assert(treemap::has(&m, &1), "the first is there")
+    assert_eq(int(treemap::get_or(&m, &2, 0)), int(20), "and the second's value")
+    assert_eq(int(treemap::find(&m, &99)), int(-1), "a key never put in is nowhere")
+}
+
+// The one thing a hashed map cannot answer: what the order is. The keys go in
+// shuffled and come out sorted.
+%test
+fn a_tree_map_walks_its_keys_in_order() {
+    var m = tree_of()
+    let held = [5, 1, 9, 3, 7, 2, 8, 4, 6, 0]
+    for i in 0..10 {
+        treemap::insert(*m, held[i], held[i] * 10)
+    }
+    assert_eq(int(treemap::len(&m)), int(10), "ten keys went in")
+
+    assert_eq(int(treemap::key_at(&m, treemap::first(&m))), int(0), "the smallest is first")
+    assert_eq(int(treemap::key_at(&m, treemap::last(&m))), int(9), "and the largest is last")
+
+    var seen = 0
+    var last_key = -1
+    var out_of_order = 0
+    var at = treemap::first(&m)
+    while at >= 0 {
+        let k = treemap::key_at(&m, at)
+        if k <= last_key {
+            out_of_order = out_of_order + 1
+        }
+        if treemap::val_at(&m, at) != k * 10 {
+            out_of_order = out_of_order + 1
+        }
+        last_key = k
+        seen = seen + 1
+        at = treemap::next(&m, at)
+    }
+    assert_eq(int(seen), int(10), "the walk reaches every key")
+    assert_eq(int(out_of_order), int(0), "and reaches them smallest first")
+}
+
+%test
+fn a_tree_map_key_taken_out_is_gone_and_the_rest_are_not() {
+    var m = tree_of()
+    for i in 0..20 {
+        treemap::insert(*m, i, i)
+    }
+    assert(treemap::remove(*m, &7), "taking one out says it was there")
+    assert(!treemap::remove(*m, &7), "and again says it was not")
+    assert_eq(int(treemap::len(&m)), int(19), "nineteen are left")
+    assert(!treemap::has(&m, &7), "and the one taken out is not among them")
+
+    var seen = 0
+    var at = treemap::first(&m)
+    while at >= 0 {
+        seen = seen + 1
+        at = treemap::next(&m, at)
+    }
+    assert_eq(int(seen), int(19), "and the walk still reaches all of them")
+}
+
+// ---- TreeSet ----------------------------------------------------------------------------
+
+fn tree_set_of(): TreeSet<i64> {
+    treeset::empty(less_i64)
+}
+
+%test
+fn a_tree_set_holds_a_thing_once_and_in_order() {
+    var s = tree_set_of()
+    let held = [3, 1, 2, 1, 3]
+    for i in 0..5 {
+        treeset::add(*s, held[i])
+    }
+    assert_eq(int(treeset::len(&s)), int(3), "three of the five were new")
+    assert_eq(int(treeset::elem_at(&s, treeset::first(&s))), int(1), "the smallest is first")
+    assert_eq(int(treeset::elem_at(&s, treeset::last(&s))), int(3), "and the largest is last")
+    assert(treeset::has(&s, &2), "the middle one is there")
+    assert(!treeset::has(&s, &9), "and one nobody added is not")
+}
+
+%test
+fn a_tree_set_element_taken_out_is_gone() {
+    var s = tree_set_of()
+    for i in 0..10 {
+        treeset::add(*s, i)
+    }
+    assert(treeset::remove(*s, &5), "taking one out says it was there")
+    assert(!treeset::remove(*s, &5), "and again says it was not")
+    assert_eq(int(treeset::len(&s)), int(9), "nine are left")
+    assert(!treeset::has(&s, &5), "and the one taken out is not among them")
+}
+
+// ---- fmt ---------------------------------------------------------------------------------
+
+// What `fmt` does with a format string is `runtime/src/fmt.rs`'s to test, and
+// it does. What is left for this side is that an `Arg` carries the value it was
+// handed -- the tag and the field agreeing -- which is what the comparisons
+// below are reading.
+%test
+fn an_argument_carries_the_value_it_was_made_from() {
+    assert_eq(int(1), int(1), "a number is itself")
+    assert_eq(text("hi"), text("hi"), "and so is a string")
+    assert_eq(truth(true), truth(true), "and so is a bool")
+}
