@@ -332,6 +332,7 @@ fn an_imported_name_stands_in_the_scope_that_imported_it() {
     scopes.bind_imports(
         at,
         &[Binding {
+            implicit: false,
             name: "circle".to_string(),
             home: std::path::PathBuf::from("shapes.ft"),
             path: vec!["circle".to_string()],
@@ -719,6 +720,7 @@ fn every_kind_of_info_is_built_by_something() {
     scopes.bind_imports(
         module,
         &[Binding {
+            implicit: false,
             name: "circle".to_string(),
             home: std::path::PathBuf::from("shapes.ft"),
             path: vec!["circle".to_string()],

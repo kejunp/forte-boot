@@ -176,6 +176,7 @@ fn compile(
                         name: b.name.clone(),
                         file: where_at(&b.home)?,
                         path: b.path.clone(),
+                        implicit: b.implicit,
                     })
                 })
                 .collect()

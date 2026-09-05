@@ -113,6 +113,7 @@ fn suite(files: &[(&str, &str)], bound: &[Vec<Bound>]) -> (TTIRProgram, Vec<Stri
 
 fn bound(name: &str, file: usize, path: &[&str]) -> Bound {
     Bound {
+        implicit: false,
         name: name.to_string(),
         file,
         path: path.iter().map(|p| p.to_string()).collect(),

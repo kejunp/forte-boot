@@ -117,6 +117,30 @@ visibility written on it. That also puts it where a declaration stands rather
 than at the top of a file only, so one may be written inside a block, near
 whatever wanted it.
 
+Five names arrive without an import, and they are exactly the ones the
+language's own syntax builds. A literal is syntax for a type a library
+declares — "0..10" builds a "Range", "{1: 2}" a "Map", "{1, 2}" a "Set", with
+"#" making either of the last two the hashed kind — so the syntax is the
+language's and the type is not. Requiring the import made "for i in 0..10"
+refuse to compile in a file that had imported nothing, which is the most
+ordinary loop there is turned down for a reason about libraries.
+
+So "Range", "Map", "HashMap", "Set" and "HashSet" are looked for and bound
+without being asked for, and nothing else is: the prelude is what the
+literals name, which is a rule rather than a list somebody keeps adding to.
+Each lives in the module named after it, lowercased — "Range" in "range",
+"HashMap" in "hashmap" — so a suite that writes one of those modules gets the
+literal working with nothing said here.
+
+Two things keep it from being a cost. A prelude name loses to everything
+written: a declaration of the file's own wins, and so does an import written
+by hand, the same way round a glob already loses. And a module is read only
+where the syntax that needs it is written, because a module read is a module
+compiled — its fns are ordinary fns — and a program that writes no literal
+should not carry five libraries it cannot call. A suite with no library at
+all is left exactly as it was: the prelude adds no requirement, it spares an
+import where the type is there to be found.
+
 <attribute>. One "%" per attribute — "%inline", "%repr(C)",
 "%derive(Show, Clone)" — and a list of them is a list, written one after
 another with nothing between:
@@ -620,12 +644,12 @@ A constant is not a place. Nothing assigns to it, and "*" of one is therefore
 an error where "&" of one is not — a constant has no single home, being free
 to be copied into each use. That is what the compiler does with one today,
 and it does it in the checker: a name standing for a constant becomes the
-constant's value there and then. What is folded is a constant whose value is
-a literal, which is all of them the standard library writes; the rest of what
-<const_expr> is meant to accept — the operators, the cast, the "const fn" —
-wants an evaluator, and there is none, so one of those is still a name for
-somewhere. Which matters more than it reads, because there is nowhere: a
-global "var" has no data emitted for it either, and both are section 8's.
+constant's value there and then. What is folded is whatever the constant was
+written as — the arithmetic, the shifts and the bitwise operators, the
+comparisons, the casts between numbers, and a name standing for a constant
+already declared. A "const fn" is not among them and is still a name for
+somewhere; a global "var" now has data emitted for it, and both of those are
+section 8's.
 
 <enum_variant>. A variant is a case of a sum type: the types it carries are
 its payload, got at by destructuring it in a match (<variant_pattern>,
@@ -1873,6 +1897,12 @@ answer is not obvious from the rules alone.
     named says how it behaves, and a "#{" literal builds the hashed one.
     Settled. Neither is sugared in a type the way the suffixes sugar an
     array, and nothing says what a "{" literal with no annotation builds.
+    Where the type is *found* is settled too, and it is the prelude: these
+    four and "Range" are bound in every file without an import, each from the
+    module named after it (section 1). What is still true is that no library
+    here declares "Map" or "Set" — the ordered pair — so those two literals
+    have a spelling and nothing to build, which is the same gap as before and
+    is now the only one left of it.
   - Whether "{}" and "{ x }" are literals or blocks is decided by the position
     they stand in (section 7), which is a choice about which reading is
     common. The other reading always has a spelling: "(f())" for the block,

@@ -129,6 +129,11 @@ pub struct Bound {
     pub name: String,
     pub file: usize,
     pub path: Vec<String>,
+    // Whether nobody asked for it. A prelude name is bound in every file
+    // without an `import`, and loses to everything written: the file's own
+    // declarations, which are already in the scope before this runs, and any
+    // import it wrote by hand, which stands earlier in this list.
+    pub implicit: bool,
 }
 
 pub struct Lowerer<'a> {
@@ -442,7 +447,14 @@ impl<'a> Lowerer<'a> {
                 let Some(&item) = self.by_path.get(&path.join("::")) else {
                     continue;
                 };
-                self.scopes[file].insert(one.name.clone(), item);
+                match one.implicit {
+                    true => {
+                        self.scopes[file].entry(one.name.clone()).or_insert(item);
+                    }
+                    false => {
+                        self.scopes[file].insert(one.name.clone(), item);
+                    }
+                }
             }
         }
     }

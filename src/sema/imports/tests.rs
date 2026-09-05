@@ -344,3 +344,90 @@ fn a_file_knows_the_module_it_is() {
     assert_eq!(r.module_of(&root), vec!["main"]);
     assert_eq!(r.module_of(&dir.join("a/b/deep.ft")), vec!["a", "b", "deep"]);
 }
+
+
+// ---- The prelude ------------------------------------------------------------
+
+// A literal is syntax for a type a library declares, so the syntax is the
+// language's and the type is not -- and until the prelude, that meant the type
+// had to be imported before the syntax worked. `for i in 0..10` did not compile
+// in a file that had imported nothing, which is the most ordinary loop there is
+// turned down for a reason about libraries.
+//
+// What is bound is exactly what the language's own literals name, and each
+// comes from the module named after it, lowercased.
+
+#[test]
+fn a_range_literal_binds_the_range_type_without_an_import() {
+    let held = bound(&[
+        ("main.ft", "fn main() {\n    for i in 0..10 { f(i) }\n}\n"),
+        ("range.ft", "pub struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n"),
+    ]);
+    assert_eq!(held, vec!["Range".to_string()], "{:?}", held);
+}
+
+// The hashed kinds and the ordered ones are told apart by the `#`, which is the
+// same reading `sema::lower::containers` makes when it looks the type up.
+#[test]
+fn the_hash_decides_which_container_type_is_wanted() {
+    let held = bound(&[
+        ("main.ft", "fn main() {\n    let gc m = #{1: 2}\n}\n"),
+        ("hashmap.ft", "pub struct HashMap<K, V> {\n    pub len: i64,\n}\n"),
+        ("map.ft", "pub struct Map<K, V> {\n    pub len: i64,\n}\n"),
+    ]);
+    assert_eq!(held, vec!["HashMap".to_string()], "{:?}", held);
+}
+
+// **Only what is written.** A module read because it might have been wanted is
+// a module compiled into the program -- its fns are ordinary fns -- so a file
+// that writes no literal is handed nothing and pays nothing.
+#[test]
+fn a_file_that_writes_no_literal_is_handed_nothing() {
+    let held = bound(&[
+        ("main.ft", "fn main(): i64 {\n    1 + 2\n}\n"),
+        ("range.ft", "pub struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n"),
+        ("hashmap.ft", "pub struct HashMap<K, V> {\n    pub len: i64,\n}\n"),
+    ]);
+    assert!(held.is_empty(), "{:?}", held);
+}
+
+// And a suite with no library at all is left as it was: the prelude adds no
+// requirement, it only spares an import where the type is there to be found.
+#[test]
+fn a_suite_with_no_library_is_left_alone() {
+    let held = bound(&[("main.ft", "fn main() {\n    for i in 0..10 { f(i) }\n}\n")]);
+    assert!(held.is_empty(), "{:?}", held);
+}
+
+// A name written by hand wins, which is the way round a glob already loses
+// (section 1): what is written beats what merely arrived.
+#[test]
+fn a_declaration_of_its_own_wins_over_the_prelude() {
+    let (r, root) = resolved(&[
+        (
+            "main.ft",
+            "struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n\
+             fn main() {\n    for i in 0..10 { f(i) }\n}\n",
+        ),
+        ("range.ft", "pub struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n"),
+    ]);
+    assert_eq!(r.render(), "", "the suite was meant to be clean");
+    // The binding is still made -- the resolver does not know what the file
+    // declared -- and it is marked as the thing that loses.
+    let held = r.suite(&root).expect("the root");
+    let one = held.bindings.iter().find(|b| b.name == "Range").expect("a binding");
+    assert!(one.implicit, "a prelude binding must lose to what is written");
+}
+
+// The module is the one named after the type, so a suite that writes that
+// module gets the literal working with no change to the compiler.
+#[test]
+fn the_module_is_the_one_named_after_the_type() {
+    let said = errors(&[
+        ("main.ft", "fn main() {\n    for i in 0..10 { f(i) }\n}\n"),
+        // Named something else, so nothing is found and nothing is said: a
+        // prelude name that finds no module is passed over in silence.
+        ("ranges.ft", "pub struct Range<T> {\n    pub start: T,\n    pub end: T,\n}\n"),
+    ]);
+    assert_eq!(said, "");
+}

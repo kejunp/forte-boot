@@ -49,12 +49,35 @@ use crate::parse::parser::Parser;
 use crate::prep::preprocess;
 use crate::tir::lower::Lowerer;
 use crate::tir::tir_nodes::{
-    TIRImportLeaf, TIRItemId, TIRItemKind, TIRProgram, TIRVis, TIRBinding,
+    TIRBinding, TIRExprKind, TIRImportLeaf, TIRItemId, TIRItemKind, TIRProgram, TIRVis,
 };
 
 // What a module is written in. A path names a module and not a file, and this
 // is the whole of the difference between the two.
 const EXT: &str = "ft";
+
+// The names the language's own syntax builds, which are brought in without
+// being asked for.
+//
+// A literal is syntax for a type a library declares: `0..10` builds a `Range`,
+// `{1: 2}` a `Map` and `{1, 2}` a `Set`, with `#` making either of the last two
+// the hashed kind. The syntax is the language's and the type is not, so a file
+// that wrote a range had to import the type behind it before it could -- which
+// meant `for i in 0..10` did not compile in a file that had imported nothing,
+// the most ordinary loop there is turned down for a reason about libraries.
+//
+// So these five are looked for and bound without an `import`, and nothing else
+// is: the prelude is exactly what the language's own literals name, which is a
+// rule rather than a list somebody keeps adding to. Each lives in the module
+// named after it, lowercased -- `Range` in `range`, `HashMap` in `hashmap` --
+// so a suite that writes one of these modules gets the literal working with no
+// change here.
+//
+// A name nothing declares is passed over in silence. A suite with no library
+// at all is a suite where `{1: 2}` still has nothing to build, and that is the
+// error it already got; the prelude adds no requirement, it only spares an
+// import where the type is there to be found.
+pub const PRELUDE: &[&str] = &["Range", "Map", "HashMap", "Set", "HashSet"];
 
 // The three words that say where a path starts (section 1). They are segments
 // like any other to the parser, which is what lets `super` repeat; making them
@@ -112,6 +135,11 @@ pub struct Binding {
     pub path:  Vec<String>,
     // Whether it arrived through a glob, which is what decides a clash.
     pub glob:  bool,
+    // Whether nobody asked for it: a prelude name, which loses to everything.
+    // A file's own declaration wins, and so does an import it wrote by hand --
+    // the same way round a glob already loses (section 1), and for the same
+    // reason: what is written beats what merely arrived.
+    pub implicit: bool,
     // The `import` that bound it, so a `pub import` can find its own names
     // again when it comes to re-export them. A handle and not a position: a
     // leaf stands where it was written and the item stands at the `import`.
@@ -184,11 +212,118 @@ impl ImportResolver {
         let file = normalise(file);
         self.root = file.parent().unwrap_or(Path::new(".")).to_path_buf();
         match self.load(&file) {
-            Load::Ready | Load::Cycle => Ok(file),
+            Load::Ready | Load::Cycle => {
+                self.prelude();
+                Ok(file)
+            }
             Load::Unreadable(why) => {
                 Err(format!("cannot read {}: {}", file.display(), why))
             }
         }
+    }
+
+    // The names `PRELUDE` says every file may use without asking.
+    //
+    // Run after the root and everything it reaches, so that a module the suite
+    // already imports is found in `parsed` rather than read twice, and so that
+    // a file's own imports are in place before these are put behind them.
+    //
+    // The bindings go on every file of the suite, the prelude modules included:
+    // one of them declaring a name it would also be handed is no trouble, since
+    // an implicit binding loses to a declaration.
+    fn prelude(&mut self) {
+        let mut bases = vec![self.root.clone()];
+        bases.extend(self.search_paths.iter().cloned());
+
+        // Only the ones the suite actually writes the syntax for. A module read
+        // because it might have been wanted is a module compiled into the
+        // program: these are ordinary files and their fns are ordinary fns, so
+        // reading all five put six bodies nobody could call into a program that
+        // was two, and made the assembly for `hello.ft` seven times longer.
+        //
+        // Whether a name is wanted is a question about what is written, so it
+        // is asked of what is written. Round and round until nothing new is
+        // read, because a prelude module may itself write a literal -- and
+        // bounded by the list, since each module is read at most once.
+        let mut found: Vec<(String, PathBuf)> = Vec::new();
+        loop {
+            let want = self.wanted();
+            let mut read = false;
+            for name in PRELUDE {
+                if found.iter().any(|(held, _)| held == *name) || !want.contains(name) {
+                    continue;
+                }
+                let module = name.to_lowercase();
+                let Some((file, rest)) = find_module(&bases, &[module]) else { continue };
+                if !rest.is_empty() {
+                    continue;
+                }
+                // A module that will not read is not a reason to stop: the
+                // suite asked for nothing here, so what it gets is what was
+                // there.
+                if !matches!(self.load(&file), Load::Ready | Load::Cycle) {
+                    continue;
+                }
+                read = true;
+            // Only where the module really declares it, and declares it for
+            // others to see. Looking the name up now rather than leaving it to
+            // `sema::lower` keeps a binding that names nothing from being made
+            // at all.
+                let Some(suite) = self.parsed.get(&file) else { continue };
+                if !suite.symbols.iter().any(|s| s.name == **name && exported(s.vis)) {
+                    continue;
+                }
+                found.push(((*name).to_string(), file));
+            }
+            if !read {
+                break;
+            }
+        }
+
+        for file in self.order.clone() {
+            let Some(suite) = self.parsed.get_mut(&file) else { continue };
+            for (name, home) in &found {
+                suite.bindings.push(Binding {
+                    name:     name.clone(),
+                    home:     home.clone(),
+                    path:     vec![name.clone()],
+                    glob:     false,
+                    implicit: true,
+                    // Nobody wrote it, so there is no `import` it came from and
+                    // nowhere to point a caret. A re-export walks `via` and
+                    // finds no item here, which is right: a prelude name is not
+                    // this file's to hand on.
+                    via:      usize::MAX,
+                    line:     0,
+                    col:      0,
+                });
+            }
+        }
+    }
+
+    // Which prelude names the suite as read so far writes the syntax for.
+    //
+    // One entry per literal form, and the `#` is what tells the hashed kind
+    // from the ordered one -- the same reading `sema::lower::containers` makes
+    // when it goes looking for the type.
+    fn wanted(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for suite in self.parsed.values() {
+            for expr in &suite.tir.exprs {
+                let held = match &expr.kind {
+                    TIRExprKind::Range { .. } => "Range",
+                    TIRExprKind::Map { hashed: true, .. } => "HashMap",
+                    TIRExprKind::Map { hashed: false, .. } => "Map",
+                    TIRExprKind::Set { hashed: true, .. } => "HashSet",
+                    TIRExprKind::Set { hashed: false, .. } => "Set",
+                    _ => continue,
+                };
+                if !out.contains(&held) {
+                    out.push(held);
+                }
+            }
+        }
+        out
     }
 
     // The module path a file is reached by, from the suite root: `a/b/deep.ft`
@@ -417,6 +552,7 @@ impl ImportResolver {
             add(
                 bound,
                 Binding {
+                    implicit: false,
                     name: symbol.name.clone(),
                     home: file.to_path_buf(),
                     path,
@@ -508,6 +644,7 @@ impl ImportResolver {
         add(
             bound,
             Binding {
+                implicit: false,
                 name,
                 home: file.to_path_buf(),
                 path: inner.to_vec(),
