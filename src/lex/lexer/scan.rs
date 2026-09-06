@@ -66,7 +66,20 @@ impl Lexer {
         let after_type_name = self.last_was_type_end;
         let after_hash = self.hash_prefix;
         let after_path = self.path_prefix;
-        let value_only = !self.prev_ends_stmt && !(self.prev_was_brace && !self.in_entry_body());
+        //
+        // A closure's body is the exception, and it is the one place where
+        // "in the middle of an expression" and "a statement could stand here"
+        // are both true. `|d: i64| { n = n + d }` is a block whose value is an
+        // assignment, and reading it as the set of one thing it also looks
+        // like made the commonest way to write a closure the one way that
+        // would not compile. So the brace after the `|` that closed a
+        // parameter list opens a block, and the other reading keeps the
+        // spelling §8 gives it: `{,}` for the empty set, `{:}` for the empty
+        // map, and a `,` or a `:` inside decides every literal that has one --
+        // this reaches only the braces `scan_brace_body` calls undecided.
+        let value_only = !self.prev_ends_stmt
+            && !self.last_closed_closure
+            && !(self.prev_was_brace && !self.in_entry_body());
 
         // Where the token starts, so that its width can be had from how far the
         // scan moves rather than from what it produced. Taken after the
@@ -124,6 +137,26 @@ impl Lexer {
         // nothing a statement may end inside of.
         if self.in_attribute || self.in_visibility {
             self.last_can_end = false;
+        }
+        // Which `|` is a closure's, by the rule `read_operator` splits `||`
+        // with: one with no operand in front opens a parameter list and the
+        // next one closes it. Asked before `last_ends_operand` moves on to
+        // this token, since what it wants is the token before.
+        //
+        // Only at the depth the list opened at. A `|` inside a bracket in the
+        // list is somebody else's, and one that closed the list from in there
+        // would leave the body of the closure looking like more parameters.
+        self.last_closed_closure = false;
+        if tok.toktype == TokType::Pipe {
+            if self.in_closure_params {
+                if self.bracket_depth == self.closure_pipe_depth {
+                    self.in_closure_params = false;
+                    self.last_closed_closure = true;
+                }
+            } else if !self.last_ends_operand {
+                self.in_closure_params = true;
+                self.closure_pipe_depth = self.bracket_depth;
+            }
         }
         // The `>` closing a type argument list ends a type, and so an operand.
         self.last_ends_operand = ends_an_operand(&tok.toktype) || closed_generic;

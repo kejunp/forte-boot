@@ -53,6 +53,10 @@ impl Lexer {
             last_was_type_end: false,
             last_was_decl_kw: false,
             last_was_decl_name: false,
+
+            in_closure_params:   false,
+            closure_pipe_depth:  0,
+            last_closed_closure: false,
         }
     }
 
@@ -115,6 +119,10 @@ impl Lexer {
             last_was_type_end: self.last_was_type_end,
             last_was_decl_kw: self.last_was_decl_kw,
             last_was_decl_name: self.last_was_decl_name,
+
+            in_closure_params:   self.in_closure_params,
+            closure_pipe_depth:  self.closure_pipe_depth,
+            last_closed_closure: self.last_closed_closure,
         }
     }
 
@@ -152,5 +160,9 @@ impl Lexer {
         self.last_was_type_end = s.last_was_type_end;
         self.last_was_decl_kw = s.last_was_decl_kw;
         self.last_was_decl_name = s.last_was_decl_name;
+
+        self.in_closure_params = s.in_closure_params;
+        self.closure_pipe_depth = s.closure_pipe_depth;
+        self.last_closed_closure = s.last_closed_closure;
     }
 }

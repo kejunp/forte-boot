@@ -1387,8 +1387,9 @@ Those two braces are also blocks, and the lexer is what tells them apart —
 section 7. It takes a "," or a ":" at the top level of the brace as the mark of
 a literal, and a ";" or a line break that ends a statement as the mark of a
 block; where neither appears, "{}" and "{ x }" are literals where only a value
-can stand and blocks where a statement could. "{:}" is the empty map written so
-that it is decidable in either place, as "{,}" already is.
+can stand and blocks where a statement could — with a closure's body the one
+value position that takes the block. "{:}" is the empty map written so that it
+is decidable in either place, as "{,}" already is.
 
 The empty set is written, never derived from <empty>: that spelling is the
 map's.
@@ -1690,6 +1691,18 @@ one, after a "=>", inside another block. So "{}" after an "=" is the empty
 map and "{ x }" the set of one, while the same two written where a statement
 belongs are an empty block and a block yielding x.
 
+One position is a value's and takes the block anyway: straight after the "|"
+that closes a closure's parameter list. A closure's body is the one place
+where "in the middle of an expression" and "a statement could stand here" are
+both true, and reading the brace as a literal there cost the commonest way to
+write a closure — "|d: i64| { n = n + d }" is a block whose value is an
+assignment, and it came out as a set of one thing instead. So the rule is
+that a closure's body written in braces is a block, and the literal keeps the
+spellings it has everywhere: "{,}", "{:}", and any brace with a "," or a ":"
+in it, which is every literal of more than one entry. The one that has to be
+written differently here is the set of one, "{x,}", which is the same comma
+the other three already need.
+
 A header is the one thing that overrules the look inside, and only as far as
 it has to: it claims its brace whatever is in there, except that a body of
 statements gives way to a brace that can only be a literal, since a "," or a
@@ -1907,6 +1920,15 @@ answer is not obvious from the rules alone.
     they stand in (section 7), which is a choice about which reading is
     common. The other reading always has a spelling: "(f())" for the block,
     "{:}" and "{,}" for the empty map and set. Settled.
+
+    One position had the choice made the wrong way round and has been turned
+    over: the body of a closure. It is a value position, so a brace there was
+    a literal, and "|d: i64| { n = n + d }" — a closure whose body is one
+    statement, which is most of them — was the set of one thing it also looks
+    like, and came out as "no type is called `Set`". The commonest spelling of
+    a construct is not the one to lose an ambiguity to. So the brace after the
+    "|" that closes a parameter list opens a block, and the set of one keeps a
+    spelling there as everything else already did: "{x,}".
   - <enum_variant> carries a positional payload or a named one (section 2).
     Settled. A named payload is a struct body in all but name, and nothing
     says whether the two should be one thing.

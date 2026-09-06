@@ -517,6 +517,10 @@ fn a_test_that_fails_is_reported_and_leaves_a_status_behind() {
 //   - a declared fn and a closure go down one call. Both are a fn value, the
 //     environment is the last argument either way, and the one with nothing to
 //     find in it never looks.
+//   - a body written in braces is a block. That one is the lexer's (§7) and
+//     not the lowering's, and it is here rather than only in `lex` because
+//     what a block *yields* is the other half of it: the value of the closure
+//     is the tail of the block and not the last thing that happened in it.
 #[test]
 fn a_closure_runs_as_what_it_was_written_as() {
     let dir = std::env::temp_dir().join(format!("fortec-closure-src-{}", std::process::id()));
@@ -583,6 +587,19 @@ fn a_closure_runs_as_what_it_was_written_as() {
          \x20   assert_eq(int(twice(ten, 1)), int(21), \"a fn with no environment\")\n\
          \x20   let k = 10\n\
          \x20   assert_eq(int(twice(|x: i64| x + &k, 1)), int(21), \"and one with\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_body_in_braces_is_a_block() {\n\
+         \x20   var n = 1\n\
+         \x20   let step = |d: i64| { n = n * d }\n\
+         \x20   step(6)\n\
+         \x20   assert_eq(int(n), int(6), \"one statement, and it ran\")\n\
+         \x20   let twice_over = |x: i64| {\n\
+         \x20       let a = x * 2\n\
+         \x20       a + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(int(twice_over(5)), int(11), \"and its value is the tail\")\n\
          }\n",
     )
     .expect("a file");
@@ -593,5 +610,5 @@ fn a_closure_runs_as_what_it_was_written_as() {
 
     assert!(ok, "closures were meant to work:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
-    assert!(said.contains("running 5 tests"), "{}", said);
+    assert!(said.contains("running 6 tests"), "{}", said);
 }

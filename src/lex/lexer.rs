@@ -96,6 +96,21 @@ pub struct Lexer {
     // arguments: `fn sort<T>(xs)` looks exactly like `sort<T>(xs)` otherwise.
     last_was_decl_kw:   bool,
     last_was_decl_name: bool,
+
+    // A closure's parameter list, which is open between its two `|`. The rule
+    // for which `|` is which is `read_operator`'s: one with no operand in
+    // front of it opens a list, and the next one closes it.
+    //
+    // Tracked at the depth it opened at, as an attribute and a visibility are,
+    // so that the `|` of a disjunction inside a call in the list -- `|a: i64|`
+    // has none, but nothing stops one -- closes nothing.
+    //
+    // What it is for is `last_closed_closure`: the `{` after the closing `|`
+    // is the closure's body and so a block, where the same brace anywhere else
+    // in the middle of an expression is a literal. See `next_token`.
+    in_closure_params:  bool,
+    closure_pipe_depth: usize,
+    last_closed_closure: bool,
 }
 
 // Everything `next_token` mutates, so a lookahead can be rolled back. The input
@@ -137,6 +152,10 @@ pub(super) struct State {
     last_was_type_end: bool,
     last_was_decl_kw:   bool,
     last_was_decl_name: bool,
+
+    in_closure_params:  bool,
+    closure_pipe_depth: usize,
+    last_closed_closure: bool,
 }
 
 // What a look inside a `{` says about the body it opens. See `scan_brace_body`.
