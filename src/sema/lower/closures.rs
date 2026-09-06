@@ -35,13 +35,16 @@ impl<'a> Lowerer<'a> {
         self.frames.push(Frame::new(ret, is_move));
 
         let mut arg_tys = Vec::new();
+        let mut slots = Vec::new();
         for p in params {
             let ty = match p.ty {
                 Some(ty) => self.ty(ty),
                 None => self.types.fresh(),
             };
             arg_tys.push(ty);
-            self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let, self.at(at));
+            let slot =
+                self.bind(p.name.clone(), ty, crate::tir::tir_nodes::TIRIntro::Let, self.at(at));
+            slots.push(slot);
         }
 
         let value = self.expr(body);
@@ -59,6 +62,30 @@ impl<'a> Lowerer<'a> {
 
         // The frame comes off, and what it caught comes with it.
         let captures = self.frames.last().expect("a frame").captures.clone();
+        // Where they will be found when it runs. A capture is a name of the
+        // frame outside and the closure may outlive that frame, so what the
+        // body reads is not the slot but an address handed to it -- one per
+        // capture, in a run the caller builds and passes as a parameter
+        // nobody wrote. `ptr ptr u8` is what that run is: a pointer to
+        // addresses, each of which is an address and none of which the
+        // language ever gives a type to.
+        //
+        // A closure that captured nothing takes none: there would be nothing
+        // in it to point at, and the parameter would be one more thing every
+        // caller had to pass to a fn value that may be a declared fn.
+        let env = if captures.is_empty() {
+            None
+        } else {
+            let byte = self.types.intern(Ty::Prim(crate::tir::tir_nodes::TIRPrim::U8));
+            let one = self.types.intern(Ty::Ptr(byte));
+            let run = self.types.intern(Ty::Ptr(one));
+            Some(self.bind(
+                TIRBinding::Name("$env".to_string()),
+                run,
+                crate::tir::tir_nodes::TIRIntro::Let,
+                self.at(at),
+            ))
+        };
         // What calling it does to what it captured, which is the most any one
         // capture asks: "worked out per name, each taking the least the body
         // asks of it" (§5), and the closure is the most of those.
@@ -94,7 +121,7 @@ impl<'a> Lowerer<'a> {
             .max()
             .unwrap_or(TIRFnUses::Reads);
         let ty = self.types.intern(Ty::Fn { uses, params: arg_tys, ret, is_unsafe: false });
-        self.make(TTIRExprKind::Closure { captures, body: made }, ty, at)
+        self.make(TTIRExprKind::Closure { params: slots, captures, env, body: made }, ty, at)
     }
 
     // A call of a field, where the field turns out to be a method. `None` where

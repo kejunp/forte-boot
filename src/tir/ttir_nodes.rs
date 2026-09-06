@@ -509,7 +509,25 @@ pub enum TTIRExprKind {
     // -- "the keyword names the capture mode and not the transfer" (§5). A
     // `move` closure is one whose captures are every one `Value`.
     Closure {
+        // The slots the caller fills, in the order they were written. A body
+        // that belongs to a declaration is found from the declaration and its
+        // parameters read off that; a closure belongs to no declaration, so
+        // this is the only place its parameters are written down -- and
+        // without them every pass after this one reads its parameters as
+        // slots nothing ever filled.
+        params:   Vec<TTIRLocalId>,
         captures: Vec<TTIRCapture>,
+        // Where the captures are, which the caller fills like any other
+        // parameter and which no source can write. `None` where nothing was
+        // captured: a closure that took nothing needs no environment, and one
+        // parameter fewer is one the caller may leave off (`mir::lower`).
+        //
+        // It stands *after* the written parameters and not in front of them.
+        // A declared fn is handed round as a value too and has no environment
+        // to be handed, so it has to be callable through the same value -- and
+        // an argument a callee never reads is harmless where it is last and
+        // shifts every other one where it is first.
+        env:      Option<TTIRLocalId>,
         body:     TTIRBodyId,
     },
 

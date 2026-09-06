@@ -47,17 +47,46 @@ fn a_capture_takes_the_least_the_body_asks() {
 #[test]
 fn a_closure_is_a_body_of_its_own() {
     let ttir = clean("fn f() {\n    let n = 1\n    let g = |x: i32| x + n\n}\n");
-    let (captures, body) = ttir.exprs.iter().find_map(|e| match &e.kind {
-        TTIRExprKind::Closure { captures, body } => Some((captures.clone(), *body)),
+    let (params, captures, env, body) = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Closure { params, captures, env, body } => {
+            Some((params.clone(), captures.clone(), *env, *body))
+        }
         _ => None,
     }).expect("a closure");
     assert_eq!(captures.len(), 1);
     // The slot inside stands for the slot outside, and the two are not the same
     // number: `outer` is the frame's and `slot` is the closure's.
     let inner = &ttir.bodies[body];
-    assert_eq!(inner.locals.len(), 2, "the parameter and what it caught");
+    assert_eq!(
+        inner.locals.len(),
+        3,
+        "the parameter, what it caught, and where it will find it"
+    );
     assert_eq!(captures[0].slot, 1);
     assert_eq!(captures[0].outer, 0);
+    // The written parameter, and then the one nobody wrote: the environment is
+    // a slot of this body like the others and is filled by the caller like the
+    // others, which is what makes it the last parameter rather than a fourth
+    // kind of thing.
+    assert_eq!(params, vec![0]);
+    assert_eq!(env, Some(2));
+}
+
+// A closure that captured nothing is handed no environment: there would be
+// nothing in it, and the parameter would be one more thing every caller had to
+// find for a fn value that may be a declared fn.
+#[test]
+fn a_closure_that_caught_nothing_takes_no_environment() {
+    let ttir = clean("fn f() {\n    let g = |x: i32| x + 1\n}\n");
+    let (params, captures, env) = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Closure { params, captures, env, .. } => {
+            Some((params.clone(), captures.clone(), *env))
+        }
+        _ => None,
+    }).expect("a closure");
+    assert!(captures.is_empty());
+    assert_eq!(params.len(), 1);
+    assert_eq!(env, None);
 }
 
 // A name used twice is caught once.

@@ -74,6 +74,22 @@ struct Builder {
     // Whether the statement being lowered stood under an `unsafe`, carried on
     // to every instruction it becomes.
     unsafe_: bool,
+    // For a closure's body: where each captured slot actually is. A capture is
+    // a name of the frame outside, and the closure may outlive that frame, so
+    // the address is one the caller worked out and put in the environment
+    // rather than one this frame holds.
+    //
+    // Keyed by slot and read by `address_of_slot`, which is where every read
+    // and every write of a name goes through. That is the whole of what makes
+    // a capture behave: "reading one takes a `&` of it and assigning to one
+    // takes a `*`" (§5) is one rule about one address, and substituting the
+    // address is how both halves of it happen at once. The alternative --
+    // copying the value in at the top of the body -- gives the read and loses
+    // the write.
+    //
+    // The entry block is where these are made, so every use is dominated by
+    // its definition however the body branches.
+    caught:  HashMap<SIRSlotId, SIRValueId>,
 }
 
 // What a `for` needs that the terminator does not hold: where the test lives,
@@ -164,6 +180,53 @@ impl<'a> Lowerer<'a> {
             let to = self.address_of_slot(self.b.slot_of[param], line, col);
             self.effect(SIRInstKind::Store { to, value }, line, col);
         }
+
+        // And, where this is a closure's body, what it captured: the
+        // environment is a run of addresses in the order the captures were
+        // taken, and the k'th of them is where the k'th capture's slot really
+        // is. The load happens once here rather than at each use -- the run
+        // does not move while the body runs, and a use in a loop would
+        // otherwise read it every turn.
+        //
+        // `env` is a parameter like any other, so the value to index is the
+        // one the loop above just made for it -- which is why this runs after
+        // it and not before.
+        if let Some(env) = source.env {
+            let at = source.params.iter().position(|&p| p == env).unwrap_or_default();
+            let held = self.b.params[at];
+            // What one word of the run holds, which is what indexing it gives
+            // back. `env` is `ptr ptr u8` and this is the `ptr u8` inside it:
+            // an `IndexAddr` is typed as the element it reaches and steps by
+            // the stride of the base's own pointee, so this settles the first
+            // and the type of `env` settles the second.
+            let elem = match self.ttir.types[self.b.slots[self.b.slot_of[env]].ty] {
+                Ty::Ptr(inner) => inner,
+                _ => self.int,
+            };
+            for (index, capture) in source.captures.clone().iter().enumerate() {
+                let slot = self.b.slot_of[capture.slot];
+                let at = self.push(
+                    SIRInstKind::Literal(TIRLit::Int(index as i64)),
+                    self.int,
+                    line,
+                    col,
+                );
+                let place = self.push(
+                    SIRInstKind::IndexAddr { base: held, index: at },
+                    elem,
+                    line,
+                    col,
+                );
+                // Typed as the slot it stands for and not as the pointer it
+                // was read out of: an address here carries the type of the
+                // place it addresses (`mir::lower`), and this is that slot's
+                // address now.
+                let ty = self.b.slots[slot].ty;
+                let found = self.push(SIRInstKind::Load { from: place }, ty, line, col);
+                self.b.caught.insert(slot, found);
+            }
+        }
+
         let first = self.b.at[source.entry];
         self.terminate(SIRTerm::Goto(first));
 
@@ -666,7 +729,11 @@ impl<'a> Lowerer<'a> {
         let held = self.gir.exprs[id].clone();
         let (ty, line, col) = (held.ty, held.line, held.col);
         let kind = match held.kind {
-            GIRExprKind::Local(local) => SIRInstKind::Addr(self.b.slot_of[local]),
+            // Through `address_of_slot` and not straight to an `Addr`, because
+            // a captured name's address is not this frame's -- see `caught`.
+            GIRExprKind::Local(local) => {
+                return self.address_of_slot(self.b.slot_of[local], line, col);
+            }
             GIRExprKind::Item(item) => SIRInstKind::ItemAddr(item),
             GIRExprKind::SelfExpr => SIRInstKind::SelfAddr,
             GIRExprKind::Field { base, index } => {
@@ -792,6 +859,13 @@ impl<'a> Lowerer<'a> {
     // a use it can see is a use it can take out, where a shared one would have
     // to be counted instead.
     fn address_of_slot(&mut self, slot: SIRSlotId, line: usize, col: usize) -> SIRValueId {
+        // A captured name is not in this frame at all -- see `caught`. It is
+        // answered here rather than at each of the call sites because this is
+        // the one place a name becomes an address, and a capture is exactly a
+        // name whose address is somewhere else.
+        if let Some(&held) = self.b.caught.get(&slot) {
+            return held;
+        }
         let ty = self.b.slots[slot].ty;
         self.push(SIRInstKind::Addr(slot), ty, line, col)
     }

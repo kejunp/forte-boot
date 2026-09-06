@@ -150,7 +150,10 @@ impl Suite {
             .into_iter()
             .map(|(outer, mode)| TTIRCapture { outer, slot: 0, mode, line, col: 1 })
             .collect();
-        self.expr(TTIRExprKind::Closure { captures: held, body }, Self::NULL)
+        self.expr(
+            TTIRExprKind::Closure { params: Vec::new(), captures: held, env: None, body },
+            Self::NULL,
+        )
     }
 
     // A closure over a body with nothing in it, capturing what it is told to.

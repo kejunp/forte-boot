@@ -329,7 +329,14 @@ impl Fixture {
         let blocks = std::mem::take(&mut self.blocks);
         let locals = std::mem::take(&mut self.locals);
         let params = std::mem::take(&mut self.params);
-        self.gir.bodies.push(GIRBody { entry, blocks, locals, params });
+        self.gir.bodies.push(GIRBody {
+            entry,
+            blocks,
+            locals,
+            params,
+            captures: Vec::new(),
+            env: None,
+        });
         self.gir.bodies.len() - 1
     }
 

@@ -42,6 +42,17 @@ pub struct GIRBody {
     // did -- so without this a pass over the graph reads them as slots holding
     // nothing, and a parameter's release is what it would leave out.
     pub params: Vec<GIRLocalId>,
+    // What a closure's body took from the body around it, and the parameter
+    // holding the run of addresses it finds them at. Empty and `None` for
+    // every body that belongs to a declaration: a fn captures nothing.
+    //
+    // These are here rather than left on the `Closure` expression because the
+    // two ends need different halves of the same fact. Where the closure is
+    // *made* the captures say what to put in the run, and that is the
+    // expression's; where its body *runs* they say which of its slots are not
+    // slots at all but places in the frame outside, and that is this.
+    pub captures: Vec<TTIRCapture>,
+    pub env: Option<GIRLocalId>,
 }
 
 // A slot: a `let`, a `var`, a parameter, or a temporary the lowering made to

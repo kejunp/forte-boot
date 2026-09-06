@@ -598,6 +598,13 @@ impl<'a> Lowerer<'a> {
             .map(|at| self.slot_of(at))
     }
 
+    // And what that slot holds, which is wanted wherever the slot is reached
+    // by name rather than through an instruction carrying the type along.
+    pub(super) fn ty_named(&self, local: usize) -> Option<TyId> {
+        let body = &self.made.sir.bodies[self.b.body];
+        body.slots.iter().find(|slot| slot.of == Some(local)).map(|slot| slot.ty)
+    }
+
     // A type as the mangling writes it, which is what a release is named after.
     pub(super) fn spell(&self, ty: TyId) -> String {
         self.mangler.spell(ty, &self.made.ttir)

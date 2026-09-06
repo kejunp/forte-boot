@@ -317,6 +317,17 @@ fn escapes(body: &SIRBody, places: &[Place]) -> Vec<bool> {
             out[slot] = true;
         }
     }
+    // And what a closure captured. No address value stands for one -- the
+    // instruction names the slot and `mir::lower` takes the address there (see
+    // `SIRBody::caught`) -- so the walk above cannot find it, and a slot that
+    // looked unreachable is one whose store this pass would let a later load
+    // read straight through. The call that writes it is the call *of* the
+    // closure, and it writes through a pointer nothing here can follow.
+    for (slot, held) in body.caught().iter().enumerate() {
+        if *held {
+            out[slot] = true;
+        }
+    }
     out
 }
 

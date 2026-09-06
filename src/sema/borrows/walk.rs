@@ -292,7 +292,7 @@ impl<'a> Checker<'a> {
             // What it captured, and then its body. The captures are taken in
             // the frame the closure was written in -- they are names of *that*
             // body -- and the body is walked on its own afterwards.
-            TTIRExprKind::Closure { captures, body } => {
+            TTIRExprKind::Closure { captures, body, .. } => {
                 for held in &captures {
                     let place = Place::of(held.outer);
                     match held.mode {

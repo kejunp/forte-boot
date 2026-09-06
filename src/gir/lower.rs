@@ -55,6 +55,16 @@ struct Builder {
     scopes:  Vec<Vec<GIRLocalId>>,
 }
 
+// What a body is a body of, which is `about`'s answer and nothing else's: four
+// facts read off whatever owns the body, gathered before it is lowered because
+// the lowering cannot go back and look.
+struct About {
+    params:   Vec<GIRLocalId>,
+    generic:  Vec<TTIRGeneric>,
+    captures: Vec<TTIRCapture>,
+    env:      Option<GIRLocalId>,
+}
+
 // Where a `break` and a `continue` go, and where a `break x` puts its value.
 #[derive(Clone, Copy)]
 struct LoopCtx {
@@ -83,22 +93,44 @@ impl<'a> Lowerer<'a> {
 
     // Every body the program holds, in the order the TTIR keeps them, so a
     // `TTIRBodyId` and the `GIRBodyId` it became are the same number.
-    // What each body is a body *of*: the parameters it was handed and the
-    // declaration it stands in. A `TTIRBody` holds neither, both being facts
-    // about the item that owns it.
-    fn about(&self, body: TTIRBodyId) -> (Vec<GIRLocalId>, Vec<TTIRGeneric>) {
+    // What each body is a body *of*: the parameters it was handed, the
+    // declaration it stands in, and -- where it is a closure's -- what it took
+    // from the body around it. A `TTIRBody` holds none of them, all being
+    // facts about whatever owns it rather than about the body.
+    fn about(&self, body: TTIRBodyId) -> About {
         for item in &self.ttir.items {
             let TTIRItemKind::Fn(f) = &item.kind else { continue };
             if f.body == Some(body) {
-                return (
-                    f.params.iter().filter_map(|p| p.slot).collect(),
-                    f.generics.clone(),
-                );
+                return About {
+                    params:   f.params.iter().filter_map(|p| p.slot).collect(),
+                    generic:  f.generics.clone(),
+                    captures: Vec::new(),
+                    env:      None,
+                };
             }
         }
-        // A closure's body, which belongs to no declaration: its parameters
-        // are slots like any other and are filled where it is called.
-        (Vec::new(), Vec::new())
+        // A closure's body, which belongs to no declaration. Its parameters
+        // are written down on the expression that made it and nowhere else,
+        // that being the only place a closure is named at all -- and the
+        // environment is the last of them, so a caller that leaves it off is
+        // one calling something with nothing to find in it.
+        for expr in &self.ttir.exprs {
+            let TTIRExprKind::Closure { params, captures, env, body: held } = &expr.kind else {
+                continue;
+            };
+            if *held != body {
+                continue;
+            }
+            let mut params = params.clone();
+            params.extend(env);
+            return About {
+                params,
+                generic: Vec::new(),
+                captures: captures.clone(),
+                env: *env,
+            };
+        }
+        About { params: Vec::new(), generic: Vec::new(), captures: Vec::new(), env: None }
     }
 
     pub fn lower(&mut self) {
@@ -211,14 +243,20 @@ impl<'a> Lowerer<'a> {
 
     // The graph of one body.
     fn body(&mut self, id: TTIRBodyId) -> GIRBodyId {
-        let (params, generic) = self.about(id);
-        let held = std::mem::replace(&mut self.generic, generic);
-        let out = self.body_of(id, params);
+        let about = self.about(id);
+        let held = std::mem::replace(&mut self.generic, about.generic);
+        let out = self.body_of(id, about.params, about.captures, about.env);
         self.generic = held;
         out
     }
 
-    fn body_of(&mut self, id: TTIRBodyId, params: Vec<GIRLocalId>) -> GIRBodyId {
+    fn body_of(
+        &mut self,
+        id: TTIRBodyId,
+        params: Vec<GIRLocalId>,
+        captures: Vec<TTIRCapture>,
+        env: Option<GIRLocalId>,
+    ) -> GIRBodyId {
         let source = &self.ttir.bodies[id];
         let locals: Vec<GIRLocal> = source
             .locals
@@ -266,6 +304,8 @@ impl<'a> Lowerer<'a> {
             blocks: built.blocks,
             locals: built.locals,
             params,
+            captures,
+            env,
         });
         self.gir.bodies.len() - 1
     }
@@ -879,7 +919,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Cast(value) => GIRExprKind::Cast(self.value(value)),
             // The body is lowered with every other one; the handles agree
             // because the two arenas are filled in the same order.
-            TTIRExprKind::Closure { captures, body } => {
+            TTIRExprKind::Closure { captures, body, .. } => {
                 GIRExprKind::Closure { captures, body }
             }
 

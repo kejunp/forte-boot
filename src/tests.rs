@@ -485,3 +485,113 @@ fn a_test_that_fails_is_reported_and_leaves_a_status_behind() {
     assert!(said.contains("left: 1"), "{}", said);
     assert!(said.contains("right: 2"), "{}", said);
 }
+
+// ---- Closures ------------------------------------------------------------------
+
+// What a closure comes to when it runs, which is the half nothing in this crate
+// could reach before this file existed.
+//
+// Every one of these compiled and linked while the compiler was wrong about it.
+// A closure's body was lowered with no parameters at all -- the caller put the
+// arguments in the registers the ABI names and the body read the registers an
+// allocator happened to pick -- so `add(2, 3)` gave back a word of whatever the
+// frame held last. The tests that existed were the checker's, and a closure
+// that type checks is exactly what this one was.
+//
+// So the assertions are on *values* and not on shapes. Each of the five asks
+// something a wrong lowering answers differently:
+//
+//   - the parameters arrive, and in the order they were written. `a - b` and
+//     not `a + b`, because two arguments swapped is the failure a sum hides.
+//   - a capture is read through the environment. A closure with captures takes
+//     one parameter more than it declares, and the run it points at is built
+//     where the closure is made.
+//   - a capture is *written* through it: "assigning to one takes a `*`" (§5),
+//     so what the closure did is what the frame outside holds afterwards. That
+//     one also asks a question of `sir::alias` -- the store before the call and
+//     the read after it are a store and a load of one slot, and the pass has to
+//     know the call between them writes it.
+//   - a `move` closure outlives the frame it took from. The value is copied
+//     into room of the collector's, so what it reads is not a word of a frame
+//     that has since been used for something else.
+//   - a declared fn and a closure go down one call. Both are a fn value, the
+//     environment is the last argument either way, and the one with nothing to
+//     find in it never looks.
+#[test]
+fn a_closure_runs_as_what_it_was_written_as() {
+    let dir = std::env::temp_dir().join(format!("fortec-closure-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("closure.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         fn twice(f: fn(i64): i64, x: i64): i64 {\n\
+         \x20   f(f(x))\n\
+         }\n\
+         \n\
+         fn ten(x: i64): i64 {\n\
+         \x20   x + 10\n\
+         }\n\
+         \n\
+         fn made(): fn(i64): i64 {\n\
+         \x20   let base = 100\n\
+         \x20   move |x: i64| x + &base\n\
+         }\n\
+         \n\
+         fn churn(a: i64, b: i64, c: i64): i64 {\n\
+         \x20   a * 7777 + b * 8888 + c * 9999\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_arguments_arrive_in_the_order_they_were_written() {\n\
+         \x20   let less = |a: i64, b: i64| a - b\n\
+         \x20   assert_eq(int(less(9, 4)), int(5), \"the first less the second\")\n\
+         \x20   let seven = |p1: i64, p2: i64, p3: i64, p4: i64, p5: i64, p6: i64, p7: i64| \
+         p7 - p1\n\
+         \x20   assert_eq(int(seven(1, 0, 0, 0, 0, 0, 8)), int(7), \"past the registers\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_capture_is_read_through_the_environment() {\n\
+         \x20   let n = 5\n\
+         \x20   let add = |x: i64| x + &n\n\
+         \x20   assert_eq(int(add(1)), int(6), \"what the frame outside holds\")\n\
+         \x20   assert_eq(int(add(2)), int(7), \"and it is still there\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_capture_that_is_assigned_to_is_written_through() {\n\
+         \x20   var n = 0\n\
+         \x20   let bump = |d: i64| n = n + d\n\
+         \x20   bump(3)\n\
+         \x20   bump(4)\n\
+         \x20   assert_eq(int(n), int(7), \"the name outside, not a copy of it\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_move_closure_outlives_the_frame_it_took_from() {\n\
+         \x20   let f = made()\n\
+         \x20   assert_eq(int(churn(1, 2, 3)), int(55550), \"something else uses the stack\")\n\
+         \x20   assert_eq(int(f(1)), int(101), \"and what it took is still what it took\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_declared_fn_and_a_closure_are_called_the_same_way() {\n\
+         \x20   assert_eq(int(twice(ten, 1)), int(21), \"a fn with no environment\")\n\
+         \x20   let k = 10\n\
+         \x20   assert_eq(int(twice(|x: i64| x + &k, 1)), int(21), \"and one with\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "closure");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "closures were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 5 tests"), "{}", said);
+}

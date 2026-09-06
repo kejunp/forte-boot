@@ -125,6 +125,15 @@ fn promotable(body: &SIRBody, owners: &HashMap<SIRValueId, SIRSlotId>) -> Vec<bo
             _ => {}
         }
     }
+    // And what a closure captured, whose address is taken without an `Addr`
+    // being written -- see `SIRBody::caught`. Promoting one would take it out
+    // of the frame the closure is about to point into, and leave
+    // `mir::lower::slot_named` no slot to fill the environment from.
+    for (slot, held) in body.caught().iter().enumerate() {
+        if *held {
+            out[slot] = false;
+        }
+    }
     out
 }
 

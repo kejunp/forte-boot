@@ -388,6 +388,40 @@ impl SIRTerm {
 }
 
 impl SIRBody {
+    // Which of this body's slots a closure made here captured, by slot.
+    //
+    // A capture is the one way a slot's address is taken without an `Addr`
+    // being written: the `Closure` names the *slot*, and `mir::lower` takes
+    // the address of it when it fills the environment. So every pass that
+    // reasons about a slot from the instructions that mention it has a hole
+    // exactly here, and there are two of them -- `sir::promote` would take
+    // such a slot out of the frame that the closure is about to point into,
+    // and `sir::alias` would call it unreachable and let a store to it be
+    // forwarded across the call that writes it.
+    //
+    // Both want the same fact, so it is worked out once and here rather than
+    // twice and differently. The address does not merely escape: it outlives
+    // the frame, which is what a closure being returnable means.
+    pub fn caught(&self) -> Vec<bool> {
+        let mut out = vec![false; self.slots.len()];
+        for block in &self.blocks {
+            for inst in &block.insts {
+                let SIRInstKind::Closure { captures, .. } = &inst.kind else { continue };
+                for held in captures {
+                    // By the local it came out of: a capture names a name of
+                    // this body, and which slot that went into is what
+                    // `SIRSlot::of` records.
+                    let Some(slot) = self.slots.iter().position(|s| s.of == Some(held.outer))
+                    else {
+                        continue;
+                    };
+                    out[slot] = true;
+                }
+            }
+        }
+        out
+    }
+
     // Which blocks reach each block. Every pass that joins paths wants this --
     // a phi has one entry per predecessor, and which predecessor is which is
     // the order this hands back.

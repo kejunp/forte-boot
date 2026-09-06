@@ -2078,6 +2078,28 @@ answer is not obvious from the rules alone.
     "(fn(): i32)[8]" is eight closures. The one place it may not stand bare
     is the subject of a "where": after "fn(...)" a ":" would be its return
     type and the predicate's colon at once, and the parentheses say which.
+
+    How one is *called* was the half this left open, and it is settled now.
+    A fn value is two words — where the code is and where the captures are —
+    and a declared fn handed round as a value is the same two words with
+    nothing in the second, so one call has to reach either. So: the captures
+    go over as one more argument, after the written ones. Last and not first,
+    because an argument the callee never declared is harmless where it is
+    last and shifts every other one where it is first — no ABI here has the
+    callee count what it was passed. A closure that captured something
+    declares a parameter for it, a closure that captured nothing declares
+    none, and a declared fn ignores a word it was handed. The environment
+    itself is a run of addresses, one per capture, in the order they were
+    taken: the slot's own address where the name was captured by reference,
+    so that reading and writing both reach the name outside through the one
+    address; and the address of a copy the collector holds where it was
+    captured by value, since a "move" closure owns what it took and is the
+    one that may outlive the frame it took it from.
+
+    What this leaves is a closure that captured nothing being told from a
+    declared fn only by which symbol the first word names — nothing at a call
+    site knows which it has, which is what makes the convention have to suit
+    both. The cost is one argument register per indirect call.
   - A value moves unless its type says "impl Copy", and a type says what
     releasing it comes to with "impl Drop" (section 2). Settled. Neither
     needs a rule of its own -- an empty impl and a one-method impl are both

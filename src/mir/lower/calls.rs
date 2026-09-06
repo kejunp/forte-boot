@@ -19,7 +19,7 @@
 // operand and no call: -1 is -1 whatever is being walked.
 
 use crate::sir::sir_nodes::*;
-use crate::tir::ttir_nodes::{TTIRItemKind, Ty, TyId};
+use crate::tir::ttir_nodes::{TTIRCaptureMode, TTIRItemKind, Ty, TyId};
 
 use super::super::mir_nodes::*;
 use super::super::runtime;
@@ -218,17 +218,30 @@ impl<'a> Lowerer<'a> {
             return (MIRCallee::Symbol(name), held);
         }
         // A fn held as a value is a pointer to the code and a pointer to what
-        // it captured. This calls the first.
+        // it captured, and this hands over both: the first is what is called
+        // and the second goes in after the written arguments, as one more of
+        // them.
         //
-        // What it does *not* do is hand over the second, and a closure that
-        // reads a capture would want it. That is the piece of this file that is
-        // not finished: the environment is built below and there is nowhere
-        // agreed for a call to put it, because a declared fn used as a value
-        // has no environment and the two have to be called the same way. It
-        // wants a decision about the calling convention rather than more code.
+        // **Last, and not first.** A declared fn is handed round as a value
+        // like a closure is and has no environment at all, so the same call
+        // has to reach either -- and what tells them apart is not known here,
+        // a fn value being a pair whichever it came from. An argument the
+        // callee never declared is harmless where it is last: every ABI here
+        // has the caller lay the arguments out and none of the three has the
+        // callee count them. In front it would shift every other argument
+        // along by one and a declared fn would read its first as its second.
+        //
+        // So the convention is: a fn value is called with its environment
+        // after the arguments, a closure that captured something declares a
+        // parameter for it (`sema::lower::closures`), and everything else
+        // ignores a word it was passed.
         let from = self.of(callee);
         let word = self.word();
         let code = self.push(MIRInstKind::Load { from, bytes: word }, line, col);
+        let second = self.push(MIRInstKind::Offset { base: from, bytes: word as i64 }, line, col);
+        let env = self.push(MIRInstKind::Load { from: second, bytes: word }, line, col);
+        let mut held = held;
+        held.push(env);
         (MIRCallee::Reg(code), held)
     }
 
@@ -245,18 +258,27 @@ impl<'a> Lowerer<'a> {
         line: usize,
         col: usize,
     ) {
+        // One that took nothing is a fn like any other: there is nothing to
+        // put in an environment, so it gets the second word every declared fn
+        // handed round as a value gets, and its body declares no parameter to
+        // read one out of (`sema::lower::closures`). An allocation for a run
+        // of no captures is one the collector would walk for nothing.
+        if captures.is_empty() {
+            return self.paired(def, name.to_string(), line, col);
+        }
+
         let word = self.word();
         let ty = self.ty_of(value);
 
         // The captures outlive the frame that made them -- that is what a
         // closure being returnable means -- so they cannot be a slot.
         let bytes = (captures.len() * word) as i64;
-        let size = self.push(MIRInstKind::Const(MIRConst::Int(bytes.max(1))), line, col);
+        let size = self.push(MIRInstKind::Const(MIRConst::Int(bytes)), line, col);
         // The collector's, and described: every word of it is an address. That
         // is what makes an environment reachable through the closure value
         // rather than leaked -- the second word of a fn value is this pointer,
         // and `mir::shape` calls both words of a fn value pointers.
-        let shape = self.env_shape(captures.len().max(1), line, col);
+        let shape = self.env_shape(captures.len(), line, col);
         let env = self.push(
             MIRInstKind::Call {
                 to:   MIRCallee::Symbol(runtime::GC_ALLOC.to_string()),
@@ -267,12 +289,29 @@ impl<'a> Lowerer<'a> {
         );
 
         // Each capture is the enclosing body's local, which is a slot of this
-        // frame. What goes in the environment is its address: `sema` worked out
-        // that "reading one takes a `&` of it" (§5), and a capture by value is
-        // a copy the callee makes of what the address points at.
+        // frame, and every word of the environment is the address of one
+        // capture. Which address depends on how it was taken, and the two are
+        // what `&` and `move` mean:
+        //
+        //   - by reference, the slot's own address. The body reads and writes
+        //     the name outside, which is "reading one takes a `&` of it and
+        //     assigning to one takes a `*`" (§5) -- one address answering both.
+        //
+        //   - by value, the address of a copy the collector holds. A `move`
+        //     closure owns what it took, so writing through to the frame would
+        //     be wrong even while that frame is there -- and the frame is
+        //     exactly what a returned closure outlives.
+        //
+        // Both are one word and both are an address, which is what keeps the
+        // descriptor above honest: the collector walks an environment as a run
+        // of pointers and finds one either way.
         for (index, capture) in captures.iter().enumerate() {
             let Some(slot) = self.slot_named(capture.outer) else { continue };
             let held = self.push(MIRInstKind::Frame(slot), line, col);
+            let held = match (capture.mode, self.ty_named(capture.outer)) {
+                (TTIRCaptureMode::Value, Some(ty)) => self.boxed(ty, held, line, col),
+                _ => held,
+            };
             let to = self.push(
                 MIRInstKind::Offset { base: env, bytes: (index * word) as i64 },
                 line,
@@ -290,6 +329,30 @@ impl<'a> Lowerer<'a> {
         let second =
             self.push(MIRInstKind::Offset { base: def, bytes: word as i64 }, line, col);
         self.effect(MIRInstKind::Store { to: second, value: env, bytes: word }, line, col);
+    }
+
+    // A copy of what is at an address, in room of the collector's rather than
+    // this frame's, and the address of that copy. What a `move` capture goes
+    // into: the value is the closure's own from here, and the closure may
+    // outlive every frame standing now.
+    //
+    // Described by its own type and not as a run of pointers, unlike the
+    // environment holding it -- this is one value of one type, and what the
+    // collector has to walk into is whatever that type says.
+    fn boxed(&mut self, ty: TyId, from: MIRRegId, line: usize, col: usize) -> MIRRegId {
+        let bytes = self.bytes_of(ty).max(1);
+        let size = self.push(MIRInstKind::Const(MIRConst::Int(bytes as i64)), line, col);
+        let shape = self.shape_reg(ty, line, col);
+        let to = self.push(
+            MIRInstKind::Call {
+                to:   MIRCallee::Symbol(runtime::GC_ALLOC.to_string()),
+                args: vec![size, shape],
+            },
+            line,
+            col,
+        );
+        self.effect(MIRInstKind::Copy { to, from, bytes }, line, col);
+        to
     }
 
     // The same pair for a fn that captured nothing: where the code is, and a
