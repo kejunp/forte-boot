@@ -37,13 +37,32 @@ fn an_entry_that_answers_becomes_the_exit_status() {
 }
 
 // A `main` giving nothing back must not have its leftover register read as an
-// exit status: the shim exits zero and never names a `long`.
+// exit status: the shim exits zero and never declares the entry as answering
+// one.
 #[test]
 fn an_entry_that_answers_nothing_exits_zero() {
     let out = program(Entry { symbol: "__F3app4main".to_string(), answers: false });
     assert!(out.contains("extern void __F3app4main(void);"), "{}", out);
     assert!(out.contains("return 0;"), "{}", out);
-    assert!(!out.contains("long"), "{}", out);
+    assert!(!out.contains("long __F3app4main"), "{}", out);
+    assert!(!out.contains("(int)"), "{}", out);
+}
+
+// What the kernel handed over reaches the runtime, and reaches it before
+// anything the program wrote runs -- a first line that reads an argument is a
+// first line, and there is nowhere earlier to have read them in.
+#[test]
+fn the_arguments_are_handed_over_before_the_program_starts() {
+    for answers in [true, false] {
+        let out = program(Entry { symbol: "__F3app4main".to_string(), answers });
+        assert!(out.contains("int main(int argc, char **argv)"), "{}", out);
+        assert!(out.contains("__rt_args((long)argc, argv);"), "{}", out);
+        let args = out.find("__rt_args(").expect("the handover");
+        let init = out.find("__rt_init();").expect("the init");
+        let body = out.find("__F3app4main();").or_else(|| out.find("(int)__F3app4main()"));
+        assert!(args < init, "{}", out);
+        assert!(init < body.expect("the call"), "{}", out);
+    }
 }
 
 // Cross-linking is turned down before a tool is run, and the message says

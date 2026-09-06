@@ -78,25 +78,39 @@ pub fn shim(start: &Start) -> String {
 }
 
 fn program_shim(entry: &Entry) -> String {
+    // `argc` and `argv` come from the kernel through this and nowhere else,
+    // and they are handed over before `__rt_init` so that the first line the
+    // program runs can already read them. `std/env.ft` is what reads them.
+    //
+    // `main` still takes nothing, which is §1's rule and not an omission: a
+    // `main` with parameters is mangled with them and is not the one a process
+    // starts at. What was missing was somewhere for an argument to come from,
+    // and this is it.
+    let head = "extern void __rt_init(void);\n\
+                extern void __rt_args(long, char **);\n";
     if entry.answers {
         format!(
-            "extern void __rt_init(void);\n\
+            "{head}\
              extern long {sym}(void);\n\
-             int main(void) {{\n\
+             int main(int argc, char **argv) {{\n\
+             \x20   __rt_args((long)argc, argv);\n\
              \x20   __rt_init();\n\
              \x20   return (int){sym}();\n\
              }}\n",
+            head = head,
             sym = entry.symbol
         )
     } else {
         format!(
-            "extern void __rt_init(void);\n\
+            "{head}\
              extern void {sym}(void);\n\
-             int main(void) {{\n\
+             int main(int argc, char **argv) {{\n\
+             \x20   __rt_args((long)argc, argv);\n\
              \x20   __rt_init();\n\
              \x20   {sym}();\n\
              \x20   return 0;\n\
              }}\n",
+            head = head,
             sym = entry.symbol
         )
     }

@@ -2501,19 +2501,39 @@ answer is not obvious from the rules alone.
     than converted into. And there is no owned form: a trait object lives as
     long as what it was made from, so a container of them wants a "gc" of one,
     which is a shape neither word has been asked to make yet.
-  - Where a program begins is settled and what it is handed is not. "main" at
-    the top of the root module, taking nothing, its integer answer the exit
-    status and everything else exiting zero (section 1). What is missing is
-    the way in and the way out. There is no spelling for the arguments a
-    process was started with and none for its environment, so the only
-    program that can be written is one that computes what it was going to
-    compute anyway. And there is no way out of the middle of one: a fn deep
-    in a program that has found it cannot go on returns "never" and has
-    nothing to call — nothing, that is, but a "%symbol" declaration of
-    somebody else's "exit", which is the same answer the language gives for
-    every other thing it has not got round to and is not an answer for this
-    one. A process that cannot stop when it knows it should is worse off than
-    one that cannot read its arguments.
+  - Where a program begins is settled, and what it is handed is settled now
+    too. "main" at the top of the root module, taking nothing, its integer
+    answer the exit status and everything else exiting zero (section 1).
+
+    The arguments and the environment are read through "std/env.ft": a routine
+    per question and a "%symbol" apiece, exactly as "fmt" and "mem" are.
+    "count" and "arg" for what the process was started with, "get" and "has"
+    for what its environment holds. The shim the linker writes takes "argc"
+    and "argv" from the kernel and hands them over before anything the program
+    wrote runs.
+
+    Not "main"'s parameters, and that is a decision rather than an omission. A
+    "main" that took its arguments answers half of it — an environment is a
+    lookup and not a list — and it would make "main" two functions where
+    section 1 says a program has one beginning, "taking nothing". So "main"
+    still takes nothing, and what changed is that there is somewhere for an
+    argument to come from.
+
+    What an argument *is* is bytes. A "str" here is bytes with a length, an
+    argument is whatever a shell could pass, and nothing between the two
+    checks or converts. An index past the end reads empty rather than
+    refusing: what a program does about an argument it did not get is the
+    program's, and there is no way to fail that a caller could not have asked
+    about first. A name the environment does not hold and one set to nothing
+    both read as no bytes, and "has" is what tells them apart — two routines
+    rather than an "Option", because an "Option<str>" is an enum this language
+    declares and a "%symbol" fn gives back what the runtime can build.
+
+    So the way in and the way out are both there now, and they arrived in that
+    order for a reason this entry used to give: "a process that cannot stop
+    when it knows it should is worse off than one that cannot read its
+    arguments". The way out is "panic", which stops a program from the middle
+    of it; the way in is above.
 
     Nor is it said what "%test" means for any of this. Section 1 says a
     "%test" fn is "collected and run on its own rather than compiled into an

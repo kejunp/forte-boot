@@ -75,7 +75,30 @@ fn ran_program(root: &Path, what: &str) -> Option<(bool, String)> {
     built(root, what, false)
 }
 
+// And the same for an ordinary build handed arguments and an environment,
+// which is the one thing a `%test` cannot ask about: a test runner's shim
+// hands over none, so what a program does with what it was started with has to
+// be asked of a program that was started.
+fn ran_with(
+    root: &Path,
+    what: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Option<(bool, String)> {
+    with(root, what, false, args, env)
+}
+
 fn built(root: &Path, what: &str, tests: bool) -> Option<(bool, String)> {
+    with(root, what, tests, &[], &[])
+}
+
+fn with(
+    root: &Path,
+    what: &str,
+    tests: bool,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Option<(bool, String)> {
     let (Some(runtime), true) = (archive(), have_cc()) else { return None };
     let at = out_at(what);
     let _ = std::fs::remove_file(&at);
@@ -92,7 +115,12 @@ fn built(root: &Path, what: &str, tests: bool) -> Option<(bool, String)> {
     );
     assert!(built, "{} was meant to compile", root.display());
 
-    let held = Command::new(&at).output().expect("the tests to run");
+    let mut held = Command::new(&at);
+    held.args(args);
+    for (name, value) in env {
+        held.env(name, value);
+    }
+    let held = held.output().expect("the tests to run");
     let _ = std::fs::remove_file(&at);
     let mut text = String::from_utf8_lossy(&held.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&held.stderr));
@@ -1245,4 +1273,72 @@ fn a_conversion_happens_wherever_a_type_is_expected() {
     assert!(ok, "conversions were meant to reach these places:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
+}
+
+// ---- What the process was started with --------------------------------------------
+
+// The arguments and the environment, read by a program that was started with
+// some.
+//
+// §8: "there is no spelling for the arguments a process was started with and
+// none for its environment, so the only program that can be written is one that
+// computes what it was going to compute anyway." This is the half that could
+// only be asked by running a program *with* something -- a `%test` is run by a
+// shim that hands over none, so every other test in this file is exactly the
+// program §8 was describing.
+//
+// So it is `ran_with` and not `ran`, and the assertions are on what came back
+// out: the count includes the program's own name as a C `main` counts it, each
+// argument is the bytes it was and not the one beside it, an index past the end
+// is empty rather than whatever was next in memory, and a name the environment
+// holds is told from one it does not.
+#[test]
+fn a_program_reads_what_it_was_started_with() {
+    let dir = std::env::temp_dir().join(format!("fortec-args-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("args.ft");
+    std::fs::write(
+        &root,
+        "import fmt::{println1, println2, int, text};\n\
+         import env::{count, arg, get, has};\n\
+         \n\
+         fn main(): i64 {\n\
+         \x20   println1(\"count={}\", int(count()))\n\
+         \x20   var i = 1\n\
+         \x20   while i < count() {\n\
+         \x20       println2(\"arg{}={}\", int(i), text(arg(i)))\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   // Past the end, which is empty and not the next thing along.\n\
+         \x20   println1(\"past=[{}]\", text(arg(count())))\n\
+         \x20   println1(\"held={}\", text(get(\"FORTEC_HELD\")))\n\
+         \x20   println1(\"has={}\", int(if has(\"FORTEC_HELD\") { 1 } else { 0 }))\n\
+         \x20   println1(\"missing={}\", int(if has(\"FORTEC_MISSING\") { 1 } else { 0 }))\n\
+         \x20   0\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran_with(
+        &root,
+        "args",
+        &["one", "two three", ""],
+        &[("FORTEC_HELD", "yes")],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a program was meant to read its arguments:\n{}", said);
+    // The name and the three, which is what a C `main` is handed.
+    assert!(said.contains("count=4"), "{}", said);
+    assert!(said.contains("arg1=one"), "{}", said);
+    // A space in one is one argument and not two: what the shell separated is
+    // separated already, and nothing here separates it again.
+    assert!(said.contains("arg2=two three"), "{}", said);
+    assert!(said.contains("arg3=\n"), "an empty argument is still one:\n{}", said);
+    assert!(said.contains("past=[]"), "{}", said);
+    assert!(said.contains("held=yes"), "{}", said);
+    assert!(said.contains("has=1"), "{}", said);
+    assert!(said.contains("missing=0"), "{}", said);
 }

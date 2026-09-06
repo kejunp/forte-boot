@@ -63,6 +63,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub mod abi;
 pub mod alloc;
+pub mod env;
 pub mod fmt;
 pub mod gc;
 pub mod heap;
