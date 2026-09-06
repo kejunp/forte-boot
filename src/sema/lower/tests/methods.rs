@@ -251,3 +251,57 @@ fn a_method_on_an_object_names_the_traits_member() {
         "the member is the trait's",
     );
 }
+
+// ---- What the collector holds ---------------------------------------------------
+
+// `gc T` is a type and not only a word on a binding, which is the question §8
+// left open answered: a `gc` value handed to a function is still one, and the
+// signature can say so.
+#[test]
+fn gc_is_a_type_a_signature_can_say() {
+    clean("struct Buf {\n    pub n: i32,\n}\n\
+           fn held(b: gc Buf): i32 { b.n }\n");
+    // And a field, which is what a collected structure wants.
+    clean("struct Inner {\n    pub v: i32,\n}\n\
+           struct Outer {\n    pub inner: gc Inner,\n}\n\
+           fn f(o: &Outer): i32 { o.inner.v }\n");
+}
+
+// A `let gc` makes one of that type, whether or not the type was written: the
+// word on the binding and the word in the type say the same thing, or the word
+// would mean one thing on a `let` and another in a signature.
+#[test]
+fn a_gc_binding_has_the_type_the_word_makes() {
+    let ttir = clean(
+        "struct Buf {\n    pub n: i32,\n}\n\
+         fn f() {\n    let gc b = Buf { n: 1 }\n}\n",
+    );
+    let held = ttir.bodies.iter().find_map(|b| {
+        b.locals.iter().find(|l| matches!(&l.name, TIRBinding::Name(n) if n == "b")).map(|l| l.ty)
+    }).expect("the binding");
+    assert!(matches!(ttir.types[held], Ty::GC(_)), "{:?}", ttir.types[held]);
+}
+
+// Reached through like a reference: the word is spent where the binding is
+// written and nowhere else.
+#[test]
+fn a_gc_value_is_reached_through() {
+    clean("struct Buf {\n    pub n: i32,\n}\n\
+           fn f(b: gc Buf): i32 { b.n }\n");
+    // Including into a `gc` behind a `gc`, which is two reads and no words.
+    clean("struct Inner {\n    pub v: i32,\n}\n\
+           struct Outer {\n    pub inner: gc Inner,\n}\n\
+           fn f(o: gc Outer): i32 { o.inner.v }\n");
+}
+
+// One way only. A `T` becomes a `gc T` where one is wanted -- that is the
+// allocation -- and nothing goes back, because taking the value out of the
+// collector's room is giving away something the collector still holds.
+#[test]
+fn a_collected_value_does_not_become_an_ordinary_one() {
+    let with = "struct Buf {\n    pub n: i32,\n}\n\
+                fn plain(b: Buf): i32 { b.n }\n";
+    let out = refused(&format!(
+        "{}fn f(b: gc Buf): i32 {{ plain(b) }}\n", with));
+    assert!(out.contains("gc Buf"), "{}", out);
+}

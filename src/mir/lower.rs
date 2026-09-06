@@ -748,7 +748,14 @@ impl<'a> Lowerer<'a> {
     // asked.
     pub(super) fn bare(&self, ty: TyId) -> TyId {
         match self.made.ttir.types.get(ty) {
-            Some(Ty::Ref { inner, .. }) | Some(Ty::Ptr(inner)) => self.bare(*inner),
+            // A `gc` value is one word holding an address, so what is reached
+            // *through* one is what it holds -- the same as for the two beside
+            // it. Without this every field of a collected struct sat at offset
+            // nought: the offset is worked out from the type in hand, and the
+            // type in hand was the handle rather than the thing.
+            Some(Ty::Ref { inner, .. }) | Some(Ty::Ptr(inner)) | Some(Ty::GC(inner)) => {
+                self.bare(*inner)
+            }
             _ => ty,
         }
     }

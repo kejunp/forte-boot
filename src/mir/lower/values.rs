@@ -107,6 +107,16 @@ impl<'a> Lowerer<'a> {
                 // table. `mir::mono` worked out what is in the table -- see
                 // `Made::table_of` -- because the routines it names have to be
                 // *asked for* as well as named.
+                // A value becoming one the collector holds: room of its own,
+                // described by its type, and the value copied in. What is
+                // left in the register is the address, which is what every
+                // read through it then goes to -- `sir::lower::base_of` treats
+                // it as one for the same reason.
+                if self.collecting(from, to) {
+                    let held = self.of(*of);
+                    self.collect(def, held, from, line, col);
+                    return;
+                }
                 if let Some(names) = self.table_at(at, i) {
                     let held = self.of(*of);
                     let symbol = self.table_symbol(from, to);
@@ -358,6 +368,48 @@ impl Lowerer<'_> {
         let (from, to) = (self.bare(from), self.bare(to));
         matches!(self.made.ttir.types.get(from), Some(Ty::Array { .. }))
             && matches!(self.made.ttir.types.get(to), Some(Ty::Run(_)))
+    }
+
+    // Whether this cast is the one that puts a value in the collector's room.
+    fn collecting(&mut self, from: TyId, to: TyId) -> bool {
+        match self.made.ttir.types.get(to) {
+            Some(Ty::GC(inner)) => *inner == from || self.bare(*inner) == self.bare(from),
+            _ => false,
+        }
+    }
+
+    // Room the collector holds, and the value copied into it. The address it
+    // gives back is the value from here: a `gc T` is one word, and what is at
+    // the far end is the `T`.
+    fn collect(
+        &mut self,
+        def: MIRRegId,
+        held: MIRRegId,
+        ty: TyId,
+        line: usize,
+        col: usize,
+    ) {
+        let bytes = self.bytes_of(ty).max(1);
+        let size = self.push(MIRInstKind::Const(MIRConst::Int(bytes as i64)), line, col);
+        let shape = self.shape_reg(ty, line, col);
+        self.making(
+            def,
+            MIRInstKind::Call {
+                to:   MIRCallee::Symbol(super::super::runtime::GC_ALLOC.to_string()),
+                args: vec![size, shape],
+            },
+            line,
+            col,
+        );
+        // What is handed over is the value; where it is, is what a register
+        // holds for a type too wide for one. The narrow case is a store and
+        // the wide one a copy, which is the split `take` draws going the
+        // other way.
+        if self.indirect(ty) {
+            self.effect(MIRInstKind::Copy { to: def, from: held, bytes }, line, col);
+        } else {
+            self.effect(MIRInstKind::Store { to: def, value: held, bytes }, line, col);
+        }
     }
 
     // How many elements the array had, which is the number the type carried and

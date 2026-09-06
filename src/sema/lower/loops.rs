@@ -96,7 +96,7 @@ impl<'a> Lowerer<'a> {
             Ty::Array { elem, .. } | Ty::Run(elem) => Some(elem),
             // "A reference to a fixed array is a view of it" (§3), and a view
             // is what is run through.
-            Ty::Ref { inner, .. } => self.elem_of(inner),
+            Ty::Ref { inner, .. } | Ty::GC(inner) => self.elem_of(inner),
             Ty::Named { item, args, .. } => {
                 let held = match &self.out.items[item].kind {
                     TTIRItemKind::Struct { name, .. } | TTIRItemKind::Enum { name, .. } => {

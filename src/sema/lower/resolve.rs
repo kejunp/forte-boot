@@ -466,6 +466,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            TIRTypeKind::Gc(inner) => {
+                let inner = self.ty(inner);
+                self.types.intern(Ty::GC(inner))
+            }
+
             // `dyn Shape`: the name has to be a trait, and it is the one
             // place a type position takes one. A struct there would be a
             // `dyn` over something with no impls to dispatch between, which

@@ -797,6 +797,29 @@ the other way: an object has forgotten which type it was.
     let q = Sq { s: 5 }
     total(&q)               // &Sq becomes &dyn Shape here
 
+<gc_type>. "gc T" is a value the collector holds rather than a scope. The same
+word a <var_decl> writes in front of a binding, said where a type is wanted:
+"let gc b = Buf { .. }" makes a "gc Buf", and a signature that takes one says
+so. It is one word — the address the collector handed back — and it is reached
+through exactly as a reference is, so "b.n" is the "n" of the Buf and the word
+is spent on the line it is written on and nowhere after it.
+
+It copies, as a reference does and for the reason a reference does: what is at
+the far end is owned somewhere else, and here somewhere else is the collector.
+A "T" becomes a "gc T" wherever one is wanted, which is where the allocation
+happens; nothing goes back the other way, since taking the value out would be
+giving away what the collector still holds.
+
+    struct Buf { pub n: i64 }
+
+    fn held(b: gc Buf): i64 { b.n }
+
+    let gc b = Buf { n: 7 }
+    held(b)                 // handed over, and `b` still holds it
+
+It is <type>'s and not a <base_type>, as <ptr_type> is: "gc T[8]" is a
+collected array of eight and "(gc T)[8]" is eight collected values.
+
 <ptr_type>. "ptr T" is an address and nothing else. It is the one type the
 checker has nothing to say about: no lifetime, so nothing says how long what
 it addresses is good for; no aliasing rule, so any number of them may point
@@ -2378,19 +2401,41 @@ answer is not obvious from the rules alone.
     say which. The second is why the collector may not move anything: an
     address that was guessed at can be read and cannot be rewritten.
 
-    What is still not settled is everything about it that is the language's.
-    There is no spelling for when it runs, nothing that says whether a "gc"
-    binding may be moved out of or handed to a function that took an ordinary
-    one, and no account of how it meets the "Drop" and the moving-by-default
-    above — a value with a release the compiler places and a value with a
-    release the collector places are two answers to one question, and the
-    language now has both words and only one of the answers. Nor is it said
-    whether "gc" reaches a type ("GC<T>" as a type a signature could take) or
-    stays a property of the binding it is written on, which is the difference
-    between a word the front end spends and one the whole checker carries —
-    and until that is answered a "gc" binding allocates nothing at all. What
-    the collector owns today is a closure's captures, a map and a set, and no
-    value the word was ever written on.
+    Three of the four things that were the language's are settled now, and a
+    "gc" binding allocates.
+
+    **It reaches a type.** "gc T" is written where a type is written, so a
+    signature takes one, a field holds one, and a "Vec<gc Buf>" is a container
+    of them — which is the thing this entry said could not be written. The
+    word on a binding and the word in a type say the one thing: "let gc b =
+    Buf { .. }" makes a "gc Buf", and writing the type out says the same. It
+    is one word, what "__rt_gc_alloc" handed back, and the value is copied
+    into the room it names.
+
+    **It is reached through.** "b.n" on a "gc Buf" is the "n" of the Buf, and
+    so is a write, an index, a method and an operator — the same transparency
+    §3 gives "&" and "*", and for the same reason: it is one word holding an
+    address, and a word spent at every use is a word nobody would write. So
+    the keyword costs nothing after the line it is on.
+
+    **It copies.** A "gc" value is handed over as a reference is, and the
+    binding it was handed from still holds it. What is at the far end is the
+    collector's, so the word in hand is an address like any other; moving
+    instead would make a collected value one that could be used once, which is
+    worse than a reference and not what a collector is for.
+
+    What is still not settled is the fourth. There is no spelling for when the
+    collector runs, and no account of how a "gc" meets a "Drop": a value with
+    a release the compiler places and a value with a release the collector
+    places are two answers to one question, and the language still has both
+    words and one of the answers. Nothing releases a "gc" where it stands
+    today, which is the half of it that is decided.
+
+    Two smaller things follow from the shape and are worth writing down. A
+    "gc T" admits no absent value, as a reference admits none — so a list of
+    them wants an "Option" for its end and cannot be finished with a nought.
+    And a "gc" of a number is still refused: the word wants a heap value or a
+    pointer, and a number is a value the frame can keep.
   - A parameter may take bounds inline and in a <where_clause_opt> at once,
     and the two are joined; a <where_pred> must constrain a parameter the
     signature introduced, so "where i32: Show" is refused (section 2).

@@ -283,7 +283,18 @@
                           | <ptr_type>
                           | <fn_type>
                           | <dyn_type>
+                          | <gc_type>
                           | <base_type> <array_suffix_list>
+
+# A value the collector holds. The same word a <var_decl> writes in front of a
+# binding, and the same thing said where a type is wanted: what a "let gc x"
+# makes is a value of this type, so a signature that takes one says "gc T" and
+# a field that holds one is declared "gc T".
+#
+# Here and not among the <base_type>s, for the reason <ptr_type> is: it takes
+# no array suffix of its own, so "gc T[8]" is a collected array of eight and
+# "(gc T)[8]" is eight collected values.
+<gc_type>               ::= "gc" <type>
 
 # Something that answers a trait, whichever type it turned out to be. The word
 # is written because a call through one reaches a different body every time it

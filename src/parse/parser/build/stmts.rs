@@ -13,11 +13,11 @@ impl Parser {
         Some(match rule_id {
             // ---- Statements ----------------------------------------------
             // <statement> -> <declaration> | <unsafe_stmt> | <expr_stmt>
-            354 | 355 | 356 => self.pass(c[0]),
+            355 | 356 | 357 => self.pass(c[0]),
             // <statement_list> -> ε
-            357 => self.here(ASTNodeKind::List(Vec::new())),
+            358 => self.here(ASTNodeKind::List(Vec::new())),
             // <statement_list> -> <statement_list> <statement>
-            358 => self.grew(c[0], c[1]),
+            359 => self.grew(c[0], c[1]),
 
             // ---- Blocks --------------------------------------------------
             // <block> -> { <statement_list> <block_tail_opt> }
@@ -35,9 +35,9 @@ impl Parser {
 
             // ---- Conditionals --------------------------------------------
             // <header_expr> -> <assignment>
-            177 => self.pass(c[0]),
+            178 => self.pass(c[0]),
             // <if_expr> -> if <header_expr> <block> <elif_list> <else_opt>
-            178 => self.at(
+            179 => self.at(
                 ASTNodeKind::If {
                     cond: c[1],
                     then: c[2],
@@ -56,13 +56,13 @@ impl Parser {
 
             // ---- Loops, continued ----------------------------------------
             // <while_expr> -> while <header_expr> <block>
-            435 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
+            437 => self.at(ASTNodeKind::While { cond: c[1], body: c[2] }, c[0]),
 
             // ---- unsafe --------------------------------------------------
             // <unsafe_stmt> -> unsafe <expr_stmt>
-            396 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            398 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
             // <unsafe_stmt> -> unsafe <var_decl>
-            397 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
+            399 => self.at(ASTNodeKind::Unsafe(c[1]), c[0]),
 
             _ => return None,
         })

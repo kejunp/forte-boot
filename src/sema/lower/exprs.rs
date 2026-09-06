@@ -352,10 +352,12 @@ impl<'a> Lowerer<'a> {
                         }
                         elem
                     }
-                    Ty::Ref { inner, .. } => match self.types.get(inner).clone() {
-                        Ty::Array { elem, .. } | Ty::Run(elem) => elem,
-                        _ => self.not_indexable(bt, id),
-                    },
+                    Ty::Ref { inner, .. } | Ty::GC(inner) => {
+                        match self.types.get(inner).clone() {
+                            Ty::Array { elem, .. } | Ty::Run(elem) => elem,
+                            _ => self.not_indexable(bt, id),
+                        }
+                    }
                     // Anything the checker already gave up on stays given up
                     // on: one complaint about the same mistake is enough.
                     Ty::Error => bt,
@@ -491,11 +493,23 @@ impl<'a> Lowerer<'a> {
         let mut made = Vec::new();
         for stmt in stmts {
             match stmt {
-                TIRStmt::Let { is_unsafe, intro, name, ty, init, .. } => {
+                TIRStmt::Let { is_unsafe, is_gc, intro, name, ty, init, .. } => {
                     self.guarded += usize::from(*is_unsafe);
                     let mut init = init.map(|i| self.expr(i));
                     self.guarded -= usize::from(*is_unsafe);
-                    let written = ty.map(|t| self.ty(t));
+                    let mut written = ty.map(|t| self.ty(t));
+                    // `let gc x = e` with no type written is a `gc` of
+                    // whatever `e` came to. The word is on the binding and the
+                    // type is what it makes: writing `gc Buf` says the same
+                    // thing, and one of the two has to be the other's, or the
+                    // word would mean one thing on a `let` and another in a
+                    // signature.
+                    if *is_gc && written.is_none() {
+                        if let Some(got) = init {
+                            let found = self.out.exprs[got].ty;
+                            written = Some(self.types.intern(Ty::GC(found)));
+                        }
+                    }
                     // A reference to an array where the name says a view: the
                     // binding keeps the conversion and not what was written.
                     if let (Some(want), Some(got)) = (written, init) {
@@ -506,6 +520,8 @@ impl<'a> Lowerer<'a> {
                             let found = self.out.exprs[got].ty;
                             if self.types.unify(found, want).is_err()
                                 && !self.views(found, want)
+                                && !self.objects(found, want)
+                                && !self.collects(found, want)
                             {
                                 let (found, want) = (self.spell(found), self.spell(want));
                                 self.errors.push(
@@ -670,12 +686,20 @@ impl<'a> Lowerer<'a> {
     // be: "Reached by index rather than by name: which field `x` is, is
     // settled."
     pub(super) fn field_of(&mut self, ty: TyId, name: &str) -> Option<(usize, TyId)> {
+        // Through the hole first. What a generic gave back is a `Ty::Var`
+        // until something fills it, and `at(&v, 3)` on a `Vec<gc Buf>` is
+        // exactly that -- the arm below reads the entry as it stands, so a
+        // hole that had been filled with a `gc Buf` read as no struct at all.
+        let ty = self.types.shallow(ty);
         // A reference stands for the place it refers to, so reaching into one
-        // reaches into what it refers to (§3).
+        // reaches into what it refers to (§3). A `gc` value is read through
+        // the same way and for the same reason: it is one word holding an
+        // address, and the word on it is not meant to be spent at every use.
         let held = match self.types.get(ty).clone() {
-            Ty::Ref { inner, .. } => inner,
+            Ty::Ref { inner, .. } | Ty::GC(inner) => inner,
             _ => ty,
         };
+        let held = self.types.shallow(held);
         let Ty::Named { item, args, .. } = self.types.get(held).clone() else { return None };
         let TTIRItemKind::Struct { fields, .. } = &self.out.items[item].kind else {
             return None;
@@ -785,6 +809,23 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    // Whether a value becomes one the collector holds. `gc T` is what a
+    // `let gc` makes and what a signature may take, so a `T` standing where
+    // one was wanted is the conversion that puts it on the heap -- and it is
+    // the third of the three written the same way, beside the view and the
+    // trait object.
+    //
+    // One way only, as those two are: a `gc T` handed where a `T` was wanted
+    // is not one, because taking the value out of the collector's room is
+    // giving away something the collector still holds.
+    pub(super) fn collects(&mut self, found: TyId, want: TyId) -> bool {
+        let Ty::GC(inner) = self.types.get(want).clone() else { return false };
+        if matches!(self.types.get(found), Ty::GC(_)) {
+            return false;
+        }
+        self.types.unify(found, inner).is_ok()
+    }
+
     // The expression as a view, where a view is what was wanted and what it is
     // is a reference to an array. Anything else comes back as it was.
     //
@@ -795,7 +836,10 @@ impl<'a> Lowerer<'a> {
     // moves out of the type and into the value.
     pub(super) fn viewed(&mut self, got: TTIRExprId, want: TyId) -> TTIRExprId {
         let found = self.out.exprs[got].ty;
-        if !self.views(found, want) && !self.objects(found, want) {
+        if !self.views(found, want)
+            && !self.objects(found, want)
+            && !self.collects(found, want)
+        {
             return got;
         }
         // Where the operand stands, for the reason `read_through` gives: nobody
@@ -823,7 +867,9 @@ impl<'a> Lowerer<'a> {
     // one kind of address the checker still answers for.
     fn read_through(&mut self, expr: TTIRExprId) -> TTIRExprId {
         let mut held = expr;
-        while let Ty::Ref { inner, .. } = self.types.get(self.out.exprs[held].ty).clone() {
+        while let Ty::Ref { inner, .. } | Ty::GC(inner) =
+            self.types.get(self.out.exprs[held].ty).clone()
+        {
             // Built here rather than through `make`, which wants a place in
             // the *source* to take a line from. There is none: nobody wrote
             // this read. So it stands where the operand it reads stands.

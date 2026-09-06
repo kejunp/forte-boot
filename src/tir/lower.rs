@@ -488,6 +488,7 @@ impl<'a> Lowerer<'a> {
             }
             ASTNodeKind::PtrType(inner) => TIRTypeKind::Ptr(self.ty(inner)),
             ASTNodeKind::DynType(inner) => TIRTypeKind::Dyn(self.ty(inner)),
+            ASTNodeKind::GcType(inner) => TIRTypeKind::Gc(self.ty(inner)),
             ASTNodeKind::Array { elem, len } => {
                 TIRTypeKind::Array { elem: self.ty(elem), len: self.expr(len) }
             }
@@ -589,7 +590,10 @@ impl<'a> Lowerer<'a> {
             Diagnostic::error("`gc` needs a heap value or a pointer".to_string(),
                               self.span(at))
                 .with_label(format!("this is {}", what))
-                .with_help("a map, a set or a `ptr` is what a `gc` binding holds"),
+                .with_help(
+                    "a struct, an enum, a map, a set or a `ptr` is what a `gc` binding \
+                     holds -- a number is a value the frame can keep",
+                ),
         );
     }
 

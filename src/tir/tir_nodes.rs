@@ -304,6 +304,10 @@ pub enum TIRTypeKind {
     // after the word, still a name -- whether it turns out to be a trait at
     // all is the checker's, as it is for every other name in a type.
     Dyn(TIRTypeId),
+    // `gc T`: a value the collector holds rather than a scope. One word --
+    // what `__rt_gc_alloc` handed back -- and reached through like a
+    // reference, which is what makes the word cost nothing at a use.
+    Gc(TIRTypeId),
     // `T[8]`: owned, its length in its type.
     Array {
         elem: TIRTypeId,

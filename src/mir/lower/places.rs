@@ -269,7 +269,11 @@ impl<'a> Lowerer<'a> {
     fn through(&self, ty: crate::tir::ttir_nodes::TyId) -> crate::tir::ttir_nodes::TyId {
         use crate::tir::ttir_nodes::Ty;
         match self.made.ttir.types.get(ty) {
-            Some(Ty::Ref { inner, .. }) | Some(Ty::Ptr(inner)) => *inner,
+            // A `gc` value is one word holding an address, so reaching into
+            // one reaches into what it holds. Without it every field of a
+            // collected struct sat at offset nought: the offset comes from
+            // the type in hand, and the type in hand was the handle.
+            Some(Ty::Ref { inner, .. }) | Some(Ty::Ptr(inner)) | Some(Ty::GC(inner)) => *inner,
             _ => ty,
         }
     }

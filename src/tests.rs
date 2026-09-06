@@ -1033,3 +1033,104 @@ fn a_call_through_a_trait_object_reaches_the_type_it_was_made_from() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- What the collector holds ----------------------------------------------------
+
+// A `gc` value, run.
+//
+// The word had been spent entirely in the front end: `let gc b = ...` compiled,
+// worked, and allocated nothing, and `Ty::GC` was plumbed through twenty places
+// and constructed by none of them. §8 said why -- until it was settled whether
+// `gc` reaches a type, "a `gc` binding allocates nothing at all".
+//
+// So every one of these is a value asserted after something that could only be
+// right if the room is really the collector's:
+//
+//   - a value outlives the frame that made it, with another call using the
+//     stack in between. That is the whole of what a collector is for, and a
+//     frame slot would have been written over.
+//   - two hundred thousand of them, which is more than the heap holds at once,
+//     so the answer is only right if what is unreachable is being taken back.
+//   - and a value made before all that is still what it was, which is the other
+//     half: what is *reachable* has to survive, and the roots are guessed at.
+//   - a handle is copied and not moved, so a binding it was handed from still
+//     holds it -- §8 asked, and this is the answer.
+//   - a container of them, which §8 names as the thing that could not be
+//     written.
+#[test]
+fn a_collected_value_outlives_the_frame_that_made_it() {
+    let dir = std::env::temp_dir().join(format!("fortec-gc-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("held.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         import vec::{Vec, empty, push, at, len};\n\
+         \n\
+         struct Buf { pub n: i64 }\n\
+         struct Inner { pub v: i64 }\n\
+         struct Outer { pub tag: i64, pub inner: gc Inner }\n\
+         \n\
+         fn made(n: i64): gc Buf {\n\
+         \x20   let gc b = Buf { n: n }\n\
+         \x20   b\n\
+         }\n\
+         \n\
+         fn churn(a: i64): i64 { a * 7777 + a * 8888 }\n\
+         fn held(b: gc Buf): i64 { b.n }\n\
+         \n\
+         %test\n\
+         fn it_survives_the_frame_it_was_made_in() {\n\
+         \x20   let one = made(11)\n\
+         \x20   assert_eq(int(churn(3)), int(49995), \"something else uses the stack\")\n\
+         \x20   assert_eq(int(one.n), int(11), \"and it is still what it was\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_handle_is_copied_and_not_moved() {\n\
+         \x20   let one = made(5)\n\
+         \x20   assert_eq(int(held(one)), int(5), \"handed over\")\n\
+         \x20   assert_eq(int(held(one)), int(5), \"and handed over again\")\n\
+         \x20   assert_eq(int(one.n), int(5), \"and the name still holds it\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_is_reachable_lives_and_what_is_not_is_taken_back() {\n\
+         \x20   let gc i = Inner { v: 42 }\n\
+         \x20   let gc o = Outer { tag: 7, inner: i }\n\
+         \x20   var k = 0\n\
+         \x20   var total = 0\n\
+         \x20   while k < 200000 {\n\
+         \x20       let gc t = Inner { v: 1 }\n\
+         \x20       total = total + t.v\n\
+         \x20       k = k + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(int(total), int(200000), \"every one of them was there\")\n\
+         \x20   assert_eq(int(o.inner.v), int(42), \"and what was reachable stayed\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_container_of_them_is_written() {\n\
+         \x20   var v: Vec<gc Buf> = empty()\n\
+         \x20   var i = 0\n\
+         \x20   while i < 5 {\n\
+         \x20       let gc b = Buf { n: i * i }\n\
+         \x20       push(*v, b)\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(int(len(&v)), int(5), \"five of them\")\n\
+         \x20   assert_eq(int(at(&v, 3).n), int(9), \"and the fourth is the fourth\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "held");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "collected values were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}

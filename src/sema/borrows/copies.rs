@@ -144,6 +144,10 @@ impl Copies {
                 held
             }
             Ty::Array { elem, .. } => self.drops_past(*elem, p, generics, seen),
+            // Nothing releases one where it stands: what the collector holds,
+            // the collector releases, which is the whole of what a `gc` is
+            // instead of a scope. How that meets a written `Drop` is the half
+            // of §8's question this does not answer.
             Ty::GC(_) => false,
             Ty::Tuple(members) => {
                 members.iter().any(|&m| self.drops_past(m, p, generics, seen))
@@ -168,7 +172,15 @@ impl Copies {
             // `null` is among the primitives, and is in the list by name too.
             Ty::Prim(_) => true,
             // A reference copies; what it refers to is owned somewhere else.
-            Ty::Ref { .. } | Ty::Ptr(_) => true,
+            // So does a `gc` value, and for exactly that reason: the collector
+            // owns what is at the far end, and the word in hand is an address
+            // like any other. §8 asked "whether a `gc` binding may be moved
+            // out of or handed to a function", and this is the answer -- it is
+            // handed over as a reference is, and a binding it was handed from
+            // still holds it. Moving instead would make a collected value one
+            // that could be used once, which is worse than a reference and not
+            // what a collector is for.
+            Ty::Ref { .. } | Ty::Ptr(_) | Ty::GC(_) => true,
             // Nothing holds a bare one, so nothing copies or moves one: what
             // copies is the reference in front of it, which is above.
             Ty::Dyn(_) => false,

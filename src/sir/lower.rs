@@ -795,7 +795,13 @@ impl<'a> Lowerer<'a> {
     // reached into as the reference it is (§3).
     fn base_of(&mut self, base: GIRExprId) -> SIRValueId {
         let ty = self.gir.exprs[base].ty;
-        if matches!(self.ttir.types.get(ty), Some(Ty::Ref { .. }) | Some(Ty::Ptr(_))) {
+        // A `gc` value is one word holding an address, exactly as a reference
+        // and a pointer are, so reaching into one reaches through it rather
+        // than into the word.
+        if matches!(
+            self.ttir.types.get(ty),
+            Some(Ty::Ref { .. }) | Some(Ty::Ptr(_)) | Some(Ty::GC(_))
+        ) {
             return self.value(base);
         }
         self.address(base)

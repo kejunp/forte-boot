@@ -262,6 +262,8 @@ pub enum ASTNodeKind {
     // the <named_type> after the word, which is a name like any other here --
     // whether it names a trait at all is the checker's to say.
     DynType(ASTNodeId),
+    // `gc T`: a value the collector holds. The child is what it holds.
+    GcType(ASTNodeId),
     // `T[8]`: a fixed array, owned, its length in its type.
     Array {
         elem: ASTNodeId,

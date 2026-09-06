@@ -244,7 +244,7 @@ impl<'a> Lowerer<'a> {
     // `&b` reach one written `fn take(self)`.
     fn referent(&mut self, ty: TyId) -> TyId {
         match self.types.get(ty) {
-            Ty::Ref { inner, .. } => *inner,
+            Ty::Ref { inner, .. } | Ty::GC(inner) => *inner,
             _ => ty,
         }
     }
@@ -256,7 +256,7 @@ impl<'a> Lowerer<'a> {
         // A reference stands for the place it refers to, so a method of the
         // referent is a method of the reference.
         let held = match self.types.get(ty).clone() {
-            Ty::Ref { inner, .. } => inner,
+            Ty::Ref { inner, .. } | Ty::GC(inner) => inner,
             _ => ty,
         };
         let of = match self.types.get(held).clone() {
