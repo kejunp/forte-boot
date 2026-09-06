@@ -22,6 +22,9 @@ use super::Lowerer;
 
 impl<'a> Lowerer<'a> {
     pub(super) fn expr(&mut self, id: TIRExprId) -> TTIRExprId {
+        // Taken, so it reaches this expression and no other. What passes it
+        // on says so by setting it again -- see `Lowerer::want`.
+        let want = self.want.take();
         match self.tir.exprs[id].kind.clone() {
             // A number with no suffix is a hole: what it is depends on what it
             // is put beside, which is what inference is for.
@@ -43,7 +46,7 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::Name(path) => self.named(&path, id),
 
             TIRExprKind::Block { stmts, tail, tail_unsafe } => {
-                self.block(&stmts, tail, tail_unsafe, id)
+                self.block(&stmts, tail, tail_unsafe, want, id)
             }
 
             TIRExprKind::Unary { op, operand } => {
@@ -174,9 +177,9 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::If { cond, then, els } => {
                 let c = self.expr(cond);
-                let want = self.types.prim(TIRPrim::Bool);
+                let asks = self.types.prim(TIRPrim::Bool);
                 let got = self.out.exprs[c].ty;
-                if self.types.unify(got, want).is_err() {
+                if self.types.unify(got, asks).is_err() {
                     let got = self.spell(got);
                     self.errors.push(
                         Diagnostic::error(
@@ -186,8 +189,17 @@ impl<'a> Lowerer<'a> {
                         .with_label("this is the condition"),
                     );
                 }
+                // Both branches are handed what was wanted of the `if`: an
+                // `if` is a choice among values and nothing else, so what is
+                // expected of it is expected of each of them.
+                self.want = want;
                 let t = self.expr(then);
-                let e = els.map(|e| self.expr(e));
+                let t = self.held_to(t, want);
+                let e = els.map(|e| {
+                    self.want = want;
+                    let held = self.expr(e);
+                    self.held_to(held, want)
+                });
                 let tt = self.out.exprs[t].ty;
                 let ty = match e {
                     Some(e) => {
@@ -377,9 +389,9 @@ impl<'a> Lowerer<'a> {
             // The three that do not come back: "expressions of type `never`,
             // the empty type" (§5).
             TIRExprKind::Return(value) => {
-                let v = value.map(|v| self.expr(v));
+                let ret = self.frames.last().expect("a frame").ret;
+                let v = value.map(|v| self.expecting(v, ret));
                 if let Some(v) = v {
-                    let ret = self.frames.last().expect("a frame").ret;
                     let found = self.out.exprs[v].ty;
                     if self.types.unify(found, ret).is_err() {
                         let (found, ret) = (self.spell(found), self.spell(ret));
@@ -420,7 +432,9 @@ impl<'a> Lowerer<'a> {
             }
 
             TIRExprKind::StructLit { base, fields } => self.struct_lit(base, &fields, id),
-            TIRExprKind::Match { scrutinee, arms } => self.matching(scrutinee, &arms, id),
+            TIRExprKind::Match { scrutinee, arms } => {
+                self.matching(scrutinee, &arms, want, id)
+            }
 
             TIRExprKind::Closure { is_move, params, body } => {
                 self.closure(is_move, &params, body, id)
@@ -487,6 +501,9 @@ impl<'a> Lowerer<'a> {
         // leaves it the block's value, which is the one place the word does
         // both -- see `TIRExprKind::Block`.
         tail_unsafe: bool,
+        // What was expected of the block, which is what is expected of its
+        // tail. See `Lowerer::want`.
+        want: Option<TyId>,
         at: TIRExprId,
     ) -> TTIRExprId {
         self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
@@ -495,9 +512,15 @@ impl<'a> Lowerer<'a> {
             match stmt {
                 TIRStmt::Let { is_unsafe, is_gc, intro, name, ty, init, .. } => {
                     self.guarded += usize::from(*is_unsafe);
-                    let mut init = init.map(|i| self.expr(i));
+                    // The type the name was declared with is what is expected
+                    // of what fills it, so a branch inside knows it too.
+                    let said = ty.map(|t| self.ty(t));
+                    let mut init = init.map(|i| match said {
+                        Some(want) => self.expecting(i, want),
+                        None => self.expr(i),
+                    });
                     self.guarded -= usize::from(*is_unsafe);
-                    let mut written = ty.map(|t| self.ty(t));
+                    let mut written = said;
                     // `let gc x = e` with no type written is a `gc` of
                     // whatever `e` came to. The word is on the binding and the
                     // type is what it makes: writing `gc Buf` says the same
@@ -606,7 +629,13 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.guarded += usize::from(tail_unsafe);
-        let tail = tail.map(|t| self.expr(t));
+        // The tail is what the block is worth, so what was expected of the
+        // block is expected of it.
+        let tail = tail.map(|t| {
+            self.want = want;
+            let held = self.expr(t);
+            self.held_to(held, want)
+        });
         self.guarded -= usize::from(tail_unsafe);
         self.frames.last_mut().expect("a frame").scopes.pop();
         // "A block is an expression, and its value is the trailing expression
@@ -807,6 +836,25 @@ impl<'a> Lowerer<'a> {
                 && matches!(self.types.get(*ty), Ty::Named { item: subject, .. }
                             if *subject == item)
         })
+    }
+
+    // Lower one expression with something expected of it, and hold it to
+    // that: the conversions are the three `viewed` knows, and a branch that
+    // came back as something else is left alone for whoever asked to report.
+    pub(super) fn expecting(&mut self, id: TIRExprId, want: TyId) -> TTIRExprId {
+        self.want = Some(want);
+        let got = self.expr(id);
+        self.want = None;
+        self.viewed(got, want)
+    }
+
+    // And the same for one already lowered, which is what a branch is by the
+    // time the node holding it knows the branches agreed on nothing.
+    pub(super) fn held_to(&mut self, got: TTIRExprId, want: Option<TyId>) -> TTIRExprId {
+        match want {
+            Some(want) => self.viewed(got, want),
+            None => got,
+        }
     }
 
     // Whether a value becomes one the collector holds. `gc T` is what a

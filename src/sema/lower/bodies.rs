@@ -128,7 +128,10 @@ impl<'a> Lowerer<'a> {
         };
         held.params = params;
 
-        let out = self.expr(value);
+        // What the signature says is what is expected of the body, so a
+        // branch or a tail inside it knows what it is meant to come to --
+        // which is what lets `fn f(q: &Sq): &dyn Shape { q }` convert at all.
+        let out = self.expecting(value, ret);
         // "a body that could fall off the end of a `never` is refused" is the
         // checker's; what is held here is that a body gives back what it said.
         let found = self.out.exprs[out].ty;

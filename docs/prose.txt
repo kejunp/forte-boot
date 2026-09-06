@@ -1498,7 +1498,28 @@ expression of a block. What each evaluates to:
 
 That every branch of an if, every arm of a match, and every "break" leaving
 one loop agree on a type is a rule for the checker, not one this grammar
-can state. A loop that can end by itself has "null" among the values it
+can state.
+
+They agree on it knowing what is *expected* of them, which is what lets a
+conversion happen where a value is written rather than only where it is
+handed over. A body is held to what its signature says, a name's initialiser
+to what the name was declared as — and each of those hands what it wants to
+whatever it is worth: an if to both its branches, a match to every arm, a
+block to its tail. So the three conversions §3 gives — a reference to an
+array becoming a view, a reference becoming a trait object, a value becoming
+one the collector holds — happen in any of those places and not only at a
+call:
+
+    fn area(q: &Sq): &dyn Shape { q }
+
+    let s: &dyn Shape = if c { &sq } else { &ci }
+
+It reaches one expression and no further. Those three pass it on because each
+is nothing but a choice among values; everything else has spent it, which is
+what keeps "f(if c { 1 } else { 2 })" from offering the parameter's type to
+the two numbers inside. An expectation converts where it can and reports
+where it cannot: a branch that disagrees with what was wanted is still a
+branch that disagrees. A loop that can end by itself has "null" among the values it
 yields, which is the same rule asked of the loop.
 
 What a <block_expr> is not is an operand. It sits beside <assignment> under
@@ -2468,16 +2489,18 @@ answer is not obvious from the rules alone.
     known until it has run -- which is the same relocation a "str" global has
     been waiting for.
 
-    What is not done. The coercion happens where an argument is handed over
-    and where a name is bound, and not where a branch or an array element
-    would want it: "let s: &dyn Shape = if c { &a } else { &b }" is refused,
-    because what a branch is worth is worked out from the branches rather than
-    from what is wanted of them. A bare "dyn Shape" as a parameter or a return
-    type is not refused where it is written, which is the gap a "T[]" has in
-    the same place and for the same reason -- nothing checks a signature for
-    types nothing can hold. And there is no owned form: a trait object lives
-    as long as what it was made from, so a container of them wants the "gc"
-    binding to allocate, and it does not yet.
+    Where the conversion may happen is section 5's and is answered there: a
+    body, a branch, an arm and a block's tail all know what is expected of
+    them, so "let s: &dyn Shape = if c { &a } else { &b }" is written.
+
+    What is not done. A bare "dyn Shape" as a parameter or a return type is
+    not refused where it is written, which is the gap a "T[]" has in the same
+    place and for the same reason -- nothing checks a signature for types
+    nothing can hold. An array element and a struct field are not yet places
+    an expectation reaches, so a "&dyn Shape" in either is written out rather
+    than converted into. And there is no owned form: a trait object lives as
+    long as what it was made from, so a container of them wants a "gc" of one,
+    which is a shape neither word has been asked to make yet.
   - Where a program begins is settled and what it is handed is not. "main" at
     the top of the root module, taking nothing, its integer answer the exit
     status and everything else exiting zero (section 1). What is missing is

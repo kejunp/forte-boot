@@ -1134,3 +1134,115 @@ fn a_collected_value_outlives_the_frame_that_made_it() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 4 tests"), "{}", said);
 }
+
+// ---- Where a conversion may happen ------------------------------------------------
+
+// The three conversions, made where the value is *written* rather than only
+// where it is handed to something.
+//
+// A conversion happens where a type is expected of a value: `&T[8]` becomes a
+// view, `&Sq` becomes a `&dyn Shape`, and a `Buf` becomes a `gc Buf`. What used
+// to be expected of nothing was a branch, a tail and a body -- so
+// `fn f(q: &Sq): &dyn Shape { q }` was "this body gives back `&Sq`", and
+// `let s: &dyn Shape = if c { x } else { y }` was two branches compared against
+// each other, disagreeing, and never getting as far as a conversion.
+//
+// All three are asserted through each of the four places, because the machinery
+// is one and a conversion missing in one position is missing in all of them.
+// The `if` is run both ways: a branch that converts only on the path taken is a
+// program that works until the condition changes.
+#[test]
+fn a_conversion_happens_wherever_a_type_is_expected() {
+    let dir = std::env::temp_dir().join(format!("fortec-expect-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("expect.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         trait Shape {\n\
+         \x20   fn area(&self): i64\n\
+         }\n\
+         struct Sq { pub s: i64 }\n\
+         struct Ci { pub r: i64 }\n\
+         struct Buf { pub n: i64 }\n\
+         impl Shape for Sq {\n\
+         \x20   fn area(&self): i64 { self.s * self.s }\n\
+         }\n\
+         impl Shape for Ci {\n\
+         \x20   fn area(&self): i64 { self.r * 3 }\n\
+         }\n\
+         \n\
+         fn summed(xs: &i64[], n: i64): i64 {\n\
+         \x20   var t = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       t = t + xs[i]\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   t\n\
+         }\n\
+         \n\
+         // The body's answer, held to what the signature says.\n\
+         fn as_object(q: &Sq): &dyn Shape { q }\n\
+         fn as_collected(n: i64): gc Buf { Buf { n: n } }\n\
+         fn as_view(a: &i64[4]): &i64[] { a }\n\
+         \n\
+         // And through a branch, an arm, and a block's tail.\n\
+         fn by_branch(c: bool, x: &Sq, y: &Ci): i64 {\n\
+         \x20   let s: &dyn Shape = if c { x } else { y }\n\
+         \x20   s.area()\n\
+         }\n\
+         fn by_arm(k: i64, x: &Sq, y: &Ci): i64 {\n\
+         \x20   let s: &dyn Shape = match k { 0 => x, _ => y }\n\
+         \x20   s.area()\n\
+         }\n\
+         fn by_tail(c: bool, x: &Sq, y: &Ci): i64 {\n\
+         \x20   let s: &dyn Shape = {\n\
+         \x20       let held = 1\n\
+         \x20       if c { x } else { y }\n\
+         \x20   }\n\
+         \x20   s.area()\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_body_converts_to_what_its_signature_says() {\n\
+         \x20   let q = Sq { s: 5 }\n\
+         \x20   assert_eq(int(as_object(&q).area()), int(25), \"a trait object\")\n\
+         \x20   assert_eq(int(as_collected(9).n), int(9), \"a collected value\")\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   assert_eq(int(summed(as_view(&a), 4)), int(10), \"and a view\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn each_way_out_of_a_branch_converts() {\n\
+         \x20   let q = Sq { s: 5 }\n\
+         \x20   let c = Ci { r: 4 }\n\
+         \x20   assert_eq(int(by_branch(true, &q, &c)), int(25), \"the way taken\")\n\
+         \x20   assert_eq(int(by_branch(false, &q, &c)), int(12), \"and the other one\")\n\
+         \x20   assert_eq(int(by_arm(0, &q, &c)), int(25), \"an arm\")\n\
+         \x20   assert_eq(int(by_arm(1, &q, &c)), int(12), \"and another arm\")\n\
+         \x20   assert_eq(int(by_tail(true, &q, &c)), int(25), \"and a block's tail\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_is_expected_reaches_one_expression_and_no_further() {\n\
+         \x20   // The `if` is the argument, so what is expected of it is the\n\
+         \x20   // parameter's type -- and the two numbers inside it are the\n\
+         \x20   // `if`'s own business, not the call's.\n\
+         \x20   assert_eq(int(summed(&[1, 2, 3, 4], if true { 2 } else { 4 })), int(3),\n\
+         \x20             \"the branches are numbers and stay numbers\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "expect");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "conversions were meant to reach these places:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

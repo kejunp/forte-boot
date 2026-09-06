@@ -202,6 +202,26 @@ pub struct Lowerer<'a> {
     // prefix: the trait's own parameters are its members' to write, and `Self`
     // is what a receiver's type is there.
     outer:  Vec<TTIRGeneric>,
+    // What the expression about to be lowered is expected to be, where
+    // anything expects it: the type a name was declared with, the one a
+    // signature gives back, the one a field holds.
+    //
+    // It is what lets a conversion happen where the value is *written* rather
+    // than only where it is handed over. `let s: &dyn Shape = if c { &a }
+    // else { &b }` has no one type among its branches -- each is a reference
+    // to a different struct -- and what makes it one is that both know what
+    // was wanted of them. Without it the two branches were compared against
+    // each other, disagreed, and the `let` never got as far as converting
+    // anything.
+    //
+    // One expression deep, and taken rather than borrowed: `expr` clears it
+    // as it starts, so it reaches exactly the expression it was set for.
+    // What passes it on is the three that are transparent to a value -- an
+    // `if`, a `match` and a block hand it to their branches and their tail,
+    // being nothing but a choice among values -- and everything else has
+    // spent it. That is what keeps `f(if c { 1 } else { 2 })` from offering
+    // the argument's type to the two numbers inside the `if`.
+    want: Option<TyId>,
     // How many `unsafe` statements are open around what is being walked.
     //
     // `tir::lower` answers the same question for `addr` and `deref`, which it
@@ -317,6 +337,7 @@ impl<'a> Lowerer<'a> {
             params: Vec::new(),
             outer: Vec::new(),
             bounds: Vec::new(),
+            want: None,
             guarded: 0,
             consts: HashMap::new(),
             answers: HashMap::new(),

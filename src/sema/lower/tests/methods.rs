@@ -305,3 +305,54 @@ fn a_collected_value_does_not_become_an_ordinary_one() {
         "{}fn f(b: gc Buf): i32 {{ plain(b) }}\n", with));
     assert!(out.contains("gc Buf"), "{}", out);
 }
+
+// ---- What a value is expected to be ---------------------------------------------
+
+// A conversion happens where a type is expected of a value, and the four
+// places that expect one are a body, a branch, an arm and a block's tail.
+#[test]
+fn a_body_converts_to_what_its_signature_says() {
+    let with = "trait Shape {\n    fn area(&self): i32\n}\n\
+                struct Sq {\n    pub s: i32,\n}\n\
+                impl Shape for Sq {\n    fn area(&self): i32 { 0 }\n}\n";
+    clean(&format!("{}fn f(q: &Sq): &dyn Shape {{ q }}\n", with));
+    // And the view, which had the same gap and is not a `dyn` at all -- the
+    // machinery is one, so it was missing in all three or in none.
+    clean("fn f(a: &i32[4]): &i32[] { a }\n");
+}
+
+#[test]
+fn every_way_out_of_a_branch_converts() {
+    let with = "trait Shape {\n    fn area(&self): i32\n}\n\
+                struct Sq {\n    pub s: i32,\n}\n\
+                struct Ci {\n    pub r: i32,\n}\n\
+                impl Shape for Sq {\n    fn area(&self): i32 { 0 }\n}\n\
+                impl Shape for Ci {\n    fn area(&self): i32 { 0 }\n}\n";
+    clean(&format!(
+        "{}fn f(c: bool, x: &Sq, y: &Ci): i32 {{\n\
+         \x20   let s: &dyn Shape = if c {{ x }} else {{ y }}\n    s.area()\n}}\n",
+        with));
+    clean(&format!(
+        "{}fn f(k: i32, x: &Sq, y: &Ci): i32 {{\n\
+         \x20   let s: &dyn Shape = match k {{ 0 => x, _ => y }}\n    s.area()\n}}\n",
+        with));
+}
+
+// And it reaches one expression and no further: an `if` handed to a call is
+// the call's business, and the numbers inside the `if` are the `if`'s. What
+// passes an expectation on is the three that are transparent to a value.
+#[test]
+fn an_expectation_reaches_one_expression() {
+    // The parameter is an `i32`, the branches are numbers, and nothing here
+    // tries to make either into the other.
+    clean("fn g(n: i32): i32 { n }\n\
+           fn f(c: bool): i32 { g(if c { 1 } else { 2 }) }\n");
+    // A branch that disagrees with what was wanted is still a branch that
+    // disagrees: an expectation converts where it can and reports where it
+    // cannot.
+    let out = refused(
+        "struct Sq {\n    pub s: i32,\n}\n\
+         fn f(c: bool, q: Sq): i32 {\n    let n: i32 = if c { q } else { 1 }\n    n\n}\n",
+    );
+    assert!(out.contains("Sq"), "{}", out);
+}

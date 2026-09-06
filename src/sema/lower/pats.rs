@@ -22,6 +22,9 @@ impl<'a> Lowerer<'a> {
         &mut self,
         scrutinee: TIRExprId,
         arms: &[crate::tir::tir_nodes::TIRArm],
+        // What was expected of the `match`, which is what is expected of each
+        // arm. See `Lowerer::want`.
+        wanted: Option<TyId>,
         at: TIRExprId,
     ) -> TTIRExprId {
         let s = self.expr(scrutinee);
@@ -34,7 +37,13 @@ impl<'a> Lowerer<'a> {
             // one `x` and one body.
             self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
             let pats: Vec<TTIRPatId> = arm.pats.iter().map(|&p| self.pat(p, want)).collect();
+            // Each arm is handed what was wanted of the `match`, an arm
+            // being a value the whole is worth exactly as an `if`'s branch
+            // is. `want` here is the *scrutinee's*, which is a different
+            // question and is `self.want`'s to answer.
+            self.want = wanted;
             let body = self.expr(arm.body);
+            let body = self.held_to(body, wanted);
             self.frames.last_mut().expect("a frame").scopes.pop();
 
             let found = self.out.exprs[body].ty;
