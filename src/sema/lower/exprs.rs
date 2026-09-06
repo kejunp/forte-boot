@@ -549,6 +549,23 @@ impl<'a> Lowerer<'a> {
                             )),
                         );
                     }
+                    // And a trait object, for the same reason said the other
+                    // way round: how wide one is is not a question with an
+                    // answer, which is what makes it dynamic at all.
+                    if matches!(self.types.get(ty), Ty::Dyn(_)) {
+                        let held = self.spell(ty);
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("`{}` is a trait object and nothing holds one", held),
+                                self.at(at),
+                            )
+                            .with_label("a name would have to know how wide it is")
+                            .with_help(format!(
+                                "`&{}` borrows one, which carries the table beside it",
+                                held
+                            )),
+                        );
+                    }
                     let where_ = match init {
                         Some(init) => Span::at(
                             self.out.exprs[init].line,
@@ -622,6 +639,7 @@ impl<'a> Lowerer<'a> {
             if self.types.unify(found, want).is_err()
                 && !self.weakens(found, want)
                 && !self.views(found, want)
+                && !self.objects(found, want)
             {
                 let (found, want) = (self.spell(found), self.spell(want));
                 self.errors.push(
@@ -728,6 +746,45 @@ impl<'a> Lowerer<'a> {
         self.types.unify(elem, held).is_ok()
     }
 
+    // Whether a reference to something becomes a reference to a trait object.
+    //
+    // The same shape as `views` above and for the same reason: one type
+    // standing where another was wanted, with the reference kept and what is
+    // behind it widened. `&Sq` becomes `&dyn Shape` where `Sq` answers
+    // `Shape`, and a `*` stands where a `&` is wanted as it does everywhere.
+    //
+    // What makes it sound is that nothing goes the other way: a `&dyn Shape`
+    // is not a `&Sq`, having forgotten which type it was.
+    pub(super) fn objects(&mut self, found: TyId, want: TyId) -> bool {
+        let (
+            Ty::Ref { op: from_op, inner: from, .. },
+            Ty::Ref { op: want_op, inner: to, .. },
+        ) = (self.types.get(found).clone(), self.types.get(want).clone())
+        else {
+            return false;
+        };
+        let kept = from_op == want_op
+            || (from_op == TIRRefOp::Mut && want_op == TIRRefOp::Imm);
+        if !kept {
+            return false;
+        }
+        let Ty::Dyn(of) = self.types.get(to).clone() else { return false };
+        let Ty::Named { item, .. } = self.types.get(from).clone() else { return false };
+        self.answers(item, of)
+    }
+
+    // Whether that type has an impl of that trait. What `dyn` is held to: a
+    // reference becomes an object only where there is something for the table
+    // to be built out of.
+    pub(super) fn answers(&self, item: TTIRItemId, of: TTIRItemId) -> bool {
+        self.out.items.iter().any(|held| {
+            let TTIRItemKind::Impl { ty, of: written, .. } = &held.kind else { return false };
+            *written == Some(of)
+                && matches!(self.types.get(*ty), Ty::Named { item: subject, .. }
+                            if *subject == item)
+        })
+    }
+
     // The expression as a view, where a view is what was wanted and what it is
     // is a reference to an array. Anything else comes back as it was.
     //
@@ -738,7 +795,7 @@ impl<'a> Lowerer<'a> {
     // moves out of the type and into the value.
     pub(super) fn viewed(&mut self, got: TTIRExprId, want: TyId) -> TTIRExprId {
         let found = self.out.exprs[got].ty;
-        if !self.views(found, want) {
+        if !self.views(found, want) && !self.objects(found, want) {
             return got;
         }
         // Where the operand stands, for the reason `read_through` gives: nobody

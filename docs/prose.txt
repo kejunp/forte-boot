@@ -771,6 +771,32 @@ The two compose with everything a type does: "&Point", "*i32", "Vec<&str>",
 "&i32[]" is a reference to a run of i32 — the view of <array_suffix> below —
 and an array of references is said with a <grouped_type>, "(&i32)[8]".
 
+<dyn_type>. "dyn Shape" is whatever type turned out to answer the trait, and
+the word is written because a call through one reaches a different body every
+time it runs. It stands in front of a trait's name and in front of nothing
+else: a "dyn" over a struct is a "dyn" over something with no impls to choose
+between.
+
+Nothing holds one. How wide a "dyn Shape" is is not a question with an answer
+— that is what makes it dynamic — so it stands behind a reference exactly as a
+"T[]" does, and it is <type>'s and not a <base_type> for the same reason a
+<fn_type> is: it takes no array suffix of its own.
+
+"&dyn Shape" is two words: where the value is, and where the routines that
+answer for it are. A "&Sq" becomes one wherever one is wanted, which is the
+same conversion a "&T[8]" makes into a view — the reference is kept, a "*"
+stands where a "&" is asked for, and what is behind it widens. Nothing goes
+the other way: an object has forgotten which type it was.
+
+    trait Shape {
+        fn area(&self): i64
+    }
+
+    fn total(s: &dyn Shape): i64 { s.area() }
+
+    let q = Sq { s: 5 }
+    total(&q)               // &Sq becomes &dyn Shape here
+
 <ptr_type>. "ptr T" is an address and nothing else. It is the one type the
 checker has nothing to say about: no lifetime, so nothing says how long what
 it addresses is good for; no aliasing rule, so any number of them may point
@@ -2370,6 +2396,43 @@ answer is not obvious from the rules alone.
     signature introduced, so "where i32: Show" is refused (section 2).
     Settled. What a bound *means* is still a question for whatever checks
     traits, and nothing here says it.
+  - A trait is answered dynamically as well as statically, and "&dyn Shape" is
+    how the second is written (section 3). Settled, and it is what "%derive"
+    and a "Display" were waiting for -- "traits with code behind them" is the
+    thing the attribute list says is missing, and this is it.
+
+    The word is written because a call through one reaches a different body
+    every time it runs, and the signature that takes one is where that is
+    worth saying. It stands in front of the trait's name and nowhere else: a
+    "dyn" over a struct is a "dyn" over something with no impls to choose
+    between, and is refused.
+
+    Nothing holds a bare one. How wide a "dyn Shape" is is not a question with
+    an answer -- that is what makes it dynamic -- so it stands behind a
+    reference exactly as a "T[]" does, and "&dyn Shape" is two words: where
+    the value is, and where the routines that answer for it are. A "&Sq"
+    becomes one wherever one is wanted, which is the same coercion a "&T[8]"
+    makes into a view and is written the same way in the tree; nothing goes
+    the other way, an object having forgotten which type it was.
+
+    The table is a run of addresses in the order the trait declared its
+    members, one table per pair of a type and a trait. A call reads the
+    member's *place* and not its name, so the two ends agree by counting and
+    the trait is the declaration both of them read. It is the first thing in
+    this compiler to want a constant the linker fills in -- an address is not
+    known until it has run -- which is the same relocation a "str" global has
+    been waiting for.
+
+    What is not done. The coercion happens where an argument is handed over
+    and where a name is bound, and not where a branch or an array element
+    would want it: "let s: &dyn Shape = if c { &a } else { &b }" is refused,
+    because what a branch is worth is worked out from the branches rather than
+    from what is wanted of them. A bare "dyn Shape" as a parameter or a return
+    type is not refused where it is written, which is the gap a "T[]" has in
+    the same place and for the same reason -- nothing checks a signature for
+    types nothing can hold. And there is no owned form: a trait object lives
+    as long as what it was made from, so a container of them wants the "gc"
+    binding to allocate, and it does not yet.
   - Where a program begins is settled and what it is handed is not. "main" at
     the top of the root module, taking nothing, its integer answer the exit
     status and everything else exiting zero (section 1). What is missing is

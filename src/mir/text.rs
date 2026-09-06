@@ -53,7 +53,11 @@ pub fn render(p: &MIRProgram, m: Machine) -> String {
     if !p.pool.is_empty() {
         out.push_str("pool:\n");
         for held in &p.pool {
-            let _ = writeln!(out, "    {} = {}", held.symbol, quoted(&held.bytes));
+            let shown = match &held.held {
+                MIRConstBody::Bytes(bytes) => quoted(bytes),
+                MIRConstBody::Words(names) => format!("[{}]", names.join(", ")),
+            };
+            let _ = writeln!(out, "    {} = {}", held.symbol, shown);
         }
     }
     out

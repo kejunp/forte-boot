@@ -267,6 +267,21 @@ impl<'a> Lowerer<'a> {
             // is the trait's. Which impl that becomes is settled where the
             // caller's type is known, in `mir::mono`.
             Ty::Param { index, .. } => return self.bound_method(index, name, ty),
+            // A trait object, whose methods are the trait's. There is no impl
+            // to find and there is not meant to be: which one answers is what
+            // the table beside the value says, and it says it while the
+            // program runs. So what is named here is the *declaration* -- and
+            // `mir::lower` calls through the table rather than through the
+            // name, which is the whole of what makes it dynamic.
+            Ty::Dyn(of) => {
+                let TTIRItemKind::Trait { members, .. } = &self.out.items[of].kind else {
+                    return None;
+                };
+                return members.iter().copied().find(|&member| {
+                    matches!(&self.out.items[member].kind,
+                             TTIRItemKind::Fn(f) if f.name == name)
+                });
+            }
             _ => return None,
         };
         for item in &self.out.items {

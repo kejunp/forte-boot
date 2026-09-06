@@ -49,7 +49,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::sema::names::{part, Mangler};
 use crate::sir::sir_nodes::*;
-use crate::tir::ttir_nodes::{TTIRItemKind, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{TTIRItemId, TTIRItemKind, TTIRProgram, Ty, TyId};
 
 // How deep a chain of instances may go before it is taken to be one that does
 // not end. Every instance in a chain is a use written inside the one before it,
@@ -77,6 +77,18 @@ pub struct Made {
     // machine's question into the SIR's vocabulary. Keeping it beside is what
     // leaves `sir_nodes.rs` alone.
     pub symbol_of: HashMap<(SIRBodyId, SIRBlockId, usize), String>,
+    // And what a *table* named there holds, which is the same question asked
+    // of a coercion to a trait object: one address per member of the trait, in
+    // the order the trait declared them.
+    //
+    // Beside `symbol_of` and not in it because one instruction names several
+    // declarations here, which is the one place that happens -- a call names
+    // the one thing it calls, and a `&Sq` becoming a `&dyn Shape` names every
+    // routine `Sq` answers `Shape` with. Asking for them here rather than in
+    // `mir::lower` is what makes them *reached*: a member nothing else calls
+    // is a body nothing else would have made, and the table would name a
+    // symbol the linker never saw.
+    pub table_of:  HashMap<(SIRBodyId, SIRBlockId, usize), Vec<String>>,
     // How many bodies were made from a declaration that took type parameters.
     pub instances: usize,
     // The chains that did not end. Empty for a program with an answer.
@@ -109,6 +121,7 @@ struct Mono<'a> {
     out:     Vec<SIRBody>,
     symbols: Vec<String>,
     named:   HashMap<(SIRBodyId, SIRBlockId, usize), String>,
+    tables:  HashMap<(SIRBodyId, SIRBlockId, usize), Vec<String>>,
     // Which body each instance became, by its symbol, so that one is made once
     // however many places reach it.
     //
@@ -142,6 +155,7 @@ pub fn monomorphise(ttir: &TTIRProgram, sir: &SIRProgram, tests: bool) -> Made {
         out: Vec::new(),
         symbols: Vec::new(),
         named: HashMap::new(),
+        tables: HashMap::new(),
         done: HashMap::new(),
         queue: VecDeque::new(),
         refused: Vec::new(),
@@ -154,6 +168,7 @@ pub fn monomorphise(ttir: &TTIRProgram, sir: &SIRProgram, tests: bool) -> Made {
         sir:       SIRProgram { bodies: m.out },
         symbols:   m.symbols,
         symbol_of: m.named,
+        table_of:  m.tables,
         instances: m.made,
         refused:   m.refused,
     }
@@ -421,6 +436,18 @@ impl<'a> Mono<'a> {
                 }
             }
         }
+
+        // And the tables, which name several at once. Kept apart from the walk
+        // above because that one files one name per instruction and this files
+        // a list -- see `Made::table_of`.
+        for at in 0..body.blocks.len() {
+            for i in 0..body.blocks[at].insts.len() {
+                let inst = body.blocks[at].insts[i].clone();
+                if let Some(held) = self.table(&inst, &body, job) {
+                    self.tables.insert((job.to, at, i), held);
+                }
+            }
+        }
         body
     }
 
@@ -428,6 +455,100 @@ impl<'a> Mono<'a> {
     // where an instance is asked for: a declaration whose own type still has
     // parameters in it, reached by a use whose types have none, and the two
     // together say what each parameter stands for.
+    // A coercion to a trait object, and the routines the object answers with.
+    //
+    // What is written down is a `Cast` -- the same node the array-to-view
+    // conversion uses, and for the same reason: nobody wrote either, and both
+    // are one type standing where another was wanted. Which one it is, is read
+    // off the two types: a value becoming a reference to a `Ty::Dyn` is this
+    // and nothing else is.
+    //
+    // The order is the trait's. A call through the object knows the member's
+    // *place* and not its name (`mir::lower`), so the two ends have to agree,
+    // and the declaration is what both read.
+    fn table(&mut self, inst: &SIRInst, body: &SIRBody, job: &Job) -> Option<Vec<String>> {
+        let SIRInstKind::Cast(value) = inst.kind else { return None };
+        let want = body.values.get(inst.def?)?.ty;
+        let held = body.values.get(value)?.ty;
+        let of = self.object_trait(want)?;
+        let TTIRItemKind::Trait { members, .. } = &self.p.items.get(of)?.kind else {
+            return None;
+        };
+        let members = members.clone();
+        // What it was before the coercion, which is the type the impl is
+        // written for.
+        let concrete = self.referent(held);
+        let Some(Ty::Named { item: concrete, .. }) = self.p.types.get(concrete).cloned() else {
+            return None;
+        };
+
+        let mut out = Vec::with_capacity(members.len());
+        for member in members {
+            let TTIRItemKind::Fn(f) = &self.p.items.get(member)?.kind else { return None };
+            let name = f.name.clone();
+            let answered = self.answering_impl(of, concrete, &name)?;
+            // The receiver is what says what the impl's own parameters stand
+            // for: `&Box<i64>` against a declared `&Box<T>` is the whole of
+            // what makes this the `i64` instance. `declaration` both names it
+            // and asks for the body, which is what keeps a member nothing else
+            // calls from being a symbol the linker never saw.
+            let said = Said::Parts { params: vec![held], ret: None };
+            out.push(self.declaration(answered, said, job)?);
+        }
+        Some(out)
+    }
+
+    // The trait a value of this type is an object of, where it is one: a
+    // reference to a `Ty::Dyn` and nothing else.
+    fn object_trait(&self, ty: TyId) -> Option<TTIRItemId> {
+        let (Ty::Ref { inner, .. } | Ty::Ptr(inner)) = self.p.types.get(ty)? else {
+            return None;
+        };
+        match self.p.types.get(*inner)? {
+            Ty::Dyn(item) => Some(*item),
+            _ => None,
+        }
+    }
+
+    // Through one reference, which is what a coercion of `&Sq` is written on.
+    fn referent(&self, ty: TyId) -> TyId {
+        match self.p.types.get(ty) {
+            Some(Ty::Ref { inner, .. } | Ty::Ptr(inner)) => *inner,
+            _ => ty,
+        }
+    }
+
+    // The member of that name in the impl of that trait for that type. This is
+    // `sema`'s `method_of` asked the other way round -- there the type is known
+    // and the name is looked for, here both are and the *body* is wanted.
+    fn answering_impl(
+        &self,
+        of: TTIRItemId,
+        concrete: TTIRItemId,
+        name: &str,
+    ) -> Option<TTIRItemId> {
+        for item in &self.p.items {
+            let TTIRItemKind::Impl { ty, of: written, members, .. } = &item.kind else {
+                continue;
+            };
+            if *written != Some(of) {
+                continue;
+            }
+            let Some(Ty::Named { item: subject, .. }) = self.p.types.get(*ty) else { continue };
+            if *subject != concrete {
+                continue;
+            }
+            for &member in members {
+                if let Some(TTIRItemKind::Fn(f)) = self.p.items.get(member).map(|i| &i.kind) {
+                    if f.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn names(&mut self, inst: &SIRInst, body: &SIRBody, job: &Job) -> Option<String> {
         let ty_of = |value: SIRValueId| body.values.get(value).map(|held| held.ty);
         match &inst.kind {
@@ -642,7 +763,7 @@ impl<'a> Mono<'a> {
         let Some(held) = self.p.types.get(ty).cloned() else { return ty };
         let made = match held {
             Ty::Param { index, .. } => return args.get(index).copied().unwrap_or(ty),
-            Ty::Prim(_) | Ty::Var(_) | Ty::Error => return ty,
+            Ty::Prim(_) | Ty::Var(_) | Ty::Error | Ty::Dyn(_) => return ty,
             Ty::Ref { op, life, inner } => {
                 Ty::Ref { op, life, inner: self.subst(inner, args) }
             }

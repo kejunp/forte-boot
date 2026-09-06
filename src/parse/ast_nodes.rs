@@ -258,6 +258,10 @@ pub enum ASTNodeKind {
     // nothing about how long what it points at is good for -- which is what
     // keeps it inside an `unsafe`.
     PtrType(ASTNodeId),
+    // `dyn Shape`: whatever type turned out to answer the trait. The child is
+    // the <named_type> after the word, which is a name like any other here --
+    // whether it names a trait at all is the checker's to say.
+    DynType(ASTNodeId),
     // `T[8]`: a fixed array, owned, its length in its type.
     Array {
         elem: ASTNodeId,

@@ -288,6 +288,7 @@ pub(super) fn keyword_of(word: &str) -> Option<TokType> {
         "macro" => TokType::Macro,
         "unsafe" => TokType::Unsafe,
         "gc" => TokType::Gc,
+        "dyn" => TokType::Dyn,
 
         // Control flow
         "if" => TokType::If,

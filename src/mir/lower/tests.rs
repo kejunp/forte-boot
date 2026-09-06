@@ -122,7 +122,7 @@ fn a_boolean_is_a_nought_or_a_one() {
 fn a_string_goes_in_the_pool_and_leaves_a_symbol_behind() {
     let p = lowered("fn f(): str { \"hi\" }\n");
     assert_eq!(p.pool.len(), 1, "{:#?}", p.pool);
-    assert_eq!(p.pool[0].bytes, b"hi".to_vec());
+    assert_eq!(p.pool[0].held, MIRConstBody::Bytes(b"hi".to_vec()));
     let name = p.pool[0].symbol.clone();
     assert!(
         has(&p, "1f", |k| matches!(k, MIRInstKind::Symbol(held) if *held == name)),

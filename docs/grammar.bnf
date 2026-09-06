@@ -282,7 +282,19 @@
 <type>                  ::= <ref_type>
                           | <ptr_type>
                           | <fn_type>
+                          | <dyn_type>
                           | <base_type> <array_suffix_list>
+
+# Something that answers a trait, whichever type it turned out to be. The word
+# is written because a call through one reaches a different body every time it
+# runs, and a signature that takes one is where that is worth saying.
+#
+# Here and not among the <base_type>s, for the reason <fn_type> is: it takes no
+# array suffix of its own. Nothing can hold a bare "dyn Shape" -- how wide one
+# is is not a question with an answer, exactly as for a "T[]" -- so a reference
+# is what a signature takes, and "&dyn Shape" is two words: where the value is,
+# and where the routines that answer for it are.
+<dyn_type>              ::= "dyn" <named_type>
 
 # What a closure is, written down. The word and the shape a <fn_decl> has, with
 # the name and the parameter names gone: what a caller hands over is types, and

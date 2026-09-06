@@ -71,7 +71,20 @@ pub struct MIRGlobal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MIRConstant {
     pub symbol: String,
-    pub bytes:  Vec<u8>,
+    pub held:   MIRConstBody,
+}
+
+// What is under a constant's name. Two kinds, and the second is the one this
+// compiler cannot write the bytes of: an address is not known until the linker
+// has run, so a table of them is a run of *names* and a relocation apiece.
+//
+// That is what a trait object's table is -- one address per member of the
+// trait, in the order the trait declared them -- and it is the first thing here
+// to want one. A `str` global wants the same and does not have it yet (§8).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MIRConstBody {
+    Bytes(Vec<u8>),
+    Words(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

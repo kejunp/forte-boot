@@ -184,3 +184,70 @@ fn a_member_may_not_re_declare_the_impls_parameter() {
     );
     assert!(out.contains("`T` is already a parameter of this impl"), "{}", out);
 }
+
+// ---- Trait objects -------------------------------------------------------------
+
+// `dyn` takes the name of a trait and of nothing else. A `dyn` over a struct
+// would be a `dyn` over something with no impls to choose between, which is a
+// mistake and not a shorthand.
+#[test]
+fn dyn_stands_in_front_of_a_trait() {
+    clean("trait Shape {\n    fn area(&self): i32\n}\n\
+           fn f(s: &dyn Shape): i32 { s.area() }\n");
+    let out = refused("struct Sq {\n    pub s: i32,\n}\n\
+                       fn f(s: &dyn Sq): i32 { 0 }\n");
+    assert!(out.contains("`Sq` is not a trait"), "{}", out);
+    let out = refused("fn f(s: &dyn Nowhere): i32 { 0 }\n");
+    assert!(out.contains("no trait is called `Nowhere`"), "{}", out);
+}
+
+// A reference to something that answers the trait stands where a reference to
+// the object was wanted, and nothing goes the other way: an object has
+// forgotten which type it was.
+#[test]
+fn a_reference_becomes_an_object_where_the_type_answers() {
+    let with = "trait Shape {\n    fn area(&self): i32\n}\n\
+                struct Sq {\n    pub s: i32,\n}\n\
+                impl Shape for Sq {\n    fn area(&self): i32 { 0 }\n}\n\
+                struct Bare {\n    pub n: i32,\n}\n\
+                fn take(s: &dyn Shape): i32 { s.area() }\n";
+    clean(&format!("{}fn f(q: &Sq): i32 {{ take(q) }}\n", with));
+    // One that answers nothing has no table to be given, so it is not one.
+    let out = refused(&format!("{}fn f(b: &Bare): i32 {{ take(b) }}\n", with));
+    assert!(out.contains("&Bare"), "{}", out);
+    assert!(out.contains("dyn Shape"), "{}", out);
+}
+
+// Nothing holds a bare one: how wide it is is not a question with an answer,
+// which is what makes it dynamic. The same rule a `T[]` is held to, and the
+// same message shape.
+#[test]
+fn nothing_holds_a_bare_trait_object() {
+    let out = refused(
+        "trait Shape {\n    fn area(&self): i32\n}\n\
+         struct Sq {\n    pub s: i32,\n}\n\
+         impl Shape for Sq {\n    fn area(&self): i32 { 0 }\n}\n\
+         fn f() {\n    let q = Sq { s: 1 }\n    let s: dyn Shape = q\n}\n",
+    );
+    assert!(out.contains("is a trait object and nothing holds one"), "{}", out);
+}
+
+// A method reached through an object is the *trait's* member: which impl
+// answers is what the table says, and it says it while the program runs.
+#[test]
+fn a_method_on_an_object_names_the_traits_member() {
+    let ttir = clean(
+        "trait Shape {\n    fn area(&self): i32\n}\n\
+         fn f(s: &dyn Shape): i32 { s.area() }\n",
+    );
+    let found = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Method { item, .. } => Some(*item),
+        _ => None,
+    }).expect("a method call");
+    // The trait declares it, so the trait is what holds it.
+    assert!(
+        ttir.items.iter().any(|i| matches!(&i.kind,
+            TTIRItemKind::Trait { members, .. } if members.contains(&found))),
+        "the member is the trait's",
+    );
+}

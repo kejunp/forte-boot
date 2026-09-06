@@ -103,7 +103,10 @@ impl Copies {
         match &p.types[ty] {
             // Nothing a primitive holds is anybody's to release, and what a
             // reference or a pointer refers to is owned somewhere else.
-            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Run(_) => false,
+            // A trait object is only ever behind a reference, and what a
+            // reference refers to is owned somewhere else -- so it is in this
+            // list for the same reason the two beside it are.
+            Ty::Prim(_) | Ty::Ref { .. } | Ty::Ptr(_) | Ty::Run(_) | Ty::Dyn(_) => false,
             // A closure that took what it captured is holding it, and what it
             // holds goes when the closure does. Which types those were is not
             // in the fn type, so this is the blunt answer: a `once fn` has
@@ -166,6 +169,9 @@ impl Copies {
             Ty::Prim(_) => true,
             // A reference copies; what it refers to is owned somewhere else.
             Ty::Ref { .. } | Ty::Ptr(_) => true,
+            // Nothing holds a bare one, so nothing copies or moves one: what
+            // copies is the reference in front of it, which is above.
+            Ty::Dyn(_) => false,
             // A closure copies where calling it does nothing to what it
             // captured. A `once fn` gives away what it holds when it is
             // called, so it has one owner and one call like any other value

@@ -446,12 +446,27 @@ pub fn symbol(name: &str) -> String {
 pub fn bytes_of(held: &MIRConstant) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{}:", symbol(&held.symbol));
-    for line in held.bytes.chunks(16) {
-        let held: Vec<String> = line.iter().map(|byte| byte.to_string()).collect();
-        let _ = writeln!(out, "\t.byte\t{}", held.join(", "));
-    }
-    if held.bytes.is_empty() {
-        let _ = writeln!(out, "\t.zero\t1");
+    match &held.held {
+        MIRConstBody::Bytes(bytes) => {
+            for line in bytes.chunks(16) {
+                let held: Vec<String> = line.iter().map(|byte| byte.to_string()).collect();
+                let _ = writeln!(out, "\t.byte\t{}", held.join(", "));
+            }
+            if bytes.is_empty() {
+                let _ = writeln!(out, "\t.zero\t1");
+            }
+        }
+        // One address per name, and the linker fills each in. `.quad` on all
+        // three: every machine here is 64-bit, and the directive is the one
+        // GNU as spells the same way for each of them.
+        MIRConstBody::Words(names) => {
+            for name in names {
+                let _ = writeln!(out, "\t.quad\t{}", symbol(name));
+            }
+            if names.is_empty() {
+                let _ = writeln!(out, "\t.zero\t1");
+            }
+        }
     }
     out
 }

@@ -487,6 +487,7 @@ impl<'a> Lowerer<'a> {
                 TIRTypeKind::Ref { op: ref_op(op), life, inner: self.ty(inner) }
             }
             ASTNodeKind::PtrType(inner) => TIRTypeKind::Ptr(self.ty(inner)),
+            ASTNodeKind::DynType(inner) => TIRTypeKind::Dyn(self.ty(inner)),
             ASTNodeKind::Array { elem, len } => {
                 TIRTypeKind::Array { elem: self.ty(elem), len: self.expr(len) }
             }

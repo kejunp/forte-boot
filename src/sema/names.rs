@@ -395,6 +395,18 @@ impl Mangler {
         match &p.types[id] {
             Ty::Prim(prim) => prim_name(*prim).to_string(),
 
+            // The trait's full path with the word in front, so that two
+            // objects of two traits are two spellings -- which is what the
+            // table's own symbol is named after.
+            Ty::Dyn(item) => {
+                let mut out = String::from("dyn ");
+                out.push_str(
+                    &self.paths[*item].iter().map(|s| format!("{}::", s)).collect::<String>(),
+                );
+                out.push_str(&name_of(*item, p));
+                out
+            }
+
             Ty::Named { item, args, .. } => {
                 let mut out = self.paths[*item]
                     .iter()

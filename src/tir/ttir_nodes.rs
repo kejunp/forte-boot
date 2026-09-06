@@ -168,6 +168,15 @@ pub enum Ty {
     // `ptr T`. No region: a pointer is what the checker stopped answering for,
     // and there is nothing here for it to have worked out.
     Ptr(TyId),
+    // `dyn Shape`: whatever type turned out to answer the trait, which is not
+    // known here and is the point. The item is the trait.
+    //
+    // Nothing holds one. How wide it is is not a question with an answer --
+    // that is what makes it dynamic -- so it stands behind a reference and
+    // nowhere else, exactly as a `T[]` does, and `&dyn Shape` is the two words
+    // a reference to one is: where the value is, and where the routines that
+    // answer for it are.
+    Dyn(TTIRItemId),
     // `T[8]`. The length is a number by now: an <array_suffix> takes a
     // <const_expr>, and evaluating one is the checker's.
     Array {

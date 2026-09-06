@@ -466,6 +466,43 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            // `dyn Shape`: the name has to be a trait, and it is the one
+            // place a type position takes one. A struct there would be a
+            // `dyn` over something with no impls to dispatch between, which
+            // is a mistake and not a shorthand.
+            TIRTypeKind::Dyn(inner) => {
+                let TIRTypeKind::Named { path, .. } = self.tir.types[inner].kind.clone() else {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "`dyn` takes the name of a trait".to_string(),
+                            at,
+                        )
+                        .with_label("this is not a name"),
+                    );
+                    return self.types.error();
+                };
+                let name = path.join("::");
+                let Some(item) = self.look(&name) else {
+                    self.errors.push(
+                        Diagnostic::error(format!("no trait is called `{}`", name), at)
+                            .with_label("nothing is declared under this name"),
+                    );
+                    return self.types.error();
+                };
+                if !matches!(self.out.items[item].kind, TTIRItemKind::Trait { .. }) {
+                    self.errors.push(
+                        Diagnostic::error(format!("`{}` is not a trait", name), at)
+                            .with_label("`dyn` stands in front of a trait")
+                            .with_help(
+                                "a `dyn` is what several types answer to, so what it \
+                                 names has to be the thing they answer",
+                            ),
+                    );
+                    return self.types.error();
+                }
+                self.types.intern(Ty::Dyn(item))
+            }
+
             // "Every reference in a signature with no lifetime of its own gets
             // one" -- so one is made where none was written, and a written one
             // names the region its declaration declared.

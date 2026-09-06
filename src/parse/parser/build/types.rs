@@ -29,12 +29,12 @@ impl Parser {
 
             // ---- Types, continued ----------------------------------------
             // <type> -> <fn_type>
-            372 => self.pass(c[0]),
+            373 => self.pass(c[0]),
             // <fn_type> -> <fn_uses> fn ( <type_list_opt> ) <return_type_opt>
             // "the shape a `<fn_decl>` has, with the name and the parameter
             // names gone": what a caller hands over is types. What stands in
             // front says what calling it does to what the closure captured.
-            151 => {
+            152 => {
                 let uses = match self.kind(c[0]) {
                     ASTNodeKind::Mark(ASTMark::Uses(uses)) => *uses,
                     _ => ASTFnUses::Reads,
@@ -45,53 +45,53 @@ impl Parser {
                 )
             }
             // <fn_uses> -> ε
-            152 => self.here(ASTNodeKind::Empty),
+            153 => self.here(ASTNodeKind::Empty),
             // <fn_uses> -> var
-            153 => self.at(ASTNodeKind::Mark(ASTMark::Uses(ASTFnUses::Writes)), c[0]),
+            154 => self.at(ASTNodeKind::Mark(ASTMark::Uses(ASTFnUses::Writes)), c[0]),
             // <fn_uses> -> once
-            154 => self.at(ASTNodeKind::Mark(ASTMark::Uses(ASTFnUses::Takes)), c[0]),
+            155 => self.at(ASTNodeKind::Mark(ASTMark::Uses(ASTFnUses::Takes)), c[0]),
             // <type_list_opt> -> ε
-            385 => self.here(ASTNodeKind::List(Vec::new())),
+            387 => self.here(ASTNodeKind::List(Vec::new())),
             // <type_list_opt> -> <type_list>
-            386 => self.pass(c[0]),
+            388 => self.pass(c[0]),
             // <type> -> <ref_type>
-            370 => self.pass(c[0]),
-            // <type> -> <ptr_type>
             371 => self.pass(c[0]),
+            // <type> -> <ptr_type>
+            372 => self.pass(c[0]),
             // <type> -> <base_type> <array_suffix_list>
-            373 => self.fold_suffixes(c[0], c[1]),
+            375 => self.fold_suffixes(c[0], c[1]),
             // <type_annotation_opt> -> ε
-            374 => self.here(ASTNodeKind::Empty),
+            376 => self.here(ASTNodeKind::Empty),
             // <type_annotation_opt> -> : <type>
-            375 => self.pass(c[1]),
+            377 => self.pass(c[1]),
             // <type_bound> -> <named_type>
-            377 => self.pass(c[0]),
+            379 => self.pass(c[0]),
             // <type_bound> -> <lifetime>
-            378 => self.pass(c[0]),
+            380 => self.pass(c[0]),
             // <type_bounds> -> <type_bound>
-            379 => self.one(c[0]),
+            381 => self.one(c[0]),
             // <type_bounds> -> <type_bounds> + <type_bound>
-            380 => self.grew(c[0], c[2]),
+            382 => self.grew(c[0], c[2]),
             // <type_list> -> <type>
-            383 => self.one(c[0]),
+            385 => self.one(c[0]),
             // <type_list> -> <type_list> , <type>
-            384 => self.grew(c[0], c[2]),
+            386 => self.grew(c[0], c[2]),
 
             // ---- Primitive types -----------------------------------------
             // The leaf is already a `Prim`, except for `null`, whose token is
             // the literal: the one value of the type spells the type too.
             // <primitive_type> -> i8 .. never
-            307..=321 | 323 => self.pass(c[0]),
+            308..=322 | 324 => self.pass(c[0]),
             // <primitive_type> -> null
-            322 => self.at(ASTNodeKind::Prim(ASTPrimType::Null), c[0]),
+            323 => self.at(ASTNodeKind::Prim(ASTPrimType::Null), c[0]),
 
             // ---- References ----------------------------------------------
             // <ref_op> -> &
-            337 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
+            338 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Imm)), c[0]),
             // <ref_op> -> *
-            338 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
+            339 => self.at(ASTNodeKind::Mark(ASTMark::Ref(ASTRefOp::Mut)), c[0]),
             // <ref_type> -> <ref_op> <lifetime_opt> <type>
-            339 => {
+            340 => {
                 let op = ref_of(self.mark(c[0]));
                 let life = self.opt(c[1]);
                 self.at(ASTNodeKind::RefType { op, life, inner: c[2] }, c[0])
@@ -101,20 +101,29 @@ impl Parser {
             // No <lifetime_opt> to take: a pointer is the one thing here that
             // says nothing about how long what it addresses is good for.
             // <ptr_type> -> ptr <type>
-            324 => self.at(ASTNodeKind::PtrType(c[1]), c[0]),
+            325 => self.at(ASTNodeKind::PtrType(c[1]), c[0]),
+
+            // ---- Trait objects -------------------------------------------
+            // The word and then the trait's name. No <lifetime_opt> either: a
+            // `dyn Shape` is not a reference and cannot stand alone, so what
+            // says how long it is good for is the `&` in front of it.
+            // <dyn_type> -> dyn <named_type>
+            102 => self.at(ASTNodeKind::DynType(c[1]), c[0]),
+            // <type> -> <dyn_type>
+            374 => self.pass(c[0]),
 
             // ---- Lifetimes -----------------------------------------------
             // The `~` is the lexer's; what reaches here is the name alone.
             // <lifetime> -> LIFETIME
-            209 => self.pass(c[0]),
+            210 => self.pass(c[0]),
             // <lifetime_opt> -> ε
-            210 => self.here(ASTNodeKind::Empty),
+            211 => self.here(ASTNodeKind::Empty),
             // <lifetime_opt> -> <lifetime>
-            211 => self.pass(c[0]),
+            212 => self.pass(c[0]),
             // <return_type_opt> -> ε
-            340 => self.here(ASTNodeKind::Empty),
+            341 => self.here(ASTNodeKind::Empty),
             // <return_type_opt> -> : <type>
-            341 => self.pass(c[1]),
+            342 => self.pass(c[1]),
 
             // ---- Array and run suffixes ----------------------------------
             // Both are built around a HOLE: what they are a suffix of is not
@@ -135,11 +144,11 @@ impl Parser {
             // in a list that could be of one.
             // <tuple_expr> -> ( <expression> , <expression_seq> )
             // <tuple_expr> -> ( <expression> , <expression_seq> , )
-            366 | 367 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
+            367 | 368 => self.at(ASTNodeKind::TupleLit(self.members(c[1], c[3])), c[0]),
             // <tuple_pattern> -> ( <pattern> , <pattern_list> )
-            368 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
+            369 => self.at(ASTNodeKind::TuplePat(self.members(c[1], c[3])), c[0]),
             // <tuple_type> -> ( <type> , <type_list> )
-            369 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
+            370 => self.at(ASTNodeKind::TupleType(self.members(c[1], c[3])), c[0]),
 
             _ => return None,
         })

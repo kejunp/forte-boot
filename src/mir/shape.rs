@@ -158,9 +158,24 @@ fn walk(
     let Some(held) = ttir.types.get(ty).cloned() else { return };
 
     match held {
+        // A reference to a trait object is two words and only the first of
+        // them is one the collector may follow: the second is the table,
+        // which the assembler wrote into `.rodata` and no heap holds.
+        // Naming it would be naming an address outside the heap as one to
+        // walk into, which is the one thing a *precise* descriptor is for
+        // not doing -- the roots are guessed at, and this is not a root.
+        Ty::Ref { inner, .. } | Ty::Ptr(inner)
+            if matches!(ttir.types.get(inner), Some(Ty::Dyn(_))) =>
+        {
+            out.push(base);
+        }
+
         // The three that are one address, and the whole reason any of this
         // exists.
         Ty::Ref { .. } | Ty::Ptr(_) | Ty::GC(_) => out.push(base),
+
+        // Nothing holds a bare one, so nothing describes one either.
+        Ty::Dyn(_) => {}
 
         // Two words. Which of them is the address differs -- a run and a
         // string keep their data first and their length second, a fn value

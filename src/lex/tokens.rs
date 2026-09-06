@@ -52,6 +52,12 @@ pub enum TokType {
     // than through a scope. It stands between the intro and the name, so it
     // annotates the binding and not the value — see `ASTNodeKind::Variable`.
     Gc,
+    // `&dyn Shape`: a reference to something that answers a trait, whichever
+    // type it turned out to be. It stands in front of the trait's name in a
+    // type and nowhere else, and it is a word rather than nothing because a
+    // call through one reaches a different body every time it runs -- which is
+    // worth saying in the signature that takes one.
+    Dyn,
 
     // Control flow
     If,

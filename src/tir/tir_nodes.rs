@@ -300,6 +300,10 @@ pub enum TIRTypeKind {
     // `TIRRefOp` -- a pointer draws neither distinction, which is why only an
     // unsafe statement may hold one.
     Ptr(TIRTypeId),
+    // `dyn Shape`: whatever answers the trait. The inner type is the name
+    // after the word, still a name -- whether it turns out to be a trait at
+    // all is the checker's, as it is for every other name in a type.
+    Dyn(TIRTypeId),
     // `T[8]`: owned, its length in its type.
     Array {
         elem: TIRTypeId,

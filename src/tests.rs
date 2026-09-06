@@ -935,3 +935,101 @@ fn a_field_and_a_method_of_one_name_are_both_reachable() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 2 tests"), "{}", said);
 }
+
+// ---- A call that reaches a different body every time it runs ----------------------
+
+// Dynamic dispatch, run.
+//
+// Nothing about this can be checked in a tree. What a `&dyn Shape` *is* is two
+// words -- where the value is, and where the routines that answer for it are --
+// and what a call through one does is read the second, step to the member's
+// place in it, and call what is there. Getting the place wrong calls the wrong
+// member of the right type; getting the order wrong in the table calls the
+// right member of the wrong one; and both compile, link and run.
+//
+// So the two members answer differently in a way that says which was reached:
+// `area` differs per type and `sides` differs between the square and the
+// triangle, and one number carries both. One body of `describe` does all three,
+// which is the whole of what makes it dynamic -- a static call would want three.
+//
+// The generic impl is here because a table's entries have to be the *instance*
+// symbols: `impl<T> Shape for Box<T>` answers with a body that does not exist
+// until something says what `T` is, and the thing that says it is the coercion.
+#[test]
+fn a_call_through_a_trait_object_reaches_the_type_it_was_made_from() {
+    let dir = std::env::temp_dir().join(format!("fortec-dyn-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("dyn.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         trait Shape {\n\
+         \x20   fn area(&self): i64\n\
+         \x20   fn sides(&self): i64\n\
+         }\n\
+         \n\
+         struct Sq { pub s: i64 }\n\
+         struct Rect { pub w: i64, pub h: i64 }\n\
+         struct Tri { pub b: i64, pub h: i64 }\n\
+         struct Box<T> { pub v: T }\n\
+         \n\
+         impl Shape for Sq {\n\
+         \x20   fn area(&self): i64 { self.s * self.s }\n\
+         \x20   fn sides(&self): i64 { 4 }\n\
+         }\n\
+         impl Shape for Rect {\n\
+         \x20   fn area(&self): i64 { self.w * self.h }\n\
+         \x20   fn sides(&self): i64 { 4 }\n\
+         }\n\
+         impl Shape for Tri {\n\
+         \x20   fn area(&self): i64 { self.b * self.h / 2 }\n\
+         \x20   fn sides(&self): i64 { 3 }\n\
+         }\n\
+         impl<T> Shape for Box<T> {\n\
+         \x20   fn area(&self): i64 { 11 }\n\
+         \x20   fn sides(&self): i64 { 1 }\n\
+         }\n\
+         \n\
+         // One body, and the only thing that tells the three apart is the\n\
+         // table each of them arrived with.\n\
+         fn described(s: &dyn Shape): i64 { s.area() * 100 + s.sides() }\n\
+         \n\
+         %test\n\
+         fn one_body_answers_for_every_type_that_answers_the_trait() {\n\
+         \x20   let a = Sq { s: 5 }\n\
+         \x20   let b = Rect { w: 3, h: 7 }\n\
+         \x20   let c = Tri { b: 6, h: 4 }\n\
+         \x20   assert_eq(int(described(&a)), int(2504), \"the square\")\n\
+         \x20   assert_eq(int(described(&b)), int(2104), \"the rectangle\")\n\
+         \x20   assert_eq(int(described(&c)), int(1203), \"and the triangle\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_generic_impl_answers_through_its_instance() {\n\
+         \x20   let b: Box<i64> = Box { v: 1 }\n\
+         \x20   assert_eq(int(described(&b)), int(1101), \"a table of instance symbols\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_member_reached_is_the_one_the_trait_names() {\n\
+         \x20   // `sides` is the second member, so a table read at the first\n\
+         \x20   // place answers with the area and this is what says so.\n\
+         \x20   let c = Tri { b: 6, h: 4 }\n\
+         \x20   let s: &dyn Shape = &c\n\
+         \x20   assert_eq(int(s.sides()), int(3), \"the second member, not the first\")\n\
+         \x20   assert_eq(int(s.area()), int(12), \"and the first, not the second\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "dyn");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "trait objects were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

@@ -34,7 +34,7 @@ TOKENS = {
     'pub': 'Pub', 'priv': 'Priv', 'import': 'Import',
     'suite': 'Suite', 'super': 'Super',
     'enum': 'Enum', 'namespace': 'Namespace', 'unsafe': 'Unsafe',
-    'gc': 'Gc',
+    'gc': 'Gc', 'dyn': 'Dyn',
     'macro': 'Macro',
 
     'if': 'If', 'elif': 'Elif', 'else': 'Else', 'while': 'While',

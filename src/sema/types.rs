@@ -166,7 +166,9 @@ impl Types {
     pub fn deep(&mut self, id: TyId) -> TyId {
         let here = self.shallow(id);
         let rebuilt = match self.arena[here].clone() {
-            Ty::Var(_) | Ty::Prim(_) | Ty::Param { .. } | Ty::Error => return here,
+            Ty::Var(_) | Ty::Prim(_) | Ty::Param { .. } | Ty::Error | Ty::Dyn(_) => {
+                return here
+            }
             Ty::Named { item, args, regions } => Ty::Named {
                 item,
                 args: args.iter().map(|&a| self.deep(a)).collect(),
@@ -204,7 +206,9 @@ impl Types {
             Ty::Fn { params, ret, .. } => {
                 params.iter().any(|&p| self.occurs(var, p)) || self.occurs(var, *ret)
             }
-            Ty::Prim(_) | Ty::Param { .. } | Ty::Error => false,
+            // A trait object holds no type of its own: what it is
+            // standing for is not known here and is the point of it.
+            Ty::Prim(_) | Ty::Param { .. } | Ty::Error | Ty::Dyn(_) => false,
         }
     }
 
@@ -415,7 +419,7 @@ impl Types {
         let here = self.shallow(ty);
         let rebuilt = match self.arena[here].clone() {
             Ty::Param { index, .. } => return args.get(index).copied().unwrap_or(here),
-            Ty::Prim(_) | Ty::Var(_) | Ty::Error => return here,
+            Ty::Prim(_) | Ty::Var(_) | Ty::Error | Ty::Dyn(_) => return here,
             Ty::Named { item, args: inner, regions } => Ty::Named {
                 item,
                 args: inner.iter().map(|&a| self.substitute(a, args)).collect(),
@@ -455,7 +459,7 @@ impl Types {
             Ty::Fn { params, ret, .. } => {
                 params.iter().any(|&p| self.has_param(p)) || self.has_param(*ret)
             }
-            Ty::Prim(_) | Ty::Var(_) | Ty::Error => false,
+            Ty::Prim(_) | Ty::Var(_) | Ty::Error | Ty::Dyn(_) => false,
         }
     }
 
@@ -562,6 +566,7 @@ impl Types {
             // `_` is what a reader writes for one the checker works out, and
             // one it never worked out is what this is.
             Ty::Var(_) => "_".to_string(),
+            Ty::Dyn(item) => format!("dyn {}", name(*item)),
             Ty::Error => "?".to_string(),
         }
     }

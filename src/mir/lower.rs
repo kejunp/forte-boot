@@ -563,6 +563,12 @@ impl<'a> Lowerer<'a> {
         self.made.symbol_of.get(&(self.b.body, at, i)).cloned()
     }
 
+    // And what a table there holds, where the instruction is one that builds
+    // one -- which is a coercion to a trait object and nothing else.
+    pub(super) fn table_at(&self, at: SIRBlockId, i: usize) -> Option<Vec<String>> {
+        self.made.table_of.get(&(self.b.body, at, i)).cloned()
+    }
+
     pub(super) fn machine(&self) -> Machine {
         self.machine
     }
@@ -882,17 +888,29 @@ impl<'a> Lowerer<'a> {
         if self.out.pool.iter().any(|held| held.symbol == symbol) {
             return;
         }
-        self.out.pool.push(MIRConstant { symbol, bytes });
+        self.out.pool.push(MIRConstant { symbol, held: MIRConstBody::Bytes(bytes) });
     }
 
     // Somewhere to put a literal that does not fit in an instruction.
     pub(super) fn pooled(&mut self, bytes: Vec<u8>) -> String {
-        if let Some(held) = self.out.pool.iter().find(|held| held.bytes == bytes) {
+        let want = MIRConstBody::Bytes(bytes);
+        if let Some(held) = self.out.pool.iter().find(|held| held.held == want) {
             return held.symbol.clone();
         }
         let symbol = super::runtime::text(self.out.pool.len());
-        self.out.pool.push(MIRConstant { symbol: symbol.clone(), bytes });
+        self.out.pool.push(MIRConstant { symbol: symbol.clone(), held: want });
         symbol
+    }
+
+    // A run of addresses under a name, which is what a trait object's table
+    // is. Named rather than numbered and deduplicated by the name, as a
+    // descriptor is: two coercions of one type to one trait want the one
+    // table, and which table it is, is what the name says.
+    pub(super) fn table(&mut self, symbol: String, names: Vec<String>) {
+        if self.out.pool.iter().any(|held| held.symbol == symbol) {
+            return;
+        }
+        self.out.pool.push(MIRConstant { symbol, held: MIRConstBody::Words(names) });
     }
 }
 

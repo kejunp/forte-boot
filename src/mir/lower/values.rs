@@ -101,6 +101,19 @@ impl<'a> Lowerer<'a> {
                     self.view(def, held, held_len, line, col);
                     return;
                 }
+                // A reference to something becoming a reference to a trait
+                // object, which is the same shape of work: the address is
+                // already the value, and what has to travel beside it is the
+                // table. `mir::mono` worked out what is in the table -- see
+                // `Made::table_of` -- because the routines it names have to be
+                // *asked for* as well as named.
+                if let Some(names) = self.table_at(at, i) {
+                    let held = self.of(*of);
+                    let symbol = self.table_symbol(from, to);
+                    self.table(symbol.clone(), names);
+                    self.object(def, held, &symbol, line, col);
+                    return;
+                }
                 let (from, to) = (self.scalar_of(from), self.scalar_of(to));
                 let of = self.of(*of);
                 self.making(def, MIRInstKind::Convert { of, from, to }, line, col);
@@ -376,5 +389,40 @@ impl Lowerer<'_> {
         let second =
             self.push(MIRInstKind::Offset { base: def, bytes: word as i64 }, line, col);
         self.effect(MIRInstKind::Store { to: second, value: len, bytes: word }, line, col);
+    }
+
+    // The pair a reference to a trait object is: where the value is, and where
+    // the routines that answer for it are. The same two words a view is, and
+    // built the same way -- the difference is what goes in the second, and
+    // there it is a length worked out here and here it is a symbol the linker
+    // fills in.
+    fn object(
+        &mut self,
+        def: MIRRegId,
+        at: MIRRegId,
+        table: &str,
+        line: usize,
+        col: usize,
+    ) {
+        let word = self.machine.word;
+        let name = format!("${}", self.frame_len());
+        let slot = self.slot(name, word * 2, word);
+        self.making(def, MIRInstKind::Frame(slot), line, col);
+        self.effect(MIRInstKind::Store { to: def, value: at, bytes: word }, line, col);
+        let held = self.push(MIRInstKind::Symbol(table.to_string()), line, col);
+        let second =
+            self.push(MIRInstKind::Offset { base: def, bytes: word as i64 }, line, col);
+        self.effect(MIRInstKind::Store { to: second, value: held, bytes: word }, line, col);
+    }
+
+    // What one table is called: the type that answers, and the trait it
+    // answers. Both, because one type answers several traits and one trait is
+    // answered by several types, and the table is a fact about the pair.
+    fn table_symbol(&mut self, from: TyId, to: TyId) -> String {
+        let (from, to) = (self.spell(from), self.spell(to));
+        let mut out = String::from("__V");
+        crate::sema::names::part(&from, &mut out);
+        crate::sema::names::part(&to, &mut out);
+        out
     }
 }

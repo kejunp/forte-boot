@@ -701,6 +701,7 @@ fn children_of(kind: &ASTNodeKind) -> Vec<ASTNodeId> {
         ASTNodeKind::Discriminant(id)
         | ASTNodeKind::Run(id)
         | ASTNodeKind::PtrType(id)
+        | ASTNodeKind::DynType(id)
         | ASTNodeKind::ExprStmt(id)
         | ASTNodeKind::Unsafe(id) => out.push(*id),
         ASTNodeKind::MacroDecl { attrs, params, body, .. } => {

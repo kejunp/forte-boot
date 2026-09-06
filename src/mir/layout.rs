@@ -182,10 +182,28 @@ impl<'a> Layouts<'a> {
                 self.of_in(stands, &[])
             }
 
+            // A reference to a trait object is two words: where the value is,
+            // and where the routines that answer for it are. It is the one
+            // reference that is not one address, for the reason a run is not:
+            // what it refers to has no width of its own, so something has to
+            // travel beside the address, and for a run that is the length and
+            // here it is the table.
+            Ty::Ref { inner, .. } | Ty::Ptr(inner)
+                if matches!(self.ttir.types.get(inner), Some(Ty::Dyn(_))) =>
+            {
+                Some(self.fat())
+            }
+
             // A reference and a pointer are one address. So is a `gc` value:
             // what the collector hands out is a handle, and how wide a handle
             // is is the one thing about the collector this has to agree with.
             Ty::Ref { .. } | Ty::Ptr(_) | Ty::GC(_) => Some(self.word()),
+
+            // And a trait object on its own has no layout at all, which is
+            // what makes it a thing nothing can hold: how wide one is is not
+            // a question with an answer. `sema` refuses it where a value is
+            // wanted, so reaching here is a program already turned down.
+            Ty::Dyn(_) => None,
 
             // A run is a pointer and a length; a fn value is a pointer to the
             // code and a pointer to what it captured. Two words either way.

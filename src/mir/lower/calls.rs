@@ -19,7 +19,7 @@
 // operand and no call: -1 is -1 whatever is being walked.
 
 use crate::sir::sir_nodes::*;
-use crate::tir::ttir_nodes::{TTIRCaptureMode, TTIRItemKind, Ty, TyId};
+use crate::tir::ttir_nodes::{TTIRCaptureMode, TTIRItemId, TTIRItemKind, Ty, TyId};
 
 use super::super::mir_nodes::*;
 use super::super::runtime;
@@ -68,7 +68,39 @@ impl<'a> Lowerer<'a> {
             // address and the symbol is the one `mono` worked out. The receiver
             // goes in front of the arguments, which is where a signature that
             // declared one already put it.
-            SIRInstKind::Method { recv, args, .. } => {
+            SIRInstKind::Method { recv, item, args } => {
+                // Through the table, where the receiver is a trait object.
+                // Which body answers is not known here and is not meant to be:
+                // the value carries a run of addresses beside it, the member's
+                // *place* in the trait says which of them, and the receiver
+                // handed over is the value the object was made from.
+                if let Some(slot) = self.member_at(*recv, *item) {
+                    let word = self.word();
+                    let pair = self.of(*recv);
+                    let data = self.push(MIRInstKind::Load { from: pair, bytes: word }, line, col);
+                    let second =
+                        self.push(MIRInstKind::Offset { base: pair, bytes: word as i64 },
+                                  line, col);
+                    let table =
+                        self.push(MIRInstKind::Load { from: second, bytes: word }, line, col);
+                    let entry = self.push(
+                        MIRInstKind::Offset { base: table, bytes: (slot * word) as i64 },
+                        line,
+                        col,
+                    );
+                    let code =
+                        self.push(MIRInstKind::Load { from: entry, bytes: word }, line, col);
+                    let mut held = vec![data];
+                    held.extend(args.iter().map(|&arg| self.of(arg)));
+                    let held = self.answering(value, held, line, col);
+                    self.making(
+                        def,
+                        MIRInstKind::Call { to: MIRCallee::Reg(code), args: held },
+                        line,
+                        col,
+                    );
+                    return;
+                }
                 let name = self.symbol_at(at, i).unwrap_or_default();
                 let mut held = vec![self.of(*recv)];
                 held.extend(args.iter().map(|&arg| self.of(arg)));
@@ -243,6 +275,26 @@ impl<'a> Lowerer<'a> {
         let mut held = held;
         held.push(env);
         (MIRCallee::Reg(code), held)
+    }
+
+    // Where in the table a method stands, where the receiver is a trait object
+    // at all. `None` for every ordinary call, which is what leaves the direct
+    // one the default.
+    //
+    // The place and not the name: a table is a run of addresses and nothing
+    // says which is which, so the two ends agree by counting. `mir::mono`
+    // fills it in the trait's declaration order and this reads it in the same
+    // order, and the trait is the one declaration both of them look at.
+    fn member_at(&mut self, recv: SIRValueId, item: TTIRItemId) -> Option<usize> {
+        let ty = self.ty_of(recv);
+        let (Ty::Ref { inner, .. } | Ty::Ptr(inner)) = self.made.ttir.types.get(ty)? else {
+            return None;
+        };
+        let Ty::Dyn(of) = self.made.ttir.types.get(*inner)? else { return None };
+        let TTIRItemKind::Trait { members, .. } = &self.made.ttir.items.get(*of)?.kind else {
+            return None;
+        };
+        members.iter().position(|&held| held == item)
     }
 
     // ---- Closures ----------------------------------------------------------
