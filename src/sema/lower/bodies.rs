@@ -27,22 +27,35 @@ impl<'a> Lowerer<'a> {
                     let Some(made) = self.made[self.at][id] else { continue };
                     let Some(value) = f.body else { continue };
                     self.here = self.span(id);
-                    self.params = type_names_of(&f.generics);
-                    // The bounds as the checker made them, which is where a
-                    // `TTIRBound` exists at all -- `f` here is still the tree
-                    // as it was written. Type parameters only, so that the
-                    // index is the one a `Ty::Param` carries.
-                    self.bounds = match &self.out.items[made].kind {
-                        TTIRItemKind::Fn(held) => held
-                            .generics
-                            .iter()
-                            .filter_map(|g| match g {
-                                TTIRGeneric::Type { bounds, .. } => Some(bounds.clone()),
-                                TTIRGeneric::Life { .. } => None,
-                            })
-                            .collect(),
-                        _ => Vec::new(),
+                    // The names and the bounds both off what `resolve` built,
+                    // and not off `f`, which is still the tree as it was
+                    // written. That matters for a member of an impl: its
+                    // parameters are the impl's and then its own, the two were
+                    // joined into one list there, and re-deriving them here
+                    // from the fn alone would leave the impl's out and give
+                    // every index after them the wrong number. Type parameters
+                    // only, so the index is the one a `Ty::Param` carries.
+                    let (names, bounds) = match &self.out.items[made].kind {
+                        TTIRItemKind::Fn(held) => (
+                            held.generics
+                                .iter()
+                                .filter_map(|g| match g {
+                                    TTIRGeneric::Type { name, .. } => Some(name.clone()),
+                                    TTIRGeneric::Life { .. } => None,
+                                })
+                                .collect(),
+                            held.generics
+                                .iter()
+                                .filter_map(|g| match g {
+                                    TTIRGeneric::Type { bounds, .. } => Some(bounds.clone()),
+                                    TTIRGeneric::Life { .. } => None,
+                                })
+                                .collect(),
+                        ),
+                        _ => (Vec::new(), Vec::new()),
                     };
+                    self.params = names;
+                    self.bounds = bounds;
                     self.open_regions(&f.generics);
                     self.close_regions();
                     let body = self.body(made, &f, value);
@@ -56,10 +69,20 @@ impl<'a> Lowerer<'a> {
                 TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
                     self.open_regions(&generics);
                     self.close_regions();
+                    // The impl's own parameters, for its own subject: `impl<T>
+                    // Box<T>` names a `T` that is nothing but this impl's, and
+                    // resolving `Box<T>` here without them put a `no type is
+                    // called T` against the header of every generic impl.
+                    //
+                    // The members do not read this -- each takes its parameters
+                    // off what `resolve` wrote on it, the impl's already among
+                    // them -- so it is cleared before they are walked.
+                    let held = std::mem::replace(&mut self.params, type_names_of(&generics));
                     let subject = match for_ty {
                         Some(for_ty) => self.ty(for_ty),
                         None => self.ty(ty),
                     };
+                    self.params = held;
                     let held = self.subject.replace(subject);
                     self.bodies(&members);
                     self.subject = held;

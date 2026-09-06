@@ -5,10 +5,12 @@
 // no absent address and a reference admits none -- so a missing value is said
 // with this and nowhere else.
 //
-// The routines below are free functions and not methods, and that is not a
+// The routines below are free functions and not methods, and that was not a
 // preference: a method on a generic type wants an `impl<T>`, and the parameter
-// an `impl` introduces is not yet in scope inside its own members. Until it is,
-// `is_some(o)` is what `o.is_some()` would have been.
+// an `impl` introduces was in scope nowhere -- not in the impl's own header,
+// not in its members. That is fixed (§8), so `o.is_some()` is writable now and
+// `is_some(o)` is what is still written: moving them is a change to every
+// caller of this file and not to this file.
 
 import panic::panic;
 

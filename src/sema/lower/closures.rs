@@ -145,11 +145,27 @@ impl<'a> Lowerer<'a> {
 
         let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
         let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return None };
-        let (fn_ty, takes_self) = (
-            f.ty,
-            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..))),
-        );
+        let takes_self =
+            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..)));
+        // A hole for each of the method's parameters, the impl's among them --
+        // see `instance_of`. Without this a member of `impl<T> Box<T>` gives
+        // back the `T` it was declared with rather than what this receiver
+        // makes it, and the caller is told its body answers `T`.
+        let fn_ty = self.instance_of(item, at);
         let Ty::Fn { params, ret, .. } = self.types.get(fn_ty).clone() else { return None };
+
+        // The receiver, against what the declaration says it takes. Nothing is
+        // *checked* by it -- `method_of` already found this method by the
+        // receiver's own type, and a reference stands for what it refers to
+        // there, so the two need not agree in shape -- but it is what fills the
+        // impl's parameters in, so the failure is ignored and the inference
+        // kept. Through one `&` on either side, for the same reason.
+        if takes_self {
+            if let Some(&want) = params.first() {
+                let (a, b) = (self.referent(held), self.referent(want));
+                let _ = self.types.unify(a, b);
+            }
+        }
 
         // The receiver is the first parameter, so what is left is what the call
         // was handed.
@@ -180,6 +196,16 @@ impl<'a> Lowerer<'a> {
             }
         }
         Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+    }
+
+    // Through one `&`, and no further. "A reference stands for the place it
+    // refers to", which is what lets `b.get()` reach a `fn get(&self)` and a
+    // `&b` reach one written `fn take(self)`.
+    fn referent(&mut self, ty: TyId) -> TyId {
+        match self.types.get(ty) {
+            Ty::Ref { inner, .. } => *inner,
+            _ => ty,
+        }
     }
 
     // The method of that name written for that type. "an impl makes methods for

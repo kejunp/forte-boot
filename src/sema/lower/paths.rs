@@ -159,6 +159,40 @@ impl<'a> Lowerer<'a> {
         tys.iter().map(|&ty| self.types.substitute(ty, args)).collect()
     }
 
+    // The same for a method, which is reached by a receiver rather than by a
+    // name and so has no `callee` expression to read a type off.
+    //
+    // A hole for every parameter, with nothing written: `b.get()` has nowhere
+    // to write one -- a method call takes no `::<>` -- so what each stands for
+    // is worked out from the receiver and the arguments alone. For a member of
+    // `impl<T> Box<T>` that is the receiver's doing entirely: `&Box<i64>`
+    // against the declared `&Box<T>` is what says `T` is `i64`, and it is the
+    // reason the receiver is unified here at all when nothing checks it.
+    //
+    // Bounds are registered as `instantiate` registers them, so that a method
+    // of an impl whose parameter is held to a trait is held to it at the call.
+    pub(super) fn instance_of(&mut self, item: TTIRItemId, at: TIRExprId) -> TyId {
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return self.types.error() };
+        let (ty, generics) = (f.ty, f.generics.clone());
+        let bounds: Vec<(String, Vec<TTIRBound>)> = generics
+            .iter()
+            .filter_map(|g| match g {
+                TTIRGeneric::Type { name, bounds } => Some((name.clone(), bounds.clone())),
+                TTIRGeneric::Life { .. } => None,
+            })
+            .collect();
+        if bounds.is_empty() {
+            return ty;
+        }
+        let args: Vec<TyId> = (0..bounds.len()).map(|_| self.types.fresh()).collect();
+        for (arg, (name, held)) in args.iter().zip(bounds.iter()) {
+            for bound in held {
+                self.pending.push((*arg, bound.clone(), name.clone(), at));
+            }
+        }
+        self.types.substitute(ty, &args)
+    }
+
     // What a declaration's type comes to at one use of it. A generic is written
     // once and used many times, so every parameter is put out of the way before
     // anything is held to it -- with the arguments where they were written, and

@@ -75,7 +75,7 @@ use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
     TIRProgram, TIRVis,
 };
-use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRFn, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRFn, TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
 
 mod binds;
 mod bodies;
@@ -184,6 +184,24 @@ pub struct Lowerer<'a> {
     // had the same name, which is right until two declarations share a
     // parameter name -- and `T` is what most of them are called.
     bounds: Vec<Vec<TTIRBound>>,
+    // The parameters of the impl a member is being walked inside of, which
+    // stand in scope through every one of its members: "`<impl_decl>` takes its
+    // own `<generic_params_opt>`, so `impl<T> Stack<T>`" (§8), and a `T`
+    // introduced there is a `T` its methods may write.
+    //
+    // They are *prepended* to each member's own rather than kept apart, so that
+    // a method of `impl<T> Box<T>` written `fn map<U>(&self, f: fn(T): U): U`
+    // has two parameters and not one and a half: `T` at 0 and `U` at 1. That is
+    // what makes the rest of the compiler need to know nothing about this. A
+    // `Ty::Param` is a name and an index into one list, `instantiate` puts an
+    // argument in for each, and `mir::mono` recovers them by matching a use
+    // against the declaration -- and the receiver is one of the things it
+    // matches, which is where an impl's parameter is answered from.
+    //
+    // Empty everywhere but inside an impl. A trait's members take no such
+    // prefix: the trait's own parameters are its members' to write, and `Self`
+    // is what a receiver's type is there.
+    outer:  Vec<TTIRGeneric>,
     // How many `unsafe` statements are open around what is being walked.
     //
     // `tir::lower` answers the same question for `addr` and `deref`, which it
@@ -297,6 +315,7 @@ impl<'a> Lowerer<'a> {
             made,
             frames: Vec::new(),
             params: Vec::new(),
+            outer: Vec::new(),
             bounds: Vec::new(),
             guarded: 0,
             consts: HashMap::new(),

@@ -27,9 +27,38 @@ impl<'a> Lowerer<'a> {
             self.here = self.span(id);
             match self.tir.items[id].kind.clone() {
                 TIRItemKind::Fn(f) => {
-                    self.params = type_names_of(&f.generics);
+                    // The impl's parameters first, then its own: a member of
+                    // `impl<T> Box<T>` writing `fn map<U>(..)` has `T` at 0 and
+                    // `U` at 1, and the whole of what makes that work for every
+                    // pass after this one is that the two lists are one list.
+                    // See `Lowerer::outer`.
+                    self.params = names_of_made(&self.outer);
+                    // A member may not re-declare one of the impl's. Nothing
+                    // would read the second: a `Ty::Param` is found by name and
+                    // the first of that name answers, so the member's own would
+                    // be a parameter nothing could write and every use of the
+                    // name would mean the impl's. What came of that before it
+                    // was said out loud was a type the checker never settled
+                    // and a program that would not link.
+                    for name in type_names_of(&f.generics) {
+                        if self.params.contains(&name) {
+                            self.errors.push(
+                                Diagnostic::error(
+                                    format!("`{}` is already a parameter of this impl", name),
+                                    self.here,
+                                )
+                                .with_label("it is declared twice over")
+                                .with_help(
+                                    "an impl's parameters stand in scope through its members, \
+                                     so a member has to name its own something else",
+                                ),
+                            );
+                        }
+                        self.params.push(name);
+                    }
                     self.open_regions(&f.generics);
-                    let generics = self.generics(&f.generics, &f.wheres);
+                    let mut generics = self.outer.clone();
+                    generics.extend(self.generics(&f.generics, &f.wheres));
                     let made_wheres = self.wheres(&f.wheres, &f.generics);
                     let params: Vec<TTIRParam> = f
                         .params
@@ -256,7 +285,12 @@ impl<'a> Lowerer<'a> {
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     let held = self.subject.replace(subject);
+                    // What the members are walked with: the impl's parameters
+                    // stand in scope through all of them, and nothing else
+                    // nests, so this is a swap and not a stack.
+                    let outer = std::mem::replace(&mut self.outer, made_generics.clone());
                     self.resolve(&members);
+                    self.outer = outer;
                     self.subject = held;
                     let TTIRItemKind::Impl { generics, wheres, ty, of: written, members, .. } =
                         &mut self.out.items[made].kind
@@ -512,6 +546,18 @@ pub(super) fn names_of(generics: &[TIRGeneric]) -> Vec<String> {
 // call, since nothing a call could work out would ever fill one.
 pub(super) fn lifetimes_of(generics: &[TIRGeneric]) -> usize {
     generics.iter().filter(|g| matches!(g, TIRGeneric::Life { .. })).count()
+}
+
+// The same over the ones already made, which is what an impl hands its members:
+// by then the bounds have been resolved and there is no going back to the tree.
+pub(super) fn names_of_made(generics: &[TTIRGeneric]) -> Vec<String> {
+    generics
+        .iter()
+        .filter_map(|g| match g {
+            TTIRGeneric::Type { name, .. } => Some(name.clone()),
+            TTIRGeneric::Life { .. } => None,
+        })
+        .collect()
 }
 
 pub(super) fn type_names_of(generics: &[TIRGeneric]) -> Vec<String> {

@@ -612,3 +612,102 @@ fn a_closure_runs_as_what_it_was_written_as() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 6 tests"), "{}", said);
 }
+
+// ---- An impl's own parameters ----------------------------------------------------
+
+// A generic impl, run.
+//
+// The half `sema`'s tests cannot reach is `mir::mono`: an impl's parameters are
+// answered by the *receiver* and by nothing else -- a method call writes no type
+// arguments, there being nowhere to write them -- so what makes `Box<i32>` and
+// `Box<bool>` two bodies is a match of the receiver's type against the one the
+// declaration wrote. Getting that wrong compiles: what comes out is a call to a
+// symbol with the parameters still written into its name, and the failure is a
+// linker's rather than a compiler's, or two instances collapsed into one and a
+// `bool` read as an `i64`.
+//
+// So the assertions are on values from two instances at once, and on a method
+// that reaches its own impl's parameter through a bound.
+#[test]
+fn a_generic_impl_is_made_once_for_each_receiver() {
+    let dir = std::env::temp_dir().join(format!("fortec-impl-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("impls.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::{int, truth};\n\
+         \n\
+         struct Box<T> {\n\
+         \x20   pub v: T,\n\
+         }\n\
+         \n\
+         impl<T> Box<T> {\n\
+         \x20   fn get(&self): T { self.v }\n\
+         \x20   // One member of the impl reaching another, which is the call\n\
+         \x20   // whose arguments come from the body it stands in.\n\
+         \x20   fn again(&self): T { self.get() }\n\
+         }\n\
+         \n\
+         struct Pair<A, B> {\n\
+         \x20   pub a: A,\n\
+         \x20   pub b: B,\n\
+         }\n\
+         \n\
+         impl<A, B> Pair<A, B> {\n\
+         \x20   // `B` appears in neither the answer nor an argument, so it is\n\
+         \x20   // recovered from the receiver or from nowhere.\n\
+         \x20   fn first(&self): A { self.a }\n\
+         }\n\
+         \n\
+         struct Counter {\n\
+         \x20   pub n: i64,\n\
+         }\n\
+         \n\
+         impl Counter {\n\
+         \x20   fn bump(*self, by: i64) { self.n = self.n + by }\n\
+         \x20   fn read(&self): i64 { self.n }\n\
+         }\n\
+         \n\
+         fn through<T>(b: &Box<T>): T { b.get() }\n\
+         \n\
+         %test\n\
+         fn one_impl_answers_two_receivers() {\n\
+         \x20   let n: Box<i64> = Box { v: 7 }\n\
+         \x20   let t: Box<bool> = Box { v: true }\n\
+         \x20   assert_eq(int(n.get()), int(7), \"the i64 instance\")\n\
+         \x20   assert_eq(truth(t.get()), truth(true), \"and the bool one\")\n\
+         \x20   assert_eq(int(n.again()), int(7), \"one member reaching another\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_parameter_only_the_receiver_names_is_still_found() {\n\
+         \x20   let p: Pair<i64, bool> = Pair { a: 3, b: false }\n\
+         \x20   assert_eq(int(p.first()), int(3), \"and `B` came from the receiver\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn an_impls_parameter_reaches_through_a_generic_fn() {\n\
+         \x20   let n: Box<i64> = Box { v: 41 }\n\
+         \x20   assert_eq(int(through(&n)), int(41), \"a `T` handed on to a method\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn an_impl_with_no_parameters_still_works() {\n\
+         \x20   var c = Counter { n: 0 }\n\
+         \x20   c.bump(5)\n\
+         \x20   c.bump(2)\n\
+         \x20   assert_eq(int(c.read()), int(7), \"a `*self` that wrote through\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "impls");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "generic impls were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}

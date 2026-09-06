@@ -2069,8 +2069,40 @@ answer is not obvious from the rules alone.
     is reached with "::", "limits::MAX". Settled.
   - <impl_decl> takes its own <generic_params_opt>, so "impl<T> Stack<T>"
     parses and a method may use the parameter its struct was declared with.
-    Settled. Whether the parameters of the impl and those of a method inside
-    it may share a name is not said.
+    Settled, and settled now in the compiler as well as on the page. It had
+    only ever parsed: the parameter was in scope nowhere, so "impl<T> Box<T>"
+    was "no type is called `T`" against its own header and again against every
+    member, and there was no way to write a method on a generic type at all.
+    That is why the standard library is free functions and says so in three
+    files — "a method on a generic type wants an `impl<T>`, and the parameter
+    an `impl` introduces is not yet in scope inside its own members".
+
+    A parameter has to be in scope in three places, and they are three
+    different passes: the impl's own subject, where "Box<T>" is resolved; each
+    member's signature; and each member's body. What makes the rest of the
+    compiler need to know nothing about any of it is that the impl's
+    parameters are *prepended* to each member's own rather than kept beside
+    them — a method of "impl<T> Box<T>" written "fn map<U>(..)" has two
+    parameters, "T" at 0 and "U" at 1, and one list is what a "Ty::Param"
+    indexes into.
+
+    What answers them at a use is the receiver, and only the receiver: a
+    method call writes no type arguments, there being nowhere to write them.
+    So "b.get()" on a "Box<i32>" is what says the "T" of the impl is an
+    "i32", and it says it twice — once in the checker, where the receiver is
+    unified against the type the declaration wrote, and once in "mir::mono",
+    where the same match recovers the argument the instance is made with. A
+    parameter that appears in the receiver and nowhere else — the "B" of
+    "impl<A, B> Pair<A, B>" writing "fn first(&self): A" — is found by that
+    and by nothing else.
+
+    Whether the parameters of the impl and those of a method inside it may
+    share a name is answered, and the answer is no. A parameter is found by
+    name and the first of that name answers, so a member re-declaring the
+    impl's "T" would be declaring one nothing could ever write — and what
+    came of it before it was refused was a type the checker never settled and
+    a program that would not link. It is a message now, and a member has to
+    call its own something else.
   - <array_suffix> takes a <const_expr>, so a constant gives an array its
     size: "i32[ROWS]" parses and "i32[rows()]" does too when "rows" is a
     const fn. Settled. Whether two array types whose sizes are written

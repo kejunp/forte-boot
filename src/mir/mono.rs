@@ -614,6 +614,20 @@ impl<'a> Mono<'a> {
                 }
                 self.against(*ra, *rb, found);
             }
+            // A `&` on one side only, which is a receiver and nothing else.
+            // "A reference stands for the place it refers to" (§5), so
+            // `b.get()` on a `Box<i64>` reaches a `fn get(&self)` and nothing
+            // in the source wrote the `&` -- the declaration says `&Box<T>`
+            // and the value handed over says `Box<i64>`.
+            //
+            // Without this the receiver matches nothing, and a parameter that
+            // appears *only* in the receiver is never recovered: `fn first`
+            // of an `impl<A, B> Pair<A, B>` gets `A` from its answer and `B`
+            // from nowhere, and what comes out is a call to a symbol with the
+            // parameters still written in it. The both-`&` case is above, so
+            // this is only ever reached where the two disagree.
+            (Ty::Ref { inner: a, .. }, _) => self.against(*a, actual, found),
+            (_, Ty::Ref { inner: b, .. }) => self.against(decl, *b, found),
             _ => {}
         }
     }

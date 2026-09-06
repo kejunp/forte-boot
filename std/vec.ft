@@ -13,8 +13,9 @@
 // to ask.
 //
 // The routines are free functions and not methods, for the reason `option.ft`
-// gives: a method on a generic type wants an `impl<T>`, and the parameter an
-// `impl` introduces is not yet in scope inside its own members.
+// gives -- which was that an `impl<T>` did not work. It does now, so what is
+// left is that these have not been moved into one, and moving them is a change
+// to every caller rather than to this file.
 //
 // Each takes a reference and not a value. A vector is not a `Copy` type, so
 // handing one over by value hands it away -- a routine that read a length
