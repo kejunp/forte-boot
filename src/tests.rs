@@ -774,3 +774,96 @@ fn an_unsafe_tail_is_the_value_of_the_body_it_ends() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 2 tests"), "{}", said);
 }
+
+// ---- What stands between two reads of one place ----------------------------------
+
+// An element read, with something that writes it standing in between.
+//
+// `p[i]` is the one read in the SIR that does not name the address it reads:
+// it is a `SIRInstKind::Index`, and `sir::opt` had it in the list of
+// instructions that "make the same value from the same operands". That list is
+// for arithmetic. Two reads of one place are two answers whenever anything
+// wrote between them, and three passes were getting it wrong in three ways --
+// `share` called the second read the first, `overwritten` dropped a store an
+// `Index` was reading, and `hoist` would lift one out of a loop that wrote it.
+//
+// None of it showed below `-O2`, and none of it is visible in a tree: what
+// comes out is a program that links and answers with a value from before the
+// write. So every one of these is a value asserted after something wrote, and
+// the suite is built at the default level, which is where the passes run.
+//
+// The last one is here to say the fix did not simply turn the sharing off:
+// three reads of one place with nothing between them still come to one, by the
+// pass that knows what stands between two reads rather than the one that does
+// not.
+#[test]
+fn a_read_of_a_place_is_not_the_read_before_the_write() {
+    let dir = std::env::temp_dir().join(format!("fortec-alias-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("alias.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         import mem::room;\n\
+         \n\
+         fn read(p: ptr i64): i64 { unsafe p[0] }\n\
+         fn poke(p: ptr i64) { unsafe p[0] = 6 }\n\
+         \n\
+         %test\n\
+         fn a_call_between_two_reads_is_a_call_that_may_write() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 1\n\
+         \x20   let before = read(p)\n\
+         \x20   poke(p)\n\
+         \x20   let after = read(p)\n\
+         \x20   assert_eq(int(before), int(1), \"what was there\")\n\
+         \x20   assert_eq(int(after), int(6), \"and what the call put there\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_read_keeps_the_store_it_reads_alive() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 1\n\
+         \x20   unsafe let v = p[0]\n\
+         \x20   unsafe p[0] = 2\n\
+         \x20   assert_eq(int(v), int(1), \"the store under the read did happen\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_read_a_loop_writes_stays_in_the_loop() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 5\n\
+         \x20   var total = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < 3 {\n\
+         \x20       unsafe let v = p[0]\n\
+         \x20       total = total + v\n\
+         \x20       unsafe p[0] = v + 1\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(int(total), int(18), \"5 and 6 and 7\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn two_elements_are_two_places_and_one_is_one() {\n\
+         \x20   unsafe let p = room(32) as ptr i64\n\
+         \x20   unsafe p[0] = 3\n\
+         \x20   unsafe p[1] = 4\n\
+         \x20   unsafe let apart = p[0] + p[1]\n\
+         \x20   assert_eq(int(apart), int(7), \"two places, two values\")\n\
+         \x20   unsafe let same = p[0] + p[0] + p[0]\n\
+         \x20   assert_eq(int(same), int(9), \"and one place read three times\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "alias");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a read after a write was meant to see it:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}

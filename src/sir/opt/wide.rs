@@ -291,6 +291,15 @@ fn settled(
         let kind = &body.blocks[at].insts[index].kind;
         let touches = match kind {
             SIRInstKind::Load { from } => addrs.iter().any(|&a| alias.may(a, *from)),
+            // The read that names no address, which `other` below would have
+            // asked `effects` about -- and `effects` answers whether it may
+            // *trap*, not whether it reads any of these. An in-range one
+            // answers false there, so a read standing between the loads being
+            // widened looked like a value being worked out.
+            SIRInstKind::Index { .. } => match body.blocks[at].insts[index].def {
+                Some(def) => addrs.iter().any(|&a| alias.may(a, def)),
+                None => false,
+            },
             // Naming a global reads it, which is a read like the one above and
             // is not written as a `Load`. Nothing has been shown to reach here
             // -- what is widened is a run of loads and stores, and a global

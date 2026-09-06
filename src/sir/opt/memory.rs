@@ -67,11 +67,28 @@ pub(super) fn forward(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats)
                     known.retain(|(addr, _)| !alias.may(*addr, to));
                     known.push((to, settle(&subst, value)));
                 }
-                SIRInstKind::Load { from } => {
+                // A read through an address, and a read that *is* one: an
+                // `Index` does not name the address it reads, so it stands for
+                // both here -- `sir::alias` gives it the place an `IndexAddr`
+                // of the same operands would name, which is what lets it be
+                // matched against a store and against another read of it.
+                //
+                // That is also where the sharing of two of them belongs. It
+                // used to be `share`'s, which asks whether two instructions
+                // have the same operands and nothing about what stands between
+                // them -- so `p[0]` read, written, and read again came out as
+                // one read, and the second answered with what the first found.
+                SIRInstKind::Load { from } | SIRInstKind::Index { base: from, .. } => {
                     let Some(def) = body.blocks[at].insts[index].def else { continue };
                     if !shareable(ttir, body.values[def].ty) {
                         continue;
                     }
+                    // A `Load` reads what its operand addresses; an `Index`
+                    // reads what it is itself the place of.
+                    let from = match body.blocks[at].insts[index].kind {
+                        SIRInstKind::Index { .. } => def,
+                        _ => from,
+                    };
                     let found = known
                         .iter()
                         .rev()
@@ -162,6 +179,15 @@ pub(super) fn overwritten(body: &mut SIRBody, stats: &mut Stats) -> bool {
                     }
                 }
                 SIRInstKind::Load { from } => over.retain(|&held| !alias.may(held, from)),
+                // And the read that names no address. Without it a store an
+                // `Index` was reading was dropped as one nothing had seen:
+                // `p[0] = 1`, `let v = p[0]`, `p[0] = 2` left `v` reading
+                // whatever stood there before the first store ever ran.
+                SIRInstKind::Index { .. } => {
+                    if let Some(def) = body.blocks[at].insts[index].def {
+                        over.retain(|&held| !alias.may(held, def));
+                    }
+                }
                 // Naming a global reads it, and a `Load` is not how that is
                 // written. `Item` is what stands where a declaration was named
                 // as a value, and for a global what stands under the name is a

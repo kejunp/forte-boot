@@ -196,7 +196,6 @@ pub(super) fn known(ttir: &TTIRProgram, kind: &SIRInstKind) -> bool {
             // the first one did, there is no second one to have shared with.
             // Whether a dead one may *go* is `effects`, which is a different
             // question and answered differently.
-            | SIRInstKind::Index { .. }
             | SIRInstKind::IndexAddr { .. }
     )
 }

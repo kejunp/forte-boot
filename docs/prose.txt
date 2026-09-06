@@ -2264,6 +2264,22 @@ answer is not obvious from the rules alone.
     is how a global is read. Both were unreachable before, no program holding
     one having ever linked.
 
+    The same two mistakes were being made about "p[i]", and there nothing had
+    been unreachable — every container that manages its own room is written
+    out of it. A read of an element is the one read in the SIR that does not
+    name the address it reads: it is an instruction of its own, and it sat in
+    the same list of things that "make the same value from the same operands",
+    which is a list for arithmetic. So two reads of one element with a write
+    between them came out as one read, and a store an element read was reading
+    was dropped as one nothing had seen. A third pass would have lifted such a
+    read out of a loop that wrote it, and a fourth read one across the loads
+    it was widening. All four are answered the same way and in one place: the
+    alias analysis gives an element read the place an address of the same
+    operands would name, so the pass that asks what stands between two reads
+    can be asked about one — and the sharing of two of them is that pass's
+    now, where it can see a write between them, rather than the one that
+    compares operands and cannot.
+
     The third was not about globals at all and was found through them. This
     compiler was *nondeterministic*: the phis of a join were placed by
     walking a hash map, so the same source compiled twice gave two different

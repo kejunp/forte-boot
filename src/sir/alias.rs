@@ -228,6 +228,23 @@ fn place_of(made: &[Option<SIRInstKind>], lits: &[Option<i64>], value: SIRValueI
                 at = *base;
                 continue;
             }
+            // And the read itself. An `Index` is not an address -- it is what
+            // was found at one -- but it is the *only* read in the SIR that
+            // does not name its address, so a pass asking "where does this
+            // read from" has nowhere else to look. The place it names is the
+            // one an `IndexAddr` of the same operands would name, which is
+            // what makes the two arms the same arm.
+            //
+            // It is here rather than in each pass because every pass that
+            // reasons about memory needs it and none of them had it: `share`
+            // called two of these one value across a store between them,
+            // `overwritten` dropped a store an `Index` was reading, and
+            // `hoist` would have lifted one out of a loop that wrote it.
+            Some(Some(SIRInstKind::Index { base, index })) => {
+                path.push(Step::At(lits.get(*index).copied().flatten(), *index));
+                at = *base;
+                continue;
+            }
             _ => Base::Elsewhere(at),
         };
         path.reverse();

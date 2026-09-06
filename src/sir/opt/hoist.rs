@@ -121,7 +121,16 @@ fn lift(body: &mut SIRBody, ttir: &TTIRProgram, held: &Loop, stats: &mut Stats) 
             if !liftable(ttir, &body.values, &held_made, &inst.kind, body.values[def].ty) {
                 continue;
             }
-            if let SIRInstKind::Load { from } = inst.kind {
+            // A read has to be asked whether what it reads stays put for the
+            // length of the loop. A `Load` names the address it reads; an
+            // `Index` *is* the place it reads (`sir::alias`), so it is asked
+            // about itself.
+            let reads = match inst.kind {
+                SIRInstKind::Load { from } => Some(from),
+                SIRInstKind::Index { .. } => Some(def),
+                _ => None,
+            };
+            if let Some(from) = reads {
                 if !quiet(from) {
                     continue;
                 }
@@ -181,8 +190,13 @@ fn liftable(
     if effects(values, ttir, made, kind) {
         return false;
     }
-    // A load is liftable as far as this is concerned; whether what it reads
-    // stays put for the length of the loop is `quiet`'s to say, and it is the
-    // only one of these that has to ask.
-    known(ttir, kind) || matches!(kind, SIRInstKind::Load { .. })
+    // A read is liftable as far as this is concerned; whether what it reads
+    // stays put for the length of the loop is `quiet`'s to say, and the two
+    // reads are the only ones of these that have to ask.
+    //
+    // An `Index` is one of them and is no longer in `known`, where it was
+    // being called a value worked out from its operands -- so it came through
+    // here without `quiet` ever being asked, and a read the loop wrote could
+    // be lifted out above it.
+    known(ttir, kind) || matches!(kind, SIRInstKind::Load { .. } | SIRInstKind::Index { .. })
 }
