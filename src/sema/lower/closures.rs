@@ -136,10 +136,27 @@ impl<'a> Lowerer<'a> {
     ) -> Option<TTIRExprId> {
         let recv = self.expr(base);
         let held = self.out.exprs[recv].ty;
-        // A field of the same name wins: it is the nearer thing, and a struct
-        // holding a fn is reached before an impl is looked in.
-        if self.field_of(held, name).is_some() {
-            return None;
+        // A field of the same name wins where it could be the thing called: it
+        // is the nearer thing, and a struct holding a fn is reached before an
+        // impl is looked in.
+        //
+        // Where it could not, the method answers. A field that holds an `i64`
+        // is not what `b.len()` meant, and letting it win made the method
+        // *unreachable* -- what came out was "`i64` is not a fn", which names
+        // the field the reader was not talking about and offers nothing to
+        // write instead. A container declaring `len` beside a `len()` is the
+        // ordinary case and not a clever one.
+        //
+        // Nothing loses a reading by this. Where the field is callable it
+        // still wins and `b.f(x)` is still the field, as before; where it is
+        // not, the only thing the method takes from it is a call that could
+        // not have worked -- and `b.len` still reads it. A parenthesis says
+        // nothing here either way: a `<grouping>` does not survive into the
+        // TIR, so `(b.len)()` and `b.len()` are the one expression.
+        if let Some((_, held)) = self.field_of(held, name) {
+            if self.callable(held) {
+                return None;
+            }
         }
         let item = self.method_of(held, name)?;
 
@@ -196,6 +213,30 @@ impl<'a> Lowerer<'a> {
             }
         }
         Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+    }
+
+    // Whether a value of this type is one a call could have meant. Yes for a
+    // fn, and yes through a reference, which "is read, called, indexed and
+    // reached into exactly as the place it refers to is" (§3).
+    //
+    // A hole and an error are yes as well, and deliberately: neither says the
+    // type is not a fn, only that nothing knows yet. Answering no there would
+    // reach past a field on the strength of not having worked it out, and one
+    // mistake is meant to stay one message.
+    //
+    // A `Ty::Param` is no. What it stands for is the caller's to say, and a
+    // parameter with no bound is a thing nothing can call whatever it turns
+    // out to be -- so a `Box<T>` with a field `v` and a method `v()` reaches
+    // the method, which is the answer that has one.
+    fn callable(&mut self, ty: TyId) -> bool {
+        match self.types.get(ty) {
+            Ty::Fn { .. } | Ty::Var(_) | Ty::Error => true,
+            Ty::Ref { inner, .. } => {
+                let inner = *inner;
+                self.callable(inner)
+            }
+            _ => false,
+        }
     }
 
     // Through one `&`, and no further. "A reference stands for the place it

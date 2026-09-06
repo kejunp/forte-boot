@@ -1327,6 +1327,14 @@ follow the other, so neither belongs to the name it reaches through, and the
 brace hangs off whatever the two of them built — which is the whole of what
 makes "shapes::Point { x: 1 }" sayable.
 
+A "." reaches a field or a method, and which is decided by the name and then
+by what was found. A field of that name wins where it could be the thing
+called — a struct holding a "fn" is reached before an impl is looked in — and
+where it could not be, the method answers. So a container declaring "len"
+beside a "len()" is written the way it reads: "b.len" is the field and
+"b.len()" is the method, and the only call the method takes from the field is
+one the field could never have answered.
+
 A tuple member is counted rather than named, so what follows the "." is the
 number: "p.0" is the first of them and "p.1" the second. It is the same "."
 and the same suffix — "f().0" and "ps[i].1" read as they look — and the only
@@ -2112,6 +2120,21 @@ answer is not obvious from the rules alone.
     came of it before it was refused was a type the checker never settled and
     a program that would not link. It is a message now, and a member has to
     call its own something else.
+  - A "." reaches a field or a method, and a field of the same name wins where
+    it could be the thing called (section 5). Settled, and settled the other
+    way round from how it started: the field used to win outright, which made
+    a method of that name unreachable and said "`i32` is not a fn" about a
+    name the reader was not talking about. A container declaring "len" beside
+    a "len()" is the ordinary case and not a clever one, and it did not
+    compile.
+
+    Nothing lost a reading by the change. Where the field is callable it still
+    wins, so "b.f(x)" is still the field; where it is not, the method takes
+    only a call that could not have worked, and "b.len" still reads it. A
+    parenthesis says nothing either way — a <grouping> does not survive
+    lowering, so "(b.len)()" and "b.len()" are the one expression. What is
+    still not said is how to reach the *method* where a callable field of that
+    name shadows it, which is the one direction with no spelling.
   - <array_suffix> takes a <const_expr>, so a constant gives an array its
     size: "i32[ROWS]" parses and "i32[rows()]" does too when "rows" is a
     const fn. Settled. Whether two array types whose sizes are written

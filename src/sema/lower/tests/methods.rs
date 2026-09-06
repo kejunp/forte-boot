@@ -48,18 +48,63 @@ fn a_method_is_held_to_what_it_takes() {
     assert!(out.contains("`put` takes 1 and was handed 2"), "{}", out);
 }
 
-// A field of the same name wins: it is the nearer thing, and a struct holding
-// a fn is reached before an impl is looked in.
+// A field of the same name wins where it could be the thing called: it is the
+// nearer thing, and a struct holding a fn is reached before an impl is looked
+// in.
 #[test]
-fn a_field_is_reached_before_an_impl_is() {
-    let out = refused(
+fn a_field_holding_a_fn_is_reached_before_an_impl_is() {
+    let ttir = clean(
+        "struct Buf {\n    pub run: fn(i32): i32,\n}\n\
+         impl Buf {\n    fn run(&self): i32 { 0 }\n}\n\
+         fn f(b: Buf): i32 { b.run(1) }\n",
+    );
+    // A call of a field and not a method: nothing here resolved to the impl.
+    assert!(
+        !ttir.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::Method { .. })),
+        "the field is the nearer thing",
+    );
+}
+
+// And where it could not be, the method answers. Letting the field win there
+// made the method unreachable and said "`i32` is not a fn" about a name the
+// reader was not talking about -- and a container declaring `len` beside a
+// `len()` is the ordinary case, not a clever one.
+#[test]
+fn a_field_that_is_not_a_fn_does_not_hide_a_method() {
+    let ttir = clean(
         "struct Buf {\n    pub len: i32,\n}\n\
          impl Buf {\n    fn len(&self): i32 { 0 }\n}\n\
          fn f(b: Buf): i32 { b.len() }\n",
     );
-    // The field is not a fn, so calling it says so rather than finding the
-    // method.
-    assert!(out.contains("`i32` is not a fn"), "{}", out);
+    let found = ttir.exprs.iter().find_map(|e| match &e.kind {
+        TTIRExprKind::Method { item, .. } => Some(*item),
+        _ => None,
+    }).expect("the method, not the field");
+    let TTIRItemKind::Fn(f) = &ttir.items[found].kind else { panic!() };
+    assert_eq!(f.name, "len");
+    // And the field is still reachable by reading it, which is the reading the
+    // method did not take: only the call it could not have answered.
+    clean(
+        "struct Buf {\n    pub len: i32,\n}\n\
+         impl Buf {\n    fn len(&self): i32 { 0 }\n}\n\
+         fn f(b: Buf): i32 { b.len }\n",
+    );
+}
+
+// A field whose type is a parameter is not a fn either. What it stands for is
+// the caller's to say, and one with no bound is a thing nothing can call
+// whatever it turns out to be -- so the method is the answer that has one.
+#[test]
+fn a_field_of_parameter_type_does_not_hide_a_method() {
+    let ttir = clean(
+        "struct Box<T> {\n    pub v: T,\n}\n\
+         impl<T> Box<T> {\n    fn v(&self): i32 { 0 }\n}\n\
+         fn f(b: Box<i32>): i32 { b.v() }\n",
+    );
+    assert!(
+        ttir.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::Method { .. })),
+        "a `T` is not something a call could have meant",
+    );
 }
 
 // ---- An impl's own parameters ------------------------------------------------

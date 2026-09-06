@@ -867,3 +867,71 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 4 tests"), "{}", said);
 }
+
+// ---- A field and a method of one name ---------------------------------------------
+
+// The shape every container has: a field called `len` and a `len()` beside it.
+//
+// A field of the same name used to win outright, so the method was unreachable
+// and what came out was "`i64` is not a fn" -- a message about a name the
+// reader was not talking about, with nothing offered to write instead. The rule
+// is narrower now: the field wins where it could be the thing called, and where
+// it could not, the method answers.
+//
+// Run rather than checked, because both readings have to still *work*. It is
+// easy to make the method reachable and the field not, and a tree says the call
+// resolved somewhere without saying it resolved to the right one -- so the
+// assertions are on two values that differ, `len` being four and `len()` being
+// forty.
+#[test]
+fn a_field_and_a_method_of_one_name_are_both_reachable() {
+    let dir = std::env::temp_dir().join(format!("fortec-named-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("named.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         struct Buf {\n\
+         \x20   pub len: i64,\n\
+         }\n\
+         \n\
+         impl Buf {\n\
+         \x20   fn len(&self): i64 { self.len * 10 }\n\
+         }\n\
+         \n\
+         struct Held {\n\
+         \x20   pub run: fn(i64): i64,\n\
+         }\n\
+         \n\
+         impl Held {\n\
+         \x20   // Unreachable, and that is the rule: a callable field is what\n\
+         \x20   // `h.run(..)` meant, and it wins as it always did.\n\
+         \x20   fn run(&self): i64 { 99 }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_field_that_is_not_a_fn_does_not_hide_the_method() {\n\
+         \x20   let b = Buf { len: 4 }\n\
+         \x20   assert_eq(int(b.len), int(4), \"the field, read\")\n\
+         \x20   assert_eq(int(b.len()), int(40), \"and the method, called\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_field_that_is_a_fn_still_wins() {\n\
+         \x20   let h = Held { run: |x: i64| x * 2 }\n\
+         \x20   assert_eq(int(h.run(21)), int(42), \"the field and not the method\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "named");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a field and a method of one name were meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
