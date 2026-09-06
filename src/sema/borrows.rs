@@ -104,7 +104,7 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::tir::tir_nodes::TIRRefOp;
 use crate::tir::ttir_nodes::{
     TTIRBodyId, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric,
-    TTIRItemKind, TTIRLocalId, TTIRProgram, TTIRStmt,
+    TTIRItemKind, TTIRLocalId, TTIRProgram, TTIRStmt, Ty, TyId,
 };
 
 // `pub` for the one thing outside `sema` that has to ask its questions:
@@ -217,6 +217,95 @@ impl<'a> Checker<'a> {
     }
 
     // Every fn of every module, and the two names the compiler knows.
+    // A `gc` of something with a release, which is two answers to one
+    // question -- and the collector cannot keep its half.
+    //
+    // `Drop` here is a release the *compiler* places, at a point in the
+    // program a reader can point at. What the collector would place it at is a
+    // sweep, and the roots are scanned conservatively (§8): a word on a stack
+    // is an address or a number with nothing to say which, so a value that is
+    // finished with may be held by a stale word for as long as the process
+    // runs, and the release would silently never happen. That is not a
+    // release that is late; it is one that promises nothing.
+    //
+    // It is what happened. A `gc Buf` whose `Buf` had a `drop` ran no `drop`
+    // at all and said nothing about it -- the compiler placed none, because
+    // the value is not the frame's, and the collector placed none, because
+    // nothing ever told it there was one to place.
+    //
+    // So the pair is refused, and the language keeps the answer it can
+    // promise: a type with a release is one a scope owns. What that closes is
+    // a collected value holding a file handle, and what it opens is a `Drop`
+    // that means one thing everywhere.
+    fn collected_releases(&mut self) {
+        for id in 0..self.p.items.len() {
+            let item = &self.p.items[id];
+            let at = Span::at(item.line, item.col);
+            match &item.kind {
+                TTIRItemKind::Fn(f) => {
+                    let held: Vec<TyId> = f
+                        .params
+                        .iter()
+                        .filter_map(|p| p.slot)
+                        .filter_map(|slot| {
+                            let body = f.body?;
+                            self.p.bodies.get(body)?.locals.get(slot).map(|l| l.ty)
+                        })
+                        .chain(std::iter::once(f.ret))
+                        .collect();
+                    let generics = f.generics.clone();
+                    for ty in held {
+                        self.collected(ty, &generics, at);
+                    }
+                }
+                TTIRItemKind::Struct { fields, generics, .. } => {
+                    let (fields, generics) = (fields.clone(), generics.clone());
+                    for field in fields {
+                        self.collected(field.ty, &generics, at);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // And every name a body bound, which is where a `let gc` is. The local
+        // keeps where it was written, so this is the one of the three that can
+        // point at the word itself.
+        for id in 0..self.p.bodies.len() {
+            let locals = self.p.bodies[id].locals.clone();
+            for local in locals {
+                let at = Span::at(local.line, local.col);
+                self.collected(local.ty, &[], at);
+            }
+        }
+    }
+
+    // One type, where it turns out to be a `gc` of something with a release.
+    fn collected(&mut self, ty: TyId, generics: &[TTIRGeneric], at: Span) {
+        let Some(Ty::GC(inner)) = self.p.types.get(ty).cloned() else { return };
+        if !self.copies.drops(inner, self.p, generics) {
+            return;
+        }
+        // The name and not a full spelling: this pass holds no type arena of
+        // its own, and a struct's name is what a message about one wants.
+        let held = match self.p.types.get(inner) {
+            Some(Ty::Named { item, .. }) => name_of(*item, self.p),
+            _ => "this".to_string(),
+        };
+        self.errors.push(
+            Diagnostic::error(
+                format!("`{}` has a release, so it is not something a `gc` holds", held),
+                at,
+            )
+            .with_label("the collector would have to run it")
+            .with_note(
+                "a release is placed where a reader can point at it, and a sweep is not \
+                 such a place: the roots are guessed at, so a value nothing wants may be \
+                 held by a stale word for as long as the process runs",
+            )
+            .with_help("a type with a release is one a scope owns -- let the frame hold it"),
+        );
+    }
+
     pub fn check(&mut self) -> &Diagnostics {
         for held in self.copies.both() {
             let item = &self.p.items[held];
@@ -229,6 +318,8 @@ impl<'a> Checker<'a> {
                 .with_help("a value that has something to release is a value there had better be one of"),
             );
         }
+
+        self.collected_releases();
 
         for id in 0..self.p.items.len() {
             let TTIRItemKind::Fn(f) = &self.p.items[id].kind else { continue };

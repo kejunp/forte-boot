@@ -1,0 +1,30 @@
+// Asking the collector to run.
+//
+// `heap.ft` and not `gc.ft`, which is a name no file may have: `gc` is a
+// keyword, so no segment of an import's path can be one.
+//
+// Section 8 asked for two things about a `gc` and this is the second: "there
+// is no spelling for when it runs". There is one now, and it is one routine --
+// the collector's own decision about when to start a cycle is unchanged, and
+// this is a program saying it knows something the collector does not.
+//
+// **When to write it, which is rarely.** The collector starts a cycle when the
+// heap has grown past what the last one left plus a share of it
+// (`runtime/src/gc.rs`), and that is the right answer for a program that
+// allocates steadily. What it cannot know is a program that has just finished
+// with a great deal at once -- a pass over a file, a request answered -- and is
+// about to sit still. A program that knows that can say so here, and a program
+// that does not should not.
+//
+// **What it promises.** That a whole cycle runs before it comes back: marking
+// from the roots and sweeping what nothing reached. What it does not promise is
+// that anything in particular is taken back. The roots are scanned
+// conservatively (§8) -- a word on a stack is an address or a number with
+// nothing to say which -- so a value nothing wants may still be held by a stale
+// word, and no cycle will free it. That is the same fact that makes a `gc` of
+// something with a release refused: a collector that cannot say what it took
+// back cannot be given a job that has to happen.
+
+// A whole cycle, now, on this thread. It comes back when the cycle is over.
+%symbol("__rt_collect")
+pub fn collect()

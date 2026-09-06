@@ -216,10 +216,6 @@ impl Copies {
                 _ => false,
             },
 
-            // Whether a `gc` binding may be moved out of is not settled (§8),
-            // so this is a decision and not a rule: a value the collector owns
-            // is a value with an owner, and an owner is what moving is about.
-            Ty::GC(_) => false,
 
             // Neither says anything, and a type nobody worked out has already
             // been reported once.

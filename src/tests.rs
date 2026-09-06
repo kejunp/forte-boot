@@ -1342,3 +1342,67 @@ fn a_program_reads_what_it_was_started_with() {
     assert!(said.contains("has=1"), "{}", said);
     assert!(said.contains("missing=0"), "{}", said);
 }
+
+// ---- A release and a collector, which are two answers to one question -------------
+
+// `gc` and `Drop` together, refused; and a cycle asked for, which runs.
+//
+// §8 left two things about a `gc` open and these are both of them. The first is
+// what happened when a type with a release was collected: nothing ran. The
+// compiler placed no release, because the value is not the frame's; the
+// collector placed none, because nothing ever told it there was one. A `drop`
+// that silently never happens is worse than one that happens late, and it said
+// nothing about it -- which is the shape of every wrong answer this suite was
+// written to catch.
+//
+// So the pair is refused, and this is the running half: everything the refusal
+// does *not* close still works, and a program may ask for a cycle and carry on.
+#[test]
+fn a_program_asks_for_a_cycle_and_what_it_holds_survives_one() {
+    let dir = std::env::temp_dir().join(format!("fortec-cycle-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("cycle.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         import heap::collect;\n\
+         \n\
+         struct Buf { pub n: i64 }\n\
+         struct Held { pub tag: i64, pub inner: gc Buf }\n\
+         \n\
+         %test\n\
+         fn a_cycle_keeps_what_is_still_reachable() {\n\
+         \x20   let gc keep = Buf { n: 42 }\n\
+         \x20   let gc deep = Held { tag: 1, inner: keep }\n\
+         \x20   var i = 0\n\
+         \x20   while i < 50000 {\n\
+         \x20       let gc t = Buf { n: i }\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   // Three of them, so a cycle that ran on the last one's rubbish\n\
+         \x20   // is not what is being asserted.\n\
+         \x20   collect()\n\
+         \x20   collect()\n\
+         \x20   collect()\n\
+         \x20   assert_eq(int(keep.n), int(42), \"what a name still holds\")\n\
+         \x20   assert_eq(int(deep.inner.n), int(42), \"and what one holds through another\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_cycle_may_be_asked_for_with_nothing_to_do() {\n\
+         \x20   collect()\n\
+         \x20   assert_eq(int(1), int(1), \"and it comes back\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "cycle");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a cycle was meant to keep what is reachable:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}

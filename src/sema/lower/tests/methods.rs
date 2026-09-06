@@ -356,3 +356,46 @@ fn an_expectation_reaches_one_expression() {
     );
     assert!(out.contains("Sq"), "{}", out);
 }
+
+// ---- A release and a collector --------------------------------------------------
+
+// A `gc` of something with a release is refused: the compiler places a release
+// where a reader can point at it, and a sweep is not such a place. What
+// happened before was that neither placed one and nothing was said.
+#[test]
+fn a_gc_of_something_with_a_release_is_refused() {
+    let with = "trait Drop {\n    fn drop(*self)\n}\n\
+                struct Buf {\n    pub n: i32,\n}\n\
+                impl Drop for Buf {\n    fn drop(*self) {}\n}\n";
+    // On a binding,
+    let out = refused(&format!("{}fn f() {{\n    let gc b = Buf {{ n: 1 }}\n}}\n", with));
+    assert!(out.contains("`Buf` has a release"), "{}", out);
+    // in a signature,
+    let out = refused(&format!("{}fn f(b: gc Buf): i32 {{ b.n }}\n", with));
+    assert!(out.contains("`Buf` has a release"), "{}", out);
+    // and in a field, which is where one would otherwise be smuggled in.
+    let out = refused(&format!("{}struct Held {{\n    pub b: gc Buf,\n}}\n", with));
+    assert!(out.contains("`Buf` has a release"), "{}", out);
+}
+
+// And something holding one has a release too, so it is refused for the same
+// reason -- what `Copies::drops` answers is asked and not the declaration.
+#[test]
+fn a_gc_of_something_holding_a_release_is_refused_too() {
+    let out = refused(
+        "trait Drop {\n    fn drop(*self)\n}\n\
+         struct Buf {\n    pub n: i32,\n}\n\
+         impl Drop for Buf {\n    fn drop(*self) {}\n}\n\
+         struct Wrap {\n    pub b: Buf,\n}\n\
+         fn f() {\n    let gc w = Wrap { b: Buf { n: 1 } }\n}\n",
+    );
+    assert!(out.contains("has a release"), "{}", out);
+}
+
+// Everything without one is untouched, which is most of it.
+#[test]
+fn a_gc_of_something_with_no_release_is_written() {
+    clean("struct Buf {\n    pub n: i32,\n}\n\
+           fn f(b: gc Buf): i32 { b.n }\n\
+           fn g() {\n    let gc b = Buf { n: 1 }\n}\n");
+}

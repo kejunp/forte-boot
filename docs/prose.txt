@@ -2445,12 +2445,34 @@ answer is not obvious from the rules alone.
     instead would make a collected value one that could be used once, which is
     worse than a reference and not what a collector is for.
 
-    What is still not settled is the fourth. There is no spelling for when the
-    collector runs, and no account of how a "gc" meets a "Drop": a value with
-    a release the compiler places and a value with a release the collector
-    places are two answers to one question, and the language still has both
-    words and one of the answers. Nothing releases a "gc" where it stands
-    today, which is the half of it that is decided.
+    The fourth is settled now, and it is settled by refusing something
+    rather than by building it.
+
+    **A "gc" of something with a release is turned down.** "Drop" here is a
+    release the *compiler* places, at a point in the program a reader can
+    point at. What the collector would place it at is a sweep, and the roots
+    are scanned conservatively (above): a word on a stack is an address or a
+    number with nothing to say which, so a value nothing wants may be held by
+    a stale word for as long as the process runs. A release placed there is
+    not one that is late; it is one that promises nothing. And a promise a
+    "Drop" cannot keep in one place is a "Drop" that means two things.
+
+    So the language keeps the answer it can promise, and a type with a release
+    is one a scope owns. What that closes is a collected value holding a file
+    handle; what it opens is a "Drop" that means the same everywhere. It is a
+    refusal and not a silence, which is the part that had been wrong: a
+    "gc Buf" whose "Buf" had a "drop" ran no "drop" at all and said nothing --
+    the compiler placed none, the value not being the frame's, and the
+    collector placed none, nothing having told it there was one to place.
+
+    **When it runs has a spelling**, and it is "heap::collect" — a whole cycle,
+    now, on the calling thread. Not "gc.ft", which is a name no file may have:
+    "gc" is a keyword, and no segment of an import's path can be one. What it
+    promises is that a cycle ran, and not that anything in particular came
+    back — which is the same fact about conservative roots read a second time,
+    and the reason the refusal above is a refusal. The collector's own decision
+    about when to start one is unchanged; this is a program saying it knows
+    something the collector does not, and most programs do not.
 
     Two smaller things follow from the shape and are worth writing down. A
     "gc T" admits no absent value, as a reference admits none — so a list of
