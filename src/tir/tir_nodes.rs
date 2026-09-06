@@ -462,6 +462,16 @@ pub enum TIRExprKind {
     Block {
         stmts: Vec<TIRStmt>,
         tail:  Option<TIRExprId>,
+        // Whether an `unsafe` stood in front of the tail. The grammar admits
+        // one -- `<unterminated_stmt>` takes `"unsafe" <unterminated_stmt>`,
+        // which is the only way an `unsafe` can be the last thing in a body,
+        // there being no `;` in front of a `}` to end it with.
+        //
+        // It is a flag here and not a node around the expression because there
+        // is no unsafe *expression* in this language (§8): the word guards a
+        // statement, and the tail of a block is the one place a thing can be
+        // guarded and be a value at once.
+        tail_unsafe: bool,
     },
     // The `elif`s the AST keeps as written are folded here: one form, nested in
     // the `else`, and every pass below reads one shape instead of two.

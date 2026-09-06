@@ -891,11 +891,23 @@ impl<'a> Lowerer<'a> {
         // declaration there is a statement like any other, and the block yields
         // `null` as one with nothing at the end does.
         //
-        // `unsafe` is the third thing it holds, and the word makes a statement
-        // of whatever it prefixes: a block ending in one is `null` however well
-        // what follows the word would have read as a value (section 4). It is
-        // taken off here rather than in `stmt`, which is handed statements and
-        // never the bare expression this slot has.
+        // `unsafe` is the third thing it holds, and it guards the tail without
+        // taking its value away: `fn read(p: ptr i64): i64 { unsafe p[0] }` is
+        // what it looks like, and the grammar admits it here for exactly that
+        // reason -- there is no `;` in front of a `}`, so the tail slot is the
+        // only place an `unsafe` can be the last thing in a body at all.
+        //
+        // It used to make a statement of whatever it prefixed, and a block
+        // ending in one was `null`. Nothing said so: `null` "belongs to every
+        // type", so the signature above agreed with it and the fn returned
+        // nought. A word that guards a read should not also throw the read
+        // away.
+        //
+        // It is taken off here rather than in `stmt`, which is handed
+        // statements and never the bare expression this slot has, and what is
+        // left of it is the flag on the block -- the word guards a statement
+        // (§8: there is no unsafe *expression*), and this is the one place a
+        // thing is guarded and is a value at once.
         let mut is_unsafe = false;
         let mut tail = tail;
         while let Some(ASTNodeKind::Unsafe(inner)) = tail.map(|t| self.kind(t)) {
@@ -911,14 +923,14 @@ impl<'a> Lowerer<'a> {
                 }
                 None
             }
-            Some(t) if is_unsafe => {
-                out.push(TIRStmt::Expr { is_unsafe: true, expr: self.expr(t) });
-                None
-            }
             Some(t) => Some(self.expr(t)),
         };
         self.guarded -= is_unsafe as usize;
-        self.push_expr(TIRExprKind::Block { stmts: out, tail }, id)
+        // The word is spent where it was written: a tail that turned out to be
+        // a declaration went into `out` as a guarded statement above, and there
+        // is no tail left for the flag to be about.
+        let tail_unsafe = is_unsafe && tail.is_some();
+        self.push_expr(TIRExprKind::Block { stmts: out, tail, tail_unsafe }, id)
     }
 
     // Whether the node in a block's tail slot is the value of the block or the

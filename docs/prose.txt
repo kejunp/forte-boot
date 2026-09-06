@@ -1105,8 +1105,7 @@ The second is the one-line form: where a single statement is being answered
 for, there is nothing for a block to hold and the braces are dropped. A
 <var_decl> is a statement too, so a value is carried out of an unsafe region
 by binding it there — "unsafe let buf = malloc(n)" — which is how a "let"
-gets one at all, an unsafe statement being a statement and never a block's
-value.
+gets one at all.
 
 "unsafe" opens no scope. It is a prefix and not a wrapper, so the "buf" above
 is a binding of the block around it and outlives the line. The braces of
@@ -1114,8 +1113,18 @@ is a binding of the block around it and outlives the line. The braces of
 the two forms.
 
 Its ";" is the prefixed statement's own, and may be left out in front of a
-"}" like any other. A block ending in an unsafe statement is "null", which
-costs nothing: the "unsafe let" above is what a value wanted anyway.
+"}" like any other — which is the one place the word stands last, there being
+no ";" in front of a "}" to end it with. There it guards the tail and leaves
+it the block's value:
+
+    fn elem(p: ptr i64, i: i64): i64 {
+        unsafe p[i]
+    }
+
+That is what <block_tail_opt> means by taking an "unsafe" of its own: the slot
+holds the block's value, and a guarded read is a value like any other. A
+*declaration* in that slot is not one however it is written, so a block ending
+in "unsafe let b = malloc(n)" is "null" as one ending in a plain "let" is.
 
 <jump_expr>. The operand is the value of the loop the break leaves (section
 5.1). Like a return's, it has to start on the same line: "break" can end a
@@ -2184,7 +2193,18 @@ answer is not obvious from the rules alone.
     are the writer's choice and not the grammar's. Two things it does not
     say. There is no unsafe *expression*: "let b = unsafe { malloc(n) }" is
     not written, "unsafe let b = malloc(n)" is, and whether the first should
-    also be allowed is open. And the body of an unsafe fn is checked like
+    also be allowed is open.
+
+    The one place the word is on something that is also a value is the tail of
+    a block, which <block_tail_opt> has always admitted — there is no ";" in
+    front of a "}", so that slot is where an "unsafe" stands last or nowhere.
+    It took the value away until now: the word made a statement of what it
+    prefixed, the block yielded "null", and because "null" belongs to every
+    type nothing was said about it — "fn read(p: ptr i64): i64 { unsafe
+    p[0] }" compiled and gave back nought. It guards the tail and leaves it
+    the value now, which is what every container reaching through its own
+    pointer wanted. It is still no unsafe expression: the word may not be
+    written on an operand, and the tail of a block is not one. And the body of an unsafe fn is checked like
     any other, so an unsafe call inside one writes the word — the opposite
     convention, where the marking on the signature reaches the whole body, is
     the alternative that was not taken.

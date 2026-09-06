@@ -42,7 +42,9 @@ impl<'a> Lowerer<'a> {
             // "the innermost scope that has it answers".
             TIRExprKind::Name(path) => self.named(&path, id),
 
-            TIRExprKind::Block { stmts, tail } => self.block(&stmts, tail, id),
+            TIRExprKind::Block { stmts, tail, tail_unsafe } => {
+                self.block(&stmts, tail, tail_unsafe, id)
+            }
 
             TIRExprKind::Unary { op, operand } => {
                 let held = self.expr(operand);
@@ -479,6 +481,10 @@ impl<'a> Lowerer<'a> {
         &mut self,
         stmts: &[TIRStmt],
         tail: Option<TIRExprId>,
+        // Whether an `unsafe` stood in front of the tail. It guards it and
+        // leaves it the block's value, which is the one place the word does
+        // both -- see `TIRExprKind::Block`.
+        tail_unsafe: bool,
         at: TIRExprId,
     ) -> TTIRExprId {
         self.frames.last_mut().expect("a frame").scopes.push(HashMap::new());
@@ -566,7 +572,9 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        self.guarded += usize::from(tail_unsafe);
         let tail = tail.map(|t| self.expr(t));
+        self.guarded -= usize::from(tail_unsafe);
         self.frames.last_mut().expect("a frame").scopes.pop();
         // "A block is an expression, and its value is the trailing expression
         // -- the one left without a `;`. A block with no trailing expression is

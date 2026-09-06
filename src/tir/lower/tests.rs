@@ -125,34 +125,48 @@ fn unsafe_becomes_a_flag_on_the_statement() {
     assert!(matches!(stmts[2], TIRStmt::Expr { is_unsafe: false, .. }));
 }
 
-// The last thing in a block with no `;` is the block's value -- unless the word
-// is in front of it, which makes a statement of it and leaves the block `null`
-// (section 4). Both spellings of the tail reach here, the guarded declaration
-// and the guarded expression.
+// The last thing in a block with no `;` is the block's value, and an `unsafe`
+// in front of it guards it without taking that away. The tail slot is the only
+// place the word can stand last at all -- there is no `;` in front of a `}` --
+// so making a statement of it, as this used to, meant a guarded read could
+// never be a fn's answer: `fn read(p: ptr i64): i64 { unsafe p[0] }` returned
+// nought, and nothing said so, `null` belonging to every type.
 #[test]
-fn a_block_ending_in_an_unsafe_statement_is_null() {
+fn an_unsafe_tail_is_still_the_blocks_value() {
     for source in [
         "fn main() {\n    unsafe free(p)\n}\n",
-        "fn main() {\n    unsafe let b = malloc(n)\n}\n",
+        // A block is an expression, so the word in front of one guards it and
+        // the block is the tail like any other.
         "fn main() {\n    unsafe {\n        free(p)\n    }\n}\n",
     ] {
         let tir = clean(source);
         let f = only_fn(&tir);
         match body_of(&tir, f) {
-            TIRExprKind::Block { stmts, tail } => {
-                assert_eq!(stmts.len(), 1, "{}", source);
-                assert!(tail.is_none(), "{}", source);
-                assert!(
-                    matches!(
-                        stmts[0],
-                        TIRStmt::Expr { is_unsafe: true, .. } | TIRStmt::Let { is_unsafe: true, .. }
-                    ),
-                    "{}",
-                    source
-                );
+            TIRExprKind::Block { stmts, tail, tail_unsafe } => {
+                assert!(stmts.is_empty(), "{}", source);
+                assert!(tail.is_some(), "{}", source);
+                assert!(*tail_unsafe, "the word is still on it: {}", source);
             }
             other => panic!("{:?}", other),
         }
+    }
+}
+
+// A declaration in that slot is not a value however it is written, so the word
+// in front of one has no tail to be about and the block is `null` as one with
+// nothing at the end is.
+#[test]
+fn an_unsafe_declaration_in_the_tail_slot_is_a_statement() {
+    let tir = clean("fn main() {\n    unsafe let b = malloc(n)\n}\n");
+    let f = only_fn(&tir);
+    match body_of(&tir, f) {
+        TIRExprKind::Block { stmts, tail, tail_unsafe } => {
+            assert_eq!(stmts.len(), 1);
+            assert!(tail.is_none());
+            assert!(!*tail_unsafe, "there is no tail for it to guard");
+            assert!(matches!(stmts[0], TIRStmt::Let { is_unsafe: true, .. }));
+        }
+        other => panic!("{:?}", other),
     }
 }
 

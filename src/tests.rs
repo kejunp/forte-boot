@@ -711,3 +711,66 @@ fn a_generic_impl_is_made_once_for_each_receiver() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 4 tests"), "{}", said);
 }
+
+// ---- An `unsafe` in front of the last thing in a body ----------------------------
+
+// A guarded read as a fn's answer, which is the shape every container that
+// manages its own room wants: `fn elem(&self, i: i64): T { unsafe self.at[i] }`.
+//
+// It compiled before and gave back nought. The word made a statement of what it
+// prefixed, so the block had no tail and yielded `null` -- and `null` "belongs
+// to every type" (§3), so the signature agreed with it and nothing was said. A
+// wrong answer with no diagnostic is the worst of the three ways this could
+// have gone, which is why it is asserted here on values rather than on a tree.
+//
+// The four shapes are the four an `unsafe` tail can have: a read through a
+// pointer, a `deref`, a block, and a declaration -- the last of which is not a
+// value however it is written, so the word has nothing to guard and the fn
+// answers `null` as it always did.
+#[test]
+fn an_unsafe_tail_is_the_value_of_the_body_it_ends() {
+    let dir = std::env::temp_dir().join(format!("fortec-unsafe-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("guard.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         import mem::room;\n\
+         \n\
+         fn indexed(p: ptr i64): i64 { unsafe p[0] }\n\
+         fn dereffed(p: ptr i64): i64 { unsafe deref p }\n\
+         fn blocked(p: ptr i64): i64 { unsafe { p[0] } }\n\
+         // Twice over, to say the word nests the way the grammar has it:\n\
+         // `<unterminated_stmt>` takes another one after the word.\n\
+         fn twice(p: ptr i64): i64 { unsafe unsafe p[0] }\n\
+         \n\
+         %test\n\
+         fn a_guarded_read_is_what_the_fn_answers() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 9\n\
+         \x20   assert_eq(int(indexed(p)), int(9), \"through an index\")\n\
+         \x20   assert_eq(int(dereffed(p)), int(9), \"through a `deref`\")\n\
+         \x20   assert_eq(int(blocked(p)), int(9), \"through a block\")\n\
+         \x20   assert_eq(int(twice(p)), int(9), \"and through the word twice\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_guarded_write_still_happens() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 1\n\
+         \x20   unsafe p[0] = 2\n\
+         \x20   assert_eq(int(indexed(p)), int(2), \"the last write is what is there\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "guard");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a guarded tail was meant to be a value:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
