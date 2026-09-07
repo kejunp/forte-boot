@@ -11,6 +11,14 @@
 // the tests of both passes over every body they build, which is what makes a
 // test that only looks at one instruction still say something about the rest.
 //
+// And by the driver over every program it compiles -- see `unsound` at the
+// foot of this file, which is the same two rules asked where it matters. That
+// was not so at first, and what came of it was a bug this would have named:
+// `promote` took a slot out from under a phi `opt::inline` had made, and what
+// was left was a load from a register nothing wrote. It compiled, it linked,
+// and it read whatever happened to be there. The check was written, it was
+// right, and nothing on the way to an executable ever asked it.
+//
 // A phi is checked against the edge and not against the block. Its operands
 // arrive along the way in, so what has to dominate is the *predecessor* the
 // operand came from -- a value made in the block the phi stands in would not
@@ -184,4 +192,24 @@ pub fn verify_order(body: &SIRBody) -> Vec<String> {
         }
     }
     wrong
+}
+
+// ---- What the driver asks --------------------------------------------------
+
+// The first thing wrong with the first body that has anything wrong with it,
+// or nothing where the program is sound.
+//
+// One message and not the list, because what a reader does with any of them is
+// the same thing: this is the compiler having broken its own invariant, and
+// the first place it did is where to look. The whole list is what a *test*
+// wants, and `fixture::sound` is that.
+pub fn unsound(p: &SIRProgram) -> Option<String> {
+    for (id, body) in p.bodies.iter().enumerate() {
+        let mut wrong = verify(body);
+        wrong.extend(verify_order(body));
+        if let Some(first) = wrong.first() {
+            return Some(format!("body {} is not in SSA form: {}", id, first));
+        }
+    }
+    None
 }

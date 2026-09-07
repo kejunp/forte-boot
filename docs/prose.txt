@@ -2390,11 +2390,19 @@ answer is not obvious from the rules alone.
 
     Worth saying what did *not* find it. Every pass above the SIR was right
     about the program, so nothing that reads a tree could have. The SIR that
-    came out is not in SSA form and says so -- "sir::fixture::sound" is the
-    check and it is a test fixture, run by the tests of the passes and never
-    on a real compilation, so it was there to be asked and nobody asked it.
-    Whether it should run on every build is a question about what a compiler
-    owes its own output and is not answered here.
+    came out is not in SSA form and says so -- the check was written, it was
+    right, and it was run by the tests of the passes and by nothing on the way
+    to an executable. It was there to be asked and nobody asked it.
+
+    It is asked now, of every program the driver compiles, after the passes
+    that could break it have run. Being in SSA form is what every pass below
+    the SIR leans on and a pass that breaks it breaks it silently, so what
+    this buys is the difference between a wrong answer somewhere else and a
+    message naming the instruction. It says the compiler is at fault rather
+    than the program, and it stops: an executable built out of a graph that is
+    not in SSA form is worse than no executable, being one that runs. The cost
+    is a dominator tree and a liveness walk per body, which does not show
+    against the rest of a compilation.
   - An address is a word, and the four instructions that compute one now say
     so. They did not: each named its answer's register at the *definition's*
     width, and that is the same number for every type held by its address

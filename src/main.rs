@@ -253,6 +253,24 @@ fn compile(
         let insts = instructions(&ssa);
         let worked = sir::opt::optimize(&mut ssa, &ttir, level, target);
 
+        // Asked of what came out, and asked of what went in above. Being in
+        // SSA form is what every pass below this leans on, and a pass that
+        // breaks it breaks it silently: the graph still walks and the answer
+        // is wrong somewhere else. `sir::verify` says so at greater length and
+        // was written to be asked; until now nothing on the way to an
+        // executable asked it, and a bug went out through the gap.
+        //
+        // It is the compiler at fault and not the program, so it says so and
+        // stops -- an executable built out of a graph that is not in SSA form
+        // is worse than no executable, being one that runs.
+        if let Some(wrong) = sir::verify::unsound(&ssa) {
+            eprintln!("{}: the compiler built something it should not have: {}",
+                      name.display(), wrong);
+            eprintln!("{}: this is a fault in the compiler and not in the program",
+                      name.display());
+            return false;
+        }
+
         // And the machine's, which is what the SSA was for: every generic made
         // once per set of types it is used with, every type turned into a
         // number of bytes, and every register the body wanted met with the
