@@ -322,3 +322,99 @@ fn a_heap_past_its_goal_starts_a_cycle() {
     assert_eq!(rt.gc.phase, Phase::Mark);
     finish(&mut rt);
 }
+
+// ---- A global, which is on no stack and in no heap -------------------------
+
+// The fifth root set. A global is not on a stack and is not an object, so
+// neither of the two sets that find things by looking would ever reach one --
+// and a global holding the only reference to a collected value would have it
+// swept underneath.
+//
+// The roots are given here, as everywhere in this file and for the reason its
+// header gives: asked of a running program the question cannot be answered,
+// because a conservative scan finds whatever the last few calls left lying
+// about. `cycle_from` makes the reachable set exactly what the test says.
+//
+// A `usize` standing in for the global itself. What the compiler emits is the
+// address of a symbol in `.data`; what matters here is that it is neither a
+// stack address nor an object, and a local is neither once the roots are given
+// rather than found.
+#[test]
+fn a_registered_global_keeps_what_it_points_at() {
+    let mut rt = Runtime::new();
+    let shape = node_shape();
+    let held = chain(&mut rt, &shape, 50);
+    let head = *held.last().expect("a head");
+
+    // The "global": one word holding the head, described as holding one.
+    let global: Box<usize> = Box::new(head);
+    let at = (&*global as *const usize) as usize;
+    let named = Made::new(8, 8, Kind::Opaque).points_at(0);
+    rt.rooted.push((at, named.shape()));
+
+    cycle_from(&mut rt, &[]);
+    for (i, one) in held.iter().enumerate() {
+        assert!(alive(&rt, *one), "node {} was collected through a global", i);
+    }
+}
+
+// And the half that says the first one is doing the work: the same heap and the
+// same empty roots, with the global not registered.
+#[test]
+fn an_unregistered_global_keeps_nothing() {
+    let mut rt = Runtime::new();
+    let shape = node_shape();
+    let held = chain(&mut rt, &shape, 50);
+    let head = *held.last().expect("a head");
+
+    let global: Box<usize> = Box::new(head);
+    let _ = &*global;
+
+    cycle_from(&mut rt, &[]);
+    for (i, one) in held.iter().enumerate() {
+        assert!(!alive(&rt, *one), "node {} survived with nothing pointing at it", i);
+    }
+}
+
+// A global with nothing worth following costs nothing: its shape names no
+// pointers, so not a word of it is read. What the compiler does with such a
+// global is not register it at all, and this is the runtime saying the same
+// thing from the other side.
+#[test]
+fn a_global_that_holds_no_pointer_is_never_read() {
+    let mut rt = Runtime::new();
+    let shape = node_shape();
+    let held = chain(&mut rt, &shape, 20);
+    let head = *held.last().expect("a head");
+
+    let global: Box<usize> = Box::new(head);
+    let at = (&*global as *const usize) as usize;
+    // Eight bytes and no pointer in them.
+    let named = Made::new(8, 8, Kind::Opaque);
+    rt.rooted.push((at, named.shape()));
+
+    cycle_from(&mut rt, &[]);
+    for (i, one) in held.iter().enumerate() {
+        assert!(!alive(&rt, *one), "node {} survived a shape naming no pointers", i);
+    }
+}
+
+// A word that is still nought is one nothing has been stored into yet, which is
+// every global between being registered and being filled in -- and the two
+// happen in that order on purpose. It has to cost nothing rather than fault.
+#[test]
+fn a_global_still_holding_nought_is_no_trouble() {
+    let mut rt = Runtime::new();
+    let shape = node_shape();
+    let held = chain(&mut rt, &shape, 10);
+
+    let global: Box<usize> = Box::new(0);
+    let at = (&*global as *const usize) as usize;
+    let named = Made::new(8, 8, Kind::Opaque).points_at(0);
+    rt.rooted.push((at, named.shape()));
+
+    cycle_from(&mut rt, &[]);
+    for one in held.iter() {
+        assert!(!alive(&rt, *one), "nothing was pointed at");
+    }
+}

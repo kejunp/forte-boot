@@ -28,6 +28,7 @@
 // every machine, and the compiler that assembles the output is already there
 // to compile it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -70,14 +71,35 @@ pub enum Start {
 // What the shim is, given what the program starts at. Kept apart from running
 // the tools so that what is handed to the C compiler can be looked at, and
 // asserted on.
-pub fn shim(start: &Start) -> String {
+pub fn shim(start: &Start, before: &[String]) -> String {
     match start {
-        Start::Program(entry) => program_shim(entry),
-        Start::Tests(tests) => tests_shim(tests),
+        Start::Program(entry) => program_shim(entry, before),
+        Start::Tests(tests) => tests_shim(tests, before),
     }
 }
 
-fn program_shim(entry: &Entry) -> String {
+// What runs between `__rt_init` and the program: the routines the compiler
+// wrote for the globals. A declaration and a call for each, in the order given.
+//
+// The order is load-bearing and it is the caller's to get right: the roots go
+// first, because storing one global may allocate, allocating may start a cycle,
+// and a global already stored but not yet a root is one the cycle sweeps
+// underneath.
+//
+// Empty for a program with no globals worth either, and then both shims are
+// exactly what they were.
+fn ahead(before: &[String]) -> (String, String) {
+    let mut said = String::new();
+    let mut done = String::new();
+    for name in before {
+        let _ = writeln!(said, "extern void {}(void);", name);
+        let _ = writeln!(done, "\x20   {}();", name);
+    }
+    (said, done)
+}
+
+fn program_shim(entry: &Entry, before: &[String]) -> String {
+    let (said, done) = ahead(before);
     // `argc` and `argv` come from the kernel through this and nowhere else,
     // and they are handed over before `__rt_init` so that the first line the
     // program runs can already read them. `std/env.ft` is what reads them.
@@ -86,8 +108,11 @@ fn program_shim(entry: &Entry) -> String {
     // `main` with parameters is mangled with them and is not the one a process
     // starts at. What was missing was somewhere for an argument to come from,
     // and this is it.
-    let head = "extern void __rt_init(void);\n\
-                extern void __rt_args(long, char **);\n";
+    let head = format!(
+        "extern void __rt_init(void);\n\
+         extern void __rt_args(long, char **);\n{}",
+        said
+    );
     if entry.answers {
         format!(
             "{head}\
@@ -95,9 +120,11 @@ fn program_shim(entry: &Entry) -> String {
              int main(int argc, char **argv) {{\n\
              \x20   __rt_args((long)argc, argv);\n\
              \x20   __rt_init();\n\
+             {done}\
              \x20   return (int){sym}();\n\
              }}\n",
             head = head,
+            done = done,
             sym = entry.symbol
         )
     } else {
@@ -107,10 +134,12 @@ fn program_shim(entry: &Entry) -> String {
              int main(int argc, char **argv) {{\n\
              \x20   __rt_args((long)argc, argv);\n\
              \x20   __rt_init();\n\
+             {done}\
              \x20   {sym}();\n\
              \x20   return 0;\n\
              }}\n",
             head = head,
+            done = done,
             sym = entry.symbol
         )
     }
@@ -135,17 +164,21 @@ fn program_shim(entry: &Entry) -> String {
 // that one needs two names and this one needs `printf`, `fflush` and `stdout`,
 // and spelling a variadic and a `FILE *` out by hand would be three chances to
 // disagree with the header that is already there.
-fn tests_shim(tests: &[Test]) -> String {
+fn tests_shim(tests: &[Test], before: &[String]) -> String {
+    let (said, done) = ahead(before);
     let mut out = String::from(
         "#include <stdio.h>\n\n\
          extern void __rt_init(void);\n\
          extern void __rt_test_start(void);\n\
          extern long __rt_test_failed(void);\n",
     );
+    out.push_str(&said);
     for test in tests {
         out.push_str(&format!("extern void {}(void);\n", test.symbol));
     }
-    out.push_str("\nint main(void) {\n    __rt_init();\n    long passed = 0, failed = 0;\n");
+    out.push_str("\nint main(void) {\n    __rt_init();\n");
+    out.push_str(&done);
+    out.push_str("    long passed = 0, failed = 0;\n");
     out.push_str(&format!(
         "    printf(\"\\nrunning {} test{}\\n\");\n",
         tests.len(),
@@ -223,6 +256,8 @@ pub fn link(
     m: Machine,
     out: &Path,
     runtime: Option<&Path>,
+    // What runs between `__rt_init` and the program -- see `ahead`.
+    before: &[String],
 ) -> Result<(), String> {
     if m.name != here() {
         return Err(format!(
@@ -269,7 +304,7 @@ pub fn link(
     let at_s = dir.join(format!("{}.s", tag));
     let at_c = dir.join(format!("{}.c", tag));
 
-    let written = std::fs::write(&at_s, asm).and_then(|()| std::fs::write(&at_c, shim(start)));
+    let written = std::fs::write(&at_s, asm).and_then(|()| std::fs::write(&at_c, shim(start, before)));
     if let Err(why) = written {
         let _ = std::fs::remove_file(&at_s);
         let _ = std::fs::remove_file(&at_c);

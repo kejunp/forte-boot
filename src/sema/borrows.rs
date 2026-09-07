@@ -264,6 +264,14 @@ impl<'a> Checker<'a> {
                         self.collected(field.ty, &generics, at);
                     }
                 }
+                // And a global, which had been the one place a `gc` of
+                // something with a release could still be written: the walk
+                // below reaches every name a *body* bound, and a global is
+                // bound by no body.
+                TTIRItemKind::Global { ty, .. } => {
+                    let ty = *ty;
+                    self.collected(ty, &[], at);
+                }
                 _ => {}
             }
         }

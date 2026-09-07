@@ -120,6 +120,12 @@ impl<'a> Lowerer<'a> {
                             continue;
                         };
                         *init = Some(held);
+                        // And it has to be *stored* when the program starts.
+                        // The evaluator folded nothing, so the image is nought
+                        // or is only part of the answer -- and for a `gc` it
+                        // can never be more than that, an allocation not being
+                        // a thing a segment can hold. See `Lowerer::starts`.
+                        self.starts.push((made, held));
                     }
                 }
 

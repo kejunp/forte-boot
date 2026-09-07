@@ -75,7 +75,7 @@ use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
     TIRProgram, TIRVis,
 };
-use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRExpr, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRStmt, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
 
 mod binds;
 mod bodies;
@@ -94,6 +94,12 @@ mod structs;
 
 #[cfg(test)]
 mod tests;
+
+// What the fn that stores the globals is called. Written on the item rather
+// than mangled, so that `link` can name it in the shim and `mir::mono` can keep
+// it without either having to know where it was declared. `__forte` and not
+// `__rt`, because it is the compiler's and not the runtime's.
+pub const STARTS: &str = "__forte_starts";
 
 // Whether a declaration is one another file may name. Only these go into the
 // suite's map of full paths: `by_path` is what a written path reaches, and a
@@ -222,6 +228,21 @@ pub struct Lowerer<'a> {
     // spent it. That is what keeps `f(if c { 1 } else { 2 })` from offering
     // the argument's type to the two numbers inside the `if`.
     want: Option<TyId>,
+    // The globals whose value has to be *stored* when the program starts,
+    // rather than written into the data segment as bytes -- and the expression
+    // each is stored from.
+    //
+    // Which those are is exactly the ones the evaluator folded nothing for. An
+    // image can hold a 42; it cannot hold an allocation, and a `gc` global's
+    // value is one by definition (`__rt_gc_alloc` has not run when the segment
+    // is written). It cannot hold what a call gives back either, and such a
+    // global had been nought with nothing said.
+    //
+    // What is made of these is one fn per suite -- see `starting` -- which the
+    // shim calls before `main`. It is a fn and not hand-written machine code
+    // because an initialiser is an arbitrary expression, and a fn is the one
+    // shape every pass after this one already knows how to compile.
+    starts:  Vec<(TTIRItemId, TTIRExprId)>,
     // How many `unsafe` statements are open around what is being walked.
     //
     // `tir::lower` answers the same question for `addr` and `deref`, which it
@@ -337,6 +358,7 @@ impl<'a> Lowerer<'a> {
             params: Vec::new(),
             outer: Vec::new(),
             bounds: Vec::new(),
+            starts: Vec::new(),
             want: None,
             guarded: 0,
             consts: HashMap::new(),
@@ -442,6 +464,7 @@ impl<'a> Lowerer<'a> {
             self.enter(file);
             self.bodies(&roots[file]);
         }
+        self.starting();
         // Nothing after this belongs to any one file.
         self.errors.from_now_on(0);
 
@@ -472,6 +495,88 @@ impl<'a> Lowerer<'a> {
             self.errors.absorb(&mut said);
         }
         (self.out, self.errors)
+    }
+
+    // One fn that stores what a data segment cannot hold, run before `main`.
+    //
+    // A global's image is bytes written when the program is compiled, so it can
+    // hold a number and a run of them and cannot hold anything worked out while
+    // the program runs. A `gc` global is the sharp case -- its value is an
+    // allocation, and the allocator has not run -- and a global initialised by
+    // a call is the same thing said less obviously: it had been nought, with
+    // nothing said about it.
+    //
+    // A `Fn` item and not hand-written machine code, which is the whole reason
+    // this is short: an initialiser is an arbitrary expression, and a fn body
+    // is the one shape `gir`, `sir`, `mir::mono` and `mir::lower` already know
+    // how to compile. What is built here is a block of assignments, and every
+    // pass after this one sees a fn like any other.
+    //
+    // Its symbol is written on it rather than mangled, so that `link` can name
+    // it in the shim without knowing where it was declared -- the same thing a
+    // `%symbol` fn does, and for the same reason.
+    fn starting(&mut self) {
+        if self.starts.is_empty() {
+            return;
+        }
+        let held = std::mem::take(&mut self.starts);
+        let null = self.types.null();
+        // In the order they were written, which is the order a reader expects
+        // and the only one this can promise: a global reading another that has
+        // not been stored yet reads its image, as it does in C.
+        let stmts: Vec<TTIRStmt> = held
+            .iter()
+            .map(|&(item, value)| {
+                let ty = self.out.exprs[value].ty;
+                let place = self.made_expr(TTIRExprKind::Item(item), ty);
+                let held = self.made_expr(
+                    TTIRExprKind::Assign {
+                        op: crate::tir::tir_nodes::TIRAssignOp::Set,
+                        place,
+                        value,
+                    },
+                    null,
+                );
+                TTIRStmt::Expr { is_unsafe: false, expr: held }
+            })
+            .collect();
+        let body = self.made_expr(TTIRExprKind::Block { stmts, tail: None }, null);
+        self.frames.push(Frame::new(null, false));
+        let body = self.finish_body(body);
+
+        let ty = self.types.intern(Ty::Fn {
+            uses: crate::tir::tir_nodes::TIRFnUses::Reads,
+            params: Vec::new(),
+            ret: null,
+            is_unsafe: false,
+        });
+        let mut attrs = crate::tir::tir_nodes::TIRFnAttrs::default();
+        attrs.symbol = Some(STARTS.to_string());
+        self.out.items.push(TTIRItem {
+            kind: TTIRItemKind::Fn(TTIRFn {
+                vis: TIRVis::Pub,
+                attrs,
+                is_const: false,
+                is_unsafe: false,
+                name: "$starts".to_string(),
+                generics: Vec::new(),
+                wheres: Vec::new(),
+                outlives: Vec::new(),
+                params: Vec::new(),
+                ret: null,
+                ty,
+                body: Some(body),
+            }),
+            line: 1,
+            col: 1,
+        });
+    }
+
+    // An expression nobody wrote, which is every one this pass builds: it
+    // stands at the top of the file because there is nowhere truer to put it.
+    fn made_expr(&mut self, kind: TTIRExprKind, ty: TyId) -> TTIRExprId {
+        self.out.exprs.push(TTIRExpr { kind, ty, line: 1, col: 1 });
+        self.out.exprs.len() - 1
     }
 
     fn span(&self, item: TIRItemId) -> Span {

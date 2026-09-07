@@ -44,6 +44,26 @@ pub extern "C" fn __rt_init() {
     gc::begin();
 }
 
+// `__rt_root(at, shape)`: a global the collector has to look at.
+//
+// Called once per global that holds anything worth following, from the routine
+// the compiler writes and the shim calls before `main` (`src/link.rs`). It is
+// called *before* the initialisers run, and deliberately: an allocation while
+// one global is being filled in can start a cycle, and a global already filled
+// in but not yet a root would be swept underneath.
+//
+// Registering an address that still holds nought costs nothing -- `mark::shade`
+// answers to a null by doing nothing -- which is what makes that order safe.
+///
+/// # Safety
+/// `at` is the address of a global and `shape` the descriptor for its type,
+/// both of which live as long as the program does.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt_root(at: *const u8, shape: *const u8) {
+    let Some(shape) = Shape::at(shape) else { return };
+    runtime().rooted.push((at as usize, shape));
+}
+
 // ---- Room ------------------------------------------------------------------
 
 // `__rt_alloc(bytes) -> ptr`: room the collector does not own.

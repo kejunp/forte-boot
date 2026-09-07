@@ -392,7 +392,7 @@ impl<'a> Lowerer<'a> {
 
     // ---- Building ---------------------------------------------------------------
 
-    fn fresh_block(&mut self) -> MIRBlockId {
+    pub(super) fn fresh_block(&mut self) -> MIRBlockId {
         self.b.blocks.push(MIRBlock {
             phis:  Vec::new(),
             insts: Vec::new(),

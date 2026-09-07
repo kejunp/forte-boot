@@ -1,7 +1,7 @@
 // Where marking starts: the words that are reachable without going through
 // anything else.
 //
-// Four of them here, and they are not equally honest.
+// Five of them here, and they are not equally honest.
 //
 //   the stack        every word between where the mutator is now and where its
 //                    stack began. Read **conservatively**: nothing says which
@@ -10,8 +10,18 @@
 //                    value can be sitting in across the call into the runtime.
 //                    Also conservative, and for the same reason.
 //   what is pinned   `__rt_alloc`'s objects, which nothing collects.
+//   the globals      the program's own, each registered by `__rt_root` with a
+//                    descriptor. Read **precisely**: the compiler knows what a
+//                    global holds and says so.
 //   the containers   the maps and sets the runtime owns, which it walks
 //                    knowingly because it wrote them.
+//
+// The globals are *registered* and not discovered, which is worth saying
+// because a linker offers `__data_start` and `_edata` and it would be shorter
+// to read those. They are not portable across the three machines here, and a
+// range is not precise: it would make a root of every global whether or not
+// one holds an address, and would read every word of each. A descriptor per
+// global costs one call at startup and buys both.
 //
 // **The stack is the compromise in this whole runtime.** Go's collector is
 // precise here: the Go compiler emits, for every function and every point in
@@ -44,6 +54,9 @@
 use std::cell::Cell;
 
 use super::super::Runtime;
+
+// A word, which is what a shape counts in and what a pointer is wide.
+const WORD: usize = std::mem::size_of::<usize>();
 use super::mark;
 
 thread_local! {
@@ -182,7 +195,31 @@ pub fn owned(rt: &mut Runtime) {
             rt.gc.work.push((id, index));
         }
     }
+    data(rt);
     containers(rt);
+}
+
+// The program's globals, walked precisely through the descriptor each was
+// registered with -- see `__rt_root`.
+//
+// Precisely and not conservatively, which is the difference between this and
+// the stack: the compiler knows what a global holds and says so, where a word
+// on a stack is an address or a number with nothing to say which. So a global
+// with no pointers in it is never read at all, and one with a pointer at the
+// third word is read at the third word.
+fn data(rt: &mut Runtime) {
+    for (at, shape) in rt.rooted.clone() {
+        for word in 0..shape.words() {
+            if !shape.points(word) {
+                continue;
+            }
+            // The address is the program's and lives as long as it does; the
+            // word at it is whatever the program last put there, which may be
+            // nought and which `shade` answers to by doing nothing.
+            let held = unsafe { *((at + word * WORD) as *const usize) };
+            mark::shade(rt, held);
+        }
+    }
 }
 
 // The maps and sets the runtime made. Their keys and values are reachable

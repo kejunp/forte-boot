@@ -2446,8 +2446,19 @@ answer is not obvious from the rules alone.
     and an initialiser this cannot write bytes for still leaves them at nought,
     which is the rule above unchanged.
 
-    What is still not done: the collector has to be told to look here, there
-    being no other root outside a stack.
+    And the collector is told to look here, which it was not. A global is on
+    no stack and is no object, so neither root set that finds things by looking
+    would ever reach one — a global holding the only reference to a collected
+    value had it swept underneath.
+
+    Registered rather than discovered, and with a shape. A linker's
+    "__data_start" and "_edata" are neither portable across the three machines
+    nor precise; a descriptor per global buys what a range never could, so a
+    global of two numbers is not a root at all and one with a pointer at its
+    third word is read at its third word. What registers them is a routine the
+    compiler writes, and it runs before the routine that *stores* them — an
+    allocation while one global is being filled in can start a cycle, and a
+    global already stored but not yet a root is one the cycle sweeps.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it
@@ -2525,6 +2536,15 @@ answer is not obvious from the rules alone.
     and the reason the refusal above is a refusal. The collector's own decision
     about when to start one is unchanged; this is a program saying it knows
     something the collector does not, and most programs do not.
+
+    A "gc" global works, and is the one place the word needs something before
+    the program: a value the collector holds is an allocation, and a data
+    segment is bytes written when the program is compiled. So there is a
+    routine that stores them, called between "__rt_init" and "main", and it is
+    an ordinary fn — an initialiser is an arbitrary expression, and a fn body
+    is the one shape every pass after the checker already knows how to compile.
+    Globals are stored in the order they were written, and one reading another
+    that has not been stored yet reads its image, which is the rule C has.
 
     Two smaller things follow from the shape and are worth writing down. A
     "gc T" admits no absent value, as a reference admits none — so a list of

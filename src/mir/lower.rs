@@ -220,7 +220,67 @@ impl<'a> Lowerer<'a> {
 
     pub fn finish(mut self) -> MIRProgram {
         self.globals();
+        self.roots();
         self.out
+    }
+
+    // A body that tells the collector where the globals are.
+    //
+    // Hand-written and not lowered, which is what `mir::lower::glue` is the
+    // precedent for: this is directed by a type and a symbol and has no
+    // expression behind it, where the *values* of the globals are an arbitrary
+    // expression and are a synthesised fn instead (`sema::lower::starting`).
+    //
+    // Only the globals that hold something worth following. A global of two
+    // numbers is not a root and never becomes one, which is the precision a
+    // range over the data segment could not have had -- and the reason this is
+    // registered rather than discovered.
+    //
+    // Nothing at all where no global holds a pointer, so the shim has nothing
+    // to call and does not call it.
+    fn roots(&mut self) {
+        let mut held: Vec<(String, TyId)> = Vec::new();
+        for at in 0..self.made.ttir.items.len() {
+            let TTIRItemKind::Global { ty, .. } = &self.made.ttir.items[at].kind else {
+                continue;
+            };
+            let ty = *ty;
+            let Some(symbol) = self.mangler.symbol_of(at, &self.made.ttir) else { continue };
+            if self.layouts.of(ty).is_none() || !self.holds_pointers(ty) {
+                continue;
+            }
+            held.push((symbol, ty));
+        }
+        if held.is_empty() {
+            return;
+        }
+
+        self.b = Builder::default();
+        let entry = self.fresh_block();
+        self.b.current = entry;
+        for (symbol, ty) in held {
+            let at = self.push(MIRInstKind::Symbol(symbol), 1, 1);
+            let shape = self.shape_reg(ty, 1, 1);
+            self.effect(
+                MIRInstKind::Call {
+                    to:   MIRCallee::Symbol(super::runtime::ROOT.to_string()),
+                    args: vec![at, shape],
+                },
+                1,
+                1,
+            );
+        }
+        let last = self.b.current;
+        self.b.blocks[last].term = MIRTerm::Return(None);
+        let built = std::mem::take(&mut self.b);
+        self.out.bodies.push(MIRBody {
+            symbol: super::runtime::ROOTS.to_string(),
+            entry,
+            blocks: built.blocks,
+            regs: built.regs,
+            frame: built.frame,
+            params: built.params,
+        });
     }
 
     // ---- The globals -------------------------------------------------------

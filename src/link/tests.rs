@@ -13,7 +13,7 @@ fn machine_named(name: &str) -> Machine {
 }
 
 fn program(entry: Entry) -> String {
-    shim(&Start::Program(entry))
+    shim(&Start::Program(entry), &[])
 }
 
 fn runner(names: &[&str]) -> String {
@@ -24,7 +24,7 @@ fn runner(names: &[&str]) -> String {
             symbol: format!("__F1t{}{}", name.len(), name),
         })
         .collect();
-    shim(&Start::Tests(held))
+    shim(&Start::Tests(held), &[])
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn linking_for_another_machine_is_refused_with_a_reason() {
         _ => machine_named("aarch64"),
     };
     let start = Start::Program(Entry { symbol: "__F1t4main".to_string(), answers: true });
-    let why = link("", &start, elsewhere, Path::new("/dev/null"), None)
+    let why = link("", &start, elsewhere, Path::new("/dev/null"), None, &[])
         .expect_err("linking for another machine should be refused");
     assert!(why.contains("cannot link for"), "{}", why);
     assert!(why.contains("--emit asm"), "{}", why);
@@ -91,6 +91,7 @@ fn a_runtime_that_is_not_there_is_said_so() {
         machine_named(here()),
         Path::new("/dev/null"),
         Some(Path::new("/nowhere/libfortec_rt.a")),
+        &[],
     )
     .expect_err("a missing archive should be refused");
     assert!(why.contains("no runtime archive at"), "{}", why);
@@ -163,6 +164,55 @@ fn the_count_agrees_with_how_many_there_are() {
 #[test]
 fn a_name_that_would_end_the_literal_is_escaped() {
     let held = vec![Test { name: "a\"b\\c".to_string(), symbol: "__F1t1x".to_string() }];
-    let out = shim(&Start::Tests(held));
+    let out = shim(&Start::Tests(held), &[]);
     assert!(out.contains(r#"test a\"b\\c ..."#), "{}", out);
+}
+
+// ---- What runs before the program --------------------------------------------
+
+// The routines the compiler writes for the globals, called between `__rt_init`
+// and the program.
+//
+// The order is the point and it is load-bearing: the roots go first, because
+// storing a global may allocate, allocating may start a cycle, and a global
+// already stored but not yet a root is one the cycle sweeps underneath.
+#[test]
+fn what_the_globals_want_runs_before_the_program() {
+    let before = ["__forte_roots".to_string(), "__forte_starts".to_string()];
+    for answers in [true, false] {
+        let out = shim(
+            &Start::Program(Entry { symbol: "__F3app4main".to_string(), answers }),
+            &before,
+        );
+        assert!(out.contains("extern void __forte_roots(void);"), "{}", out);
+        let init = out.find("__rt_init();").expect("the init");
+        let roots = out.find("__forte_roots();").expect("the roots");
+        let starts = out.find("__forte_starts();").expect("the stores");
+        let body = out.rfind("__F3app4main").expect("the program");
+        assert!(init < roots, "{}", out);
+        assert!(roots < starts, "the roots go first:\n{}", out);
+        assert!(starts < body, "{}", out);
+    }
+}
+
+// A test runner has globals too, so it runs them as well.
+#[test]
+fn a_test_runner_runs_them_too() {
+    let out = shim(&Start::Tests(vec![Test {
+        name:   "one".to_string(),
+        symbol: "__F1t3one".to_string(),
+    }]), &["__forte_starts".to_string()]);
+    let init = out.find("__rt_init();").expect("the init");
+    let starts = out.find("__forte_starts();").expect("the stores");
+    let first = out.find("__rt_test_start();").expect("the first test");
+    assert!(init < starts && starts < first, "{}", out);
+}
+
+// And a program with nothing to run before it is exactly what it was, which is
+// what keeps every other test in this file honest.
+#[test]
+fn nothing_to_run_leaves_the_shim_alone() {
+    let entry = Entry { symbol: "__F3app4main".to_string(), answers: true };
+    let out = shim(&Start::Program(entry), &[]);
+    assert!(!out.contains("__forte"), "{}", out);
 }

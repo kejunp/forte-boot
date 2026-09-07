@@ -242,6 +242,19 @@ impl<'a> Mono<'a> {
             }
         }
 
+        // And the fn that stores the globals, which is reached by name from the
+        // shim rather than from anything in this program -- so nothing here
+        // would follow it, and a body nothing follows is one nothing makes.
+        // Kept and not a beginning, so that a suite with no `main` still
+        // compiles everything, which is what `kept` is for.
+        for at in 0..self.p.items.len() {
+            if let TTIRItemKind::Fn(f) = &self.p.items[at].kind {
+                if f.attrs.symbol.as_deref() == Some(crate::sema::lower::STARTS) {
+                    kept.push(at);
+                }
+            }
+        }
+
         let mut out = Vec::new();
         if tests {
             for at in 0..self.p.items.len() {

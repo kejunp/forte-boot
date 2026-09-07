@@ -96,6 +96,17 @@ pub struct Runtime {
     // knowingly rather than through a shape.
     pub tables:  Vec<map::Table>,
     pub sets:    Vec<set::Held>,
+    // Where the program's globals are, and what each holds. A global is not on
+    // any stack and is not in the heap, so it is reachable from neither of the
+    // two root sets that find things by looking -- and a global holding the
+    // only reference to a collected value would have it swept underneath.
+    //
+    // Registered rather than discovered. A linker's `__data_start` and `_edata`
+    // are neither portable across the three machines nor precise, and a shape
+    // per global buys precision a range scan could never have: a global with no
+    // pointers in it costs nothing, and one with a pointer at the third word is
+    // walked at the third word.
+    pub rooted:  Vec<(usize, shape::Shape)>,
 }
 
 impl Runtime {
@@ -110,6 +121,7 @@ impl Runtime {
             large: Large::new(),
             gc: gc::State::new(),
             pinned: Vec::new(),
+            rooted: Vec::new(),
             tables: Vec::new(),
             sets: Vec::new(),
         }

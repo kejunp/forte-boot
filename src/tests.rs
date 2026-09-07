@@ -1549,3 +1549,83 @@ fn a_global_holds_the_aggregate_it_was_written_with() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 4 tests"), "{}", said);
 }
+
+// ---- A global the collector holds ------------------------------------------------
+
+// A `gc` global, run.
+//
+// It used to segfault on the first read, and nothing said a word: a `gc T` is
+// one word holding an address from `__rt_gc_alloc`, a global's image is bytes
+// written when the program is compiled, and the allocator has not run then. So
+// the handle was nought and reading through it dereferenced null.
+//
+// What this asserts is the half a program can see: the handle is filled in
+// before `main`, from an expression as ordinary as any other. That the object
+// then *survives a cycle* is the other half, and it is asserted in
+// `runtime/src/gc/tests.rs` and not here -- a conservative root scan finds
+// whatever the last few calls left on the stack, so a running program cannot
+// tell a collector that kept its globals from one that merely had not written
+// over the word yet. That file's header says so, and its `cycle_from` is what
+// answers it.
+#[test]
+fn a_gc_global_is_filled_in_before_the_program_starts() {
+    let dir = std::env::temp_dir().join(format!("fortec-gcg-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("gcg.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         import heap::collect;\n\
+         \n\
+         struct Buf { pub n: i64 }\n\
+         struct Held { pub tag: i64, pub inner: gc Buf }\n\
+         \n\
+         fn made(n: i64): gc Buf {\n\
+         \x20   let gc b = Buf { n: n }\n\
+         \x20   b\n\
+         }\n\
+         \n\
+         var kept: gc Buf = Buf { n: 4242 }\n\
+         // In source order, and the second names a call rather than a literal --\n\
+         // a global initialised by one had been nought too, with nothing said.\n\
+         var also: gc Buf = made(7)\n\
+         var deep: gc Held = Held { tag: 1, inner: kept }\n\
+         \n\
+         %test\n\
+         fn a_gc_global_holds_what_it_was_written_with() {\n\
+         \x20   assert_eq(int(kept.n), int(4242), \"read before anything else runs\")\n\
+         \x20   assert_eq(int(also.n), int(7), \"and one a call gave back\")\n\
+         \x20   assert_eq(int(deep.inner.n), int(4242), \"and one holding another\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_gc_global_is_a_place_like_any_other() {\n\
+         \x20   kept = made(9)\n\
+         \x20   assert_eq(int(kept.n), int(9), \"written over\")\n\
+         \x20   assert_eq(int(also.n), int(7), \"and the one beside it is untouched\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn it_is_still_there_after_a_cycle() {\n\
+         \x20   var i = 0\n\
+         \x20   while i < 100000 {\n\
+         \x20       let gc junk = Buf { n: i }\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   collect()\n\
+         \x20   collect()\n\
+         \x20   assert_eq(int(also.n), int(7), \"and reads as what it was\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "gcg");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a `gc` global was meant to be filled in:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

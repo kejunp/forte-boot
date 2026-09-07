@@ -432,7 +432,23 @@ fn compile(
                     }
                 };
                 let Some(text) = assembly() else { return false };
-                if let Err(why) = link::link(&text, &start, m, at, runtime.as_deref()) {
+                // What the shim runs before the program: the roots first and
+                // then the stores, which is the order the second depends on --
+                // storing a global may allocate, allocating may collect, and a
+                // global stored but not yet a root is one the cycle sweeps.
+                //
+                // Each is named only where the compiler wrote one: a program
+                // with no global holding a pointer has no roots body, and one
+                // with nothing to store has no stores body.
+                let mut before: Vec<String> = Vec::new();
+                for held in [mir::runtime::ROOTS, sema::lower::STARTS] {
+                    if machine_ir.bodies.iter().any(|b| b.symbol == held) {
+                        before.push(held.to_string());
+                    }
+                }
+                if let Err(why) =
+                    link::link(&text, &start, m, at, runtime.as_deref(), &before)
+                {
                     eprintln!("{}: {}", name.display(), why);
                     return false;
                 }

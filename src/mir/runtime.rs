@@ -91,6 +91,19 @@ pub const COLLECT: &str = "__rt_collect";
 // the snapshot does not depend on seeing stack writes.
 pub const WRITE: &str = "__rt_write";
 
+// `__rt_root(at, shape)`: a global the collector has to look at.
+//
+// A global is on no stack and in no heap, so neither root set that finds things
+// by looking would ever reach one -- and a global holding the only reference to
+// a collected value would have it swept underneath. The shape is what makes it
+// precise: a global with no pointers in it is never read.
+pub const ROOT: &str = "__rt_root";
+
+// The body this compiler writes that calls `ROOT` once per global. Named here
+// rather than mangled, so that `link` can put it in the shim without knowing
+// anything about where the globals were declared.
+pub const ROOTS: &str = "__forte_roots";
+
 // `__rt_copy(to, from, shape)` -- a whole value moved, where the value holds
 // pointers somewhere in it.
 //
