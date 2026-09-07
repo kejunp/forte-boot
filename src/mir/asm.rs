@@ -471,6 +471,41 @@ pub fn bytes_of(held: &MIRConstant) -> String {
     out
 }
 
+// One global's image: its bytes, with a `.quad` where the linker has to put an
+// address.
+//
+// The relocations are taken in order and each covers one word, so what is
+// written is the bytes up to the next one, then the name, then on from the end
+// of it. A global with none is a run of bytes and nothing else, which is every
+// global that held no `str`.
+fn image_of(held: &MIRGlobal) -> String {
+    let mut out = String::new();
+    let word = 8;
+    let mut relocs: Vec<&(usize, String)> = held.relocs.iter().collect();
+    relocs.sort_by_key(|(at, _)| *at);
+    let mut at = 0usize;
+    for (offset, name) in relocs {
+        if *offset < at || offset + word > held.bytes.len() {
+            continue;
+        }
+        bytes_between(&mut out, &held.bytes[at..*offset]);
+        let _ = writeln!(out, "\t.quad\t{}", symbol(name));
+        at = offset + word;
+    }
+    bytes_between(&mut out, &held.bytes[at..]);
+    if held.bytes.is_empty() {
+        let _ = writeln!(out, "\t.zero\t1");
+    }
+    out
+}
+
+fn bytes_between(out: &mut String, bytes: &[u8]) {
+    for line in bytes.chunks(16) {
+        let held: Vec<String> = line.iter().map(|byte| byte.to_string()).collect();
+        let _ = writeln!(out, "\t.byte\t{}", held.join(", "));
+    }
+}
+
 // The globals, in a segment that may be written to.
 //
 // `.data` and not `.rodata`, which is the whole of why this is not `pool`: a
@@ -500,10 +535,7 @@ pub fn data(held: &[MIRGlobal], log2: bool) -> String {
         let _ = writeln!(out, "\t.globl\t{}", name);
         let _ = writeln!(out, "\t.type\t{}, @object", name);
         let _ = writeln!(out, "{}:", name);
-        for line in one.bytes.chunks(16) {
-            let held: Vec<String> = line.iter().map(|byte| byte.to_string()).collect();
-            let _ = writeln!(out, "\t.byte\t{}", held.join(", "));
-        }
+        out.push_str(&image_of(one));
         let _ = writeln!(out, "\t.size\t{}, .-{}", name, name);
     }
     out

@@ -65,6 +65,19 @@ pub struct MIRGlobal {
     pub symbol: String,
     pub bytes:  Vec<u8>,
     pub align:  usize,
+    // Where an address goes in that image, and whose. One entry per word the
+    // linker has to fill in, by the offset it begins at.
+    //
+    // A `str` is the reason there are any: it is a pointer and a length, and
+    // the pointer is not a number this compiler knows -- where the bytes end
+    // up is settled when the linker has run. So the length is written into the
+    // image as it stands and the pointer is left as a name, and §8's "a `str`
+    // global writes no bytes" was exactly this missing.
+    //
+    // By offset rather than by word so that a global holding one somewhere
+    // inside it -- a struct with a `str` field -- says where without the
+    // reader having to divide.
+    pub relocs: Vec<(usize, String)>,
 }
 
 // One thing in the constant pool, under the symbol that reaches it.
@@ -80,7 +93,8 @@ pub struct MIRConstant {
 //
 // That is what a trait object's table is -- one address per member of the
 // trait, in the order the trait declared them -- and it is the first thing here
-// to want one. A `str` global wants the same and does not have it yet (§8).
+// to want one. A `str` global wants the same and has it: see `MIRGlobal`,
+// where the relocations sit beside the bytes rather than instead of them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MIRConstBody {
     Bytes(Vec<u8>),

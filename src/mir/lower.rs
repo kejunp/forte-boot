@@ -260,15 +260,38 @@ impl<'a> Lowerer<'a> {
             // with no initialiser means and what one this could not read gets
             // as well.
             let mut image = vec![0u8; bytes];
+            let mut relocs = Vec::new();
             if let Some(held) = init.and_then(|at| self.made.ttir.exprs.get(at)) {
-                if let TTIRExprKind::Literal(lit) = &held.kind {
-                    write_lit(&mut image, lit);
+                if let TTIRExprKind::Literal(lit) = &held.kind.clone() {
+                    // A `str` is the one literal whose image this cannot
+                    // write: it is a pointer and a length, and where the bytes
+                    // end up is the linker's to say. So the bytes go in the
+                    // pool, the length goes in the image, and the pointer is
+                    // left as a name for the linker to fill in.
+                    //
+                    // Which is what §8 meant by "a `str` global writes no
+                    // bytes": what it wrote was sixteen noughts, and a program
+                    // reading one read the empty string and was told nothing.
+                    if let TIRLit::Str(text) = lit {
+                        let word = self.machine.word;
+                        if image.len() >= word * 2 {
+                            let held = text.clone();
+                            let at = self.pooled(held.clone().into_bytes());
+                            relocs.push((0, at));
+                            let len = (held.len() as i64).to_le_bytes();
+                            image[word..word + len.len().min(word)]
+                                .copy_from_slice(&len[..len.len().min(word)]);
+                        }
+                    } else {
+                        write_lit(&mut image, lit);
+                    }
                 }
             }
             self.out.data.push(MIRGlobal {
                 symbol,
                 bytes: image,
                 align: layout.align.max(1),
+                relocs,
             });
         }
     }

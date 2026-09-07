@@ -356,7 +356,7 @@ fn an_ordinary_body_is_not_refused() {
 // ---- The segment a global lives in ------------------------------------------
 
 fn one(symbol: &str, bytes: Vec<u8>, align: usize) -> MIRGlobal {
-    MIRGlobal { symbol: symbol.to_string(), bytes, align }
+    MIRGlobal { symbol: symbol.to_string(), bytes, align, relocs: Vec::new() }
 }
 
 // `.data` and not `.rodata`, which is the whole reason this is not the pool: a
@@ -386,4 +386,41 @@ fn the_alignment_is_said_the_way_the_machine_says_it() {
 #[test]
 fn no_globals_is_no_segment() {
     assert_eq!(data(&[], false), "");
+}
+
+// A word the linker has to fill in, and the bytes either side of it left alone.
+//
+// The `.quad` is what makes a `str` global work at all: the length is a number
+// this compiler knows and the pointer is not, so the image is written with a
+// hole in it and a name for what goes there.
+#[test]
+fn a_relocated_word_is_a_name_and_the_rest_is_bytes() {
+    let mut held = one("__G1t1s", vec![0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0], 8);
+    held.relocs.push((0, "__S1".to_string()));
+    let out = data(&[held], false);
+    assert!(out.contains("\t.quad\t__S1"), "{}", out);
+    // The length is still bytes, and the eight the `.quad` covers are gone --
+    // written twice would be a global twice as wide as its type.
+    assert!(out.contains("\t.byte\t5, 0, 0, 0, 0, 0, 0, 0"), "{}", out);
+    assert_eq!(out.matches(".byte").count(), 1, "{}", out);
+}
+
+// One in the middle, which is a struct holding a `str` after something else.
+#[test]
+fn a_relocation_may_stand_anywhere_in_the_image() {
+    let mut held = one("__G1t1p", vec![9; 24], 8);
+    held.relocs.push((8, "__S2".to_string()));
+    let out = data(&[held], false);
+    let quad = out.find(".quad").expect("the name");
+    let first = out.find(".byte").expect("the bytes before");
+    let last = out.rfind(".byte").expect("the bytes after");
+    assert!(first < quad && quad < last, "the word stands where it was put:\n{}", out);
+}
+
+// And a global with none is what it always was.
+#[test]
+fn a_global_with_no_relocation_is_a_run_of_bytes() {
+    let out = data(&[one("__G1t1g", vec![7, 0, 0, 0, 0, 0, 0, 0], 8)], false);
+    assert!(!out.contains(".quad"), "{}", out);
+    assert!(out.contains("\t.byte\t7, 0, 0, 0, 0, 0, 0, 0"), "{}", out);
 }

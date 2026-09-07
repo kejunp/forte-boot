@@ -2388,14 +2388,29 @@ answer is not obvious from the rules alone.
     the same evaluator answers both, so anything it cannot read leaves the
     global starting at nought rather than refusing the program.
 
+    A "str" writes its bytes now, which it did not. An address is not known
+    until the linker has run, so the image is written with a hole in it and a
+    name for what goes there: the bytes go in the pool, the length goes in the
+    image beside them, and the word in front is a relocation. That is the same
+    thing a trait object's table wanted and got first, which is why this cost
+    a field rather than a mechanism — and the relocation may stand anywhere in
+    a global, so a struct holding a "str" after something else works too.
+
+    What it wrote before was sixteen noughts, and a program reading one read
+    the empty string and was told nothing. A "str" const was worse: the
+    evaluator answers "None" for a string — rightly, since a string is not
+    arithmetic — so it was left out of the folding table, and a use of it
+    stayed the symbol it was and linked against nothing. Neither was being
+    *folded* into anything; each was being given a value, and a literal is a
+    perfectly good one to be given, so that is where the one case the
+    evaluator declines is taken instead.
+
     What is still not done is the part that was never only about a segment.
     Nothing checks a constant for range, so a value too big for the type it
     was declared as is neither folded away nor complained about — and a
     division by zero in a const is left unfolded rather than reported, there
-    being nothing to report it. A "str" global writes no bytes, an address
-    not being known until the linker has run; it wants a relocation into the
-    pool, which nothing has asked for yet. And the collector still has to be
-    told to look here, there being no other root outside a stack.
+    being nothing to report it. And the collector still has to be told to look
+    here, there being no other root outside a stack.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it

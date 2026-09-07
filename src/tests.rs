@@ -1406,3 +1406,69 @@ fn a_program_asks_for_a_cycle_and_what_it_holds_survives_one() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 2 tests"), "{}", said);
 }
+
+// ---- A global the linker has to finish ------------------------------------------
+
+// A `str` global and a `str` const, both of which used to be nothing.
+//
+// §8: "a `str` global writes no bytes, an address not being known until the
+// linker has run; it wants a relocation into the pool, which nothing has asked
+// for yet." What it wrote was sixteen noughts, so a program reading one read
+// the empty string and was told nothing at all -- and a `str` const was worse,
+// being left out of the folding table and staying a symbol that linked against
+// nothing.
+//
+// The values are the assertion because the shape cannot be: an image with the
+// length right and the pointer left at nought reads empty, and so does one with
+// no relocation at all. Only what comes back tells them apart.
+#[test]
+fn a_str_global_holds_the_bytes_it_was_written_with() {
+    let dir = std::env::temp_dir().join(format!("fortec-strg-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("strg.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::text;\n\
+         \n\
+         const TAG: str = \"tag\"\n\
+         var name: str = \"forte\"\n\
+         var blank: str = \"\"\n\
+         var unset: str\n\
+         // Two globals of one text, which is one run of bytes in the pool and\n\
+         // two relocations to it.\n\
+         var same: str = \"forte\"\n\
+         \n\
+         %test\n\
+         fn a_global_starts_as_what_it_was_written_as() {\n\
+         \x20   assert_eq(text(name), text(\"forte\"), \"the bytes and not none\")\n\
+         \x20   assert_eq(text(same), text(\"forte\"), \"and the same ones again\")\n\
+         \x20   assert_eq(text(blank), text(\"\"), \"an empty one is still written\")\n\
+         \x20   assert_eq(text(unset), text(\"\"), \"and one nothing filled is empty\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_const_folds_into_the_use_that_names_it() {\n\
+         \x20   assert_eq(text(TAG), text(\"tag\"), \"a const of text\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_global_may_be_written_over() {\n\
+         \x20   name = \"changed\"\n\
+         \x20   assert_eq(text(name), text(\"changed\"), \"a global is a place\")\n\
+         \x20   // And what was there is not what is there: the store went to\n\
+         \x20   // the global and not to a copy of it.\n\
+         \x20   assert_eq(text(same), text(\"forte\"), \"and the other one is untouched\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "strg");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a `str` global was meant to hold its bytes:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

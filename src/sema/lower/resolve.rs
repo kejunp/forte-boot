@@ -213,7 +213,7 @@ impl<'a> Lowerer<'a> {
                     // the symbol it was -- which links against nothing, and is
                     // the same failure as before for a shrinking set of
                     // programs rather than a new one for any.
-                    if let Some(lit) = self.const_value(value, 0) {
+                    if let Some(lit) = self.literal_of(value) {
                         self.consts.insert(made, lit);
                     }
                     let TTIRItemKind::Const { ty, .. } = &mut self.out.items[made].kind else {
@@ -238,7 +238,7 @@ impl<'a> Lowerer<'a> {
                     // `TTIRItemKind::Global` has an `init` for exactly this and
                     // has been carrying `None` since it was written.
                     let start = written
-                        .and_then(|at| Some((self.const_value(at, 0)?, at)))
+                        .and_then(|at| Some((self.literal_of(at)?, at)))
                         .map(|(lit, at)| self.make(TTIRExprKind::Literal(lit), held, at));
                     let TTIRItemKind::Global { ty, init, .. } =
                         &mut self.out.items[made].kind
@@ -308,6 +308,31 @@ impl<'a> Lowerer<'a> {
                 TIRItemKind::Import { .. } => {}
             }
         }
+    }
+
+    // What an expression is worth at compile time: what the evaluator folds
+    // it to, or a string written as itself.
+    //
+    // The evaluator answers `None` for a string and is right to -- "a string
+    // is bytes and null is no news; neither is arithmetic" -- but neither a
+    // const nor a global is being folded *into* anything there; each is being
+    // given a value, and a literal is a perfectly good one to be given. So the
+    // one case the evaluator declines is taken here instead, and only where it
+    // was written plainly: `"a" + "b"` is still nothing this can read, there
+    // being no such operator.
+    //
+    // Both callers wanted it and each was wrong without it in its own way. A
+    // global started as sixteen noughts and read back empty; a const was left
+    // out of the map, so a use of it stayed the symbol it was and linked
+    // against nothing -- which the comment above it calls "a shrinking set of
+    // programs", and this is what shrinks it.
+    fn literal_of(&self, at: TIRExprId) -> Option<TIRLit> {
+        if let TIRExprKind::Literal { value: TIRLit::Str(text), .. } =
+            &self.tir.exprs.get(at)?.kind
+        {
+            return Some(TIRLit::Str(text.clone()));
+        }
+        self.const_value(at, 0)
     }
 
     // What stands on the right of a bound's colon, resolved. A trait is the
