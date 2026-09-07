@@ -148,32 +148,7 @@ impl<'a> Lowerer<'a> {
                     self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
-                    let made_variants: Vec<TTIRVariant> = variants
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| TTIRVariant {
-                            attrs:   v.attrs.clone(),
-                            name:    v.name.clone(),
-                            payload: self.payload(&v.payload),
-                            // Counted. What a written `D = 4` comes to wants
-                            // the const evaluator, and there is none -- so one
-                            // is counted like any other, which is wrong and is
-                            // said out loud rather than hidden.
-                            value:   i as i64,
-                        })
-                        .collect();
-                    for v in &variants {
-                        if let crate::tir::tir_nodes::TIRPayload::Discriminant(at) = v.payload {
-                            self.errors.push(
-                                Diagnostic::error(
-                                    format!("`{}` is given a number and it is counted instead", v.name),
-                                    self.at(at),
-                                )
-                                .with_label("this is not worked out")
-                                .with_note("working out a constant is the const evaluator's, and there is none yet"),
-                            );
-                        }
-                    }
+                    let made_variants = self.numbered(&variants);
                     let TTIRItemKind::Enum { generics, variants, .. } =
                         &mut self.out.items[made].kind
                     else {
@@ -494,6 +469,82 @@ impl<'a> Lowerer<'a> {
             return None;
         }
         Some(item)
+    }
+
+    // What number each variant is, and the payload beside it.
+    //
+    // "A variant with no payload may fix its discriminant instead, which is
+    // what makes an enum of plain constants" (§2). It could not: what a
+    // written `D = 4` comes to wanted a const evaluator and there was none, so
+    // every variant was counted and the written number was refused out loud.
+    // There is one now (`consts`), and it is the same one a `const` and an
+    // array's length are worked out by.
+    //
+    // Counting carries on from whatever was last written, which is C's rule
+    // and Rust's and the only one that makes `A = 4, B, C` mean what it looks
+    // like. So a number is fixed where one is written and one more than the
+    // last everywhere else, and the first variant is nought.
+    //
+    // Only backwards, as everything the evaluator reads is: `self.consts`
+    // holds what has been worked out so far, so a discriminant naming a const
+    // declared below it does not fold. That is the order a reader writes in
+    // anyway.
+    fn numbered(&mut self, variants: &[crate::tir::tir_nodes::TIRVariant]) -> Vec<TTIRVariant> {
+        let mut out = Vec::with_capacity(variants.len());
+        let mut next = 0i64;
+        for v in variants {
+            let value = match v.payload {
+                crate::tir::tir_nodes::TIRPayload::Discriminant(at) => {
+                    match self.const_value(at, 0) {
+                        Some(TIRLit::Int(n)) => n,
+                        // Worked out and not a whole number, or not worked out
+                        // at all. Both are the same thing to say: a tag is an
+                        // integer and this is not one yet.
+                        _ => {
+                            self.errors.push(
+                                Diagnostic::error(
+                                    format!("`{}` is not given a whole number", v.name),
+                                    self.at(at),
+                                )
+                                .with_label("this is what it was given")
+                                .with_note(
+                                    "a variant's number is worked out where it is written, \
+                                     out of literals, the operators over them, and a const \
+                                     already declared above it",
+                                ),
+                            );
+                            next
+                        }
+                    }
+                }
+                _ => next,
+            };
+            // Two variants of one number are two names for one value, and a
+            // `match` on the tag cannot tell them apart -- so the second arm
+            // is unreachable and nothing would have said so.
+            if let Some(held) = out.iter().position(|held: &TTIRVariant| held.value == value) {
+                let first = variants[held].name.clone();
+                self.errors.push(
+                    Diagnostic::error(
+                        format!("`{}` and `{}` are both {}", first, v.name, value),
+                        self.here,
+                    )
+                    .with_label("two variants of one number")
+                    .with_note(
+                        "the tag is what a `match` reads, so two of one number are two \
+                         names nothing can tell apart",
+                    ),
+                );
+            }
+            next = value.saturating_add(1);
+            out.push(TTIRVariant {
+                attrs:   v.attrs.clone(),
+                name:    v.name.clone(),
+                payload: self.payload(&v.payload),
+                value,
+            });
+        }
+        out
     }
 
     // ---- Types -----------------------------------------------------------

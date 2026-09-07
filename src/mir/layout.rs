@@ -393,13 +393,18 @@ fn up(n: usize, a: usize) -> usize {
 fn tag_bytes(values: &[i64]) -> usize {
     let low = values.iter().copied().min().unwrap_or(0);
     let high = values.iter().copied().max().unwrap_or(0);
+    // Signed whatever the values are, so that a tag is one kind of thing.
+    //
+    // It used to take the unsigned range where none of them was negative,
+    // which fits more variants in a byte and makes the byte mean two different
+    // things: a 200 read back signed is a -56, and a -3 read back unsigned is
+    // a 253. Whichever way the read is written, one of the two is wrong -- and
+    // a written discriminant may be negative, so both shapes are reachable.
+    // One rule costs a second byte to an enum with more than 128 variants and
+    // nothing to any other.
     for bytes in [1usize, 2, 4] {
         let bits = bytes * 8;
-        let (min, max) = if low < 0 {
-            (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
-        } else {
-            (0, (1i64 << bits) - 1)
-        };
+        let (min, max) = (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1);
         if low >= min && high <= max {
             return bytes;
         }

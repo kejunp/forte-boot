@@ -107,7 +107,30 @@ impl<'a> Lowerer<'a> {
                 let held = self.through(self.ty_of(*of));
                 let bytes = self.tag_of(held);
                 let from = self.of(*of);
-                self.making(def, MIRInstKind::Load { from, bytes }, line, col);
+                let word = self.machine.word;
+                if bytes >= word {
+                    self.making(def, MIRInstKind::Load { from, bytes }, line, col);
+                    return;
+                }
+                // Widened by sign, the tag being a signed integer (`layout`,
+                // `tag_bytes`). A load fills the bytes above what it read with
+                // noughts, which is the right answer for a 200 and the wrong
+                // one for a -3 -- and what it is compared against is the whole
+                // word the checker worked the value out in.
+                // A register of the tag's own width, `Convert` reading its
+                // source at the width the conversion says it is from.
+                let read = self.narrow(bytes, line, col);
+                self.making(read, MIRInstKind::Load { from, bytes }, line, col);
+                self.making(
+                    def,
+                    MIRInstKind::Convert {
+                        of:   read,
+                        from: crate::mir::mir_nodes::MIRScalar::Int { bytes, signed: true },
+                        to:   crate::mir::mir_nodes::MIRScalar::Int { bytes: word, signed: true },
+                    },
+                    line,
+                    col,
+                );
             }
 
             // Read once the discriminant has already said it is that variant.

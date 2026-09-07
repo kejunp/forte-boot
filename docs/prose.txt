@@ -2143,9 +2143,32 @@ answer is not obvious from the rules alone.
     a construct is not the one to lose an ambiguity to. So the brace after the
     "|" that closes a parameter list opens a block, and the set of one keeps a
     spelling there as everything else already did: "{x,}".
-  - <enum_variant> carries a positional payload or a named one (section 2).
-    Settled. A named payload is a struct body in all but name, and nothing
-    says whether the two should be one thing.
+  - <enum_variant> carries a positional payload or a named one, or fixes its
+    discriminant (section 2). Settled. A named payload is a struct body in all
+    but name, and nothing says whether the two should be one thing.
+
+    The discriminant is worked out now and was not. "A variant with no payload
+    may fix its discriminant instead, which is what makes an enum of plain
+    constants" is section 2's line and this refused it: what a written "D = 4"
+    comes to wanted a const evaluator and there was none, so every variant was
+    counted and the number was turned down out loud rather than silently
+    ignored. There is one now, and it is the one a "const" is folded by -- so a
+    discriminant is a literal, the arithmetic over one, a shift, a cast, or a
+    const already declared above it, and only ever backwards.
+
+    Counting carries on from whatever was last written, which is C's rule and
+    Rust's and the only one that makes "A = 4, B, C" mean what it looks like.
+    Two variants of one number are refused: the tag is what a "match" reads,
+    so two of one number are two names nothing can tell apart and the second
+    arm is unreachable.
+
+    The tag is a *signed* integer whatever the numbers are, which is a change
+    to how one is stored. It used to take the unsigned range where none of
+    them was negative, which fits more variants in a byte and makes the byte
+    mean two different things: a 200 read back signed is a -56 and a -3 read
+    back unsigned is a 253, and a written discriminant may be either. One rule
+    costs a second byte to an enum with more than 128 variants and nothing to
+    any other, and the load that reads a tag fills the bytes above it by sign.
   - "_" is a pattern, a binding name, an inferred type argument and a digit
     separator (sections 2 and 6). Settled — the last two are what Rust does
     with it. The lexer no longer abandons a generic context on one, so

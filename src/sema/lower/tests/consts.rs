@@ -212,3 +212,79 @@ fn an_aggregate_initialiser_is_kept_and_a_folded_one_still_wins() {
         ttir.exprs[init]
     );
 }
+
+// ---- What a variant is numbered ----------------------------------------------
+
+// "A variant with no payload may fix its discriminant instead, which is what
+// makes an enum of plain constants" (§2). It could not: what a written `D = 4`
+// came to wanted a const evaluator and there was none, so every variant was
+// counted and the written number was refused out loud. There is one now, and it
+// is the same one a `const` is folded by -- so a discriminant is arithmetic, a
+// shift, a cast, or a const already declared above it, exactly as a `const` is.
+fn numbered(source: &str) -> Vec<i64> {
+    let ttir = clean(source);
+    ttir.items
+        .iter()
+        .find_map(|i| match &i.kind {
+            TTIRItemKind::Enum { variants, .. } => {
+                Some(variants.iter().map(|v| v.value).collect())
+            }
+            _ => None,
+        })
+        .expect("an enum")
+}
+
+fn holding(body: &str) -> String {
+    format!("enum E {{\n{}\n}}\nfn main(): i64 {{ 0 }}\n", body)
+}
+
+#[test]
+fn a_written_discriminant_is_worked_out() {
+    assert_eq!(numbered(&holding("    A = 4,\n    B = 7,")), vec![4, 7]);
+    // The same arithmetic a `const` folds, and nothing narrower.
+    assert_eq!(numbered(&holding("    A = 1 << 5,\n    B = 6 * 7,")), vec![32, 42]);
+    assert_eq!(numbered(&holding("    A = 'a' as i64,")), vec![97]);
+    // A const declared above it, which is the only direction anything the
+    // evaluator reads goes.
+    assert_eq!(
+        numbered("const N: i64 = 9\nenum E {\n    A = N + 1,\n}\nfn main(): i64 { 0 }\n"),
+        vec![10]
+    );
+}
+
+// Counting carries on from whatever was last written, which is the only rule
+// that makes `A = 4, B, C` mean what it looks like.
+#[test]
+fn counting_carries_on_from_the_last_one_written() {
+    assert_eq!(numbered(&holding("    A,\n    B,\n    C,")), vec![0, 1, 2]);
+    assert_eq!(numbered(&holding("    A = 4,\n    B,\n    C,")), vec![4, 5, 6]);
+    assert_eq!(numbered(&holding("    A,\n    B = 10,\n    C,")), vec![0, 10, 11]);
+    // And a negative one counts up from where it was put.
+    assert_eq!(numbered(&holding("    A = 0 - 3,\n    B,")), vec![-3, -2]);
+}
+
+// Two variants of one number are two names for one value, and the tag is what a
+// `match` reads -- so nothing could tell them apart and nothing would have said
+// so.
+#[test]
+fn two_variants_of_one_number_are_refused() {
+    let out = refused(&holding("    A = 1,\n    B = 1,"));
+    assert!(out.contains("`A` and `B` are both 1"), "{}", out);
+    // Including where one of them was counted into the other.
+    let out = refused(&holding("    A,\n    B = 0,"));
+    assert!(out.contains("are both 0"), "{}", out);
+}
+
+// And one the evaluator cannot make a whole number of, which is the same thing
+// to say however it failed: a tag is an integer and this is not one yet.
+#[test]
+fn a_discriminant_that_is_not_a_whole_number_is_refused() {
+    let out = refused(&holding("    A = \"x\","));
+    assert!(out.contains("`A` is not given a whole number"), "{}", out);
+    let out = refused(&holding("    A = 1.5,"));
+    assert!(out.contains("not given a whole number"), "{}", out);
+    // A const declared below it does not fold, so it is not one either.
+    let out = refused("enum E {\n    A = LATER,\n}\nconst LATER: i64 = 2\n\
+                       fn main(): i64 { 0 }\n");
+    assert!(out.contains("not given a whole number"), "{}", out);
+}

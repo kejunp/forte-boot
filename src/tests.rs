@@ -1964,6 +1964,87 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- The number a variant is -------------------------------------------------------
+
+// "A variant with no payload may fix its discriminant instead, which is what
+// makes an enum of plain constants" (§2). It could not: what a written `D = 4`
+// came to wanted a const evaluator and there was none.
+//
+// What only running can say is that the number written is the number *stored*:
+// the tag is what a `match` reads, and every other pass -- the layout that
+// sizes it, the load that reads it, the comparison that tests it -- has to
+// agree with the checker about what it is. A negative one is where they came
+// apart: a byte holding -3 read back with the bytes above it filled with
+// noughts is a 253, and every arm of the match missed.
+#[test]
+fn a_variant_is_the_number_it_was_given() {
+    let dir = std::env::temp_dir().join(format!("fortec-tags-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("tags.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         const BASE: i64 = 100\n\
+         \n\
+         enum Code {\n\
+         \x20   Ok = 0,\n\
+         \x20   Missing = 404,\n\
+         \x20   Next,\n\
+         \x20   Shifted = 1 << 5,\n\
+         \x20   Named = BASE + 1,\n\
+         \x20   Low = 0 - 3,\n\
+         }\n\
+         \n\
+         fn number(c: &Code): i64 {\n\
+         \x20   match c {\n\
+         \x20       Code::Ok => 0,\n\
+         \x20       Code::Missing => 404,\n\
+         \x20       Code::Next => 405,\n\
+         \x20       Code::Shifted => 32,\n\
+         \x20       Code::Named => 101,\n\
+         \x20       Code::Low => 0 - 3,\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_written_number_is_the_one_stored() {\n\
+         \x20   let a = Code::Ok\n\
+         \x20   assert_eq(&number(&a), &0, \"nought\")\n\
+         \x20   let b = Code::Missing\n\
+         \x20   assert_eq(&number(&b), &404, \"one that does not fit in a byte\")\n\
+         \x20   let c = Code::Shifted\n\
+         \x20   assert_eq(&number(&c), &32, \"one written as a shift\")\n\
+         \x20   let d = Code::Named\n\
+         \x20   assert_eq(&number(&d), &101, \"one written off a const\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn counting_carries_on_from_the_last_one_written() {\n\
+         \x20   let held = Code::Next\n\
+         \x20   assert_eq(&number(&held), &405, \"one more than the 404 above it\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_negative_number_is_read_back_as_one() {\n\
+         \x20   // The tag is a signed integer, so the bytes above what the\n\
+         \x20   // load read are filled by sign and not with noughts.\n\
+         \x20   let held = Code::Low\n\
+         \x20   assert_eq(&number(&held), &(0 - 3), \"below nought\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "tags");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a variant was meant to be the number it was given:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- A match on a reference --------------------------------------------------------
 
 // "A reference stands for the place it refers to and is read, called, indexed

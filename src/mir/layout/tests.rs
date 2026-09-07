@@ -362,7 +362,7 @@ fn a_variant_with_no_payload_has_no_offsets() {
 #[test]
 fn the_tag_is_as_wide_as_the_numbers_the_checker_gave() {
     let mut h = Held::new();
-    let small = h.enumeration("Small", &[(vec![], 0), (vec![], 255)]);
+    let small = h.enumeration("Small", &[(vec![], 0), (vec![], 127)]);
     let big = h.enumeration("Big", &[(vec![], 0), (vec![], 1000)]);
     let huge = h.enumeration("Huge", &[(vec![], 0), (vec![], 1 << 40)]);
     let (a, b, c) =
@@ -373,17 +373,21 @@ fn the_tag_is_as_wide_as_the_numbers_the_checker_gave() {
     assert_eq!(l.tag(c), Some(8));
 }
 
-// A written discriminant may be negative, and a byte holding -1 has to be a
-// signed one -- so 200 and -1 together no longer fit where 200 alone did.
+// And it is signed whatever the numbers are, so that a tag is one kind of
+// thing. It used to take the unsigned range where none of them was negative,
+// which fits more variants in a byte and makes the byte mean two things: a 200
+// read back signed is a -56 and a -3 read back unsigned is a 253, and a written
+// discriminant may be either. One rule costs a second byte to an enum with more
+// than 128 variants and nothing to any other.
 #[test]
-fn a_negative_discriminant_makes_the_tag_signed() {
+fn the_tag_is_signed_whatever_the_numbers_are() {
     let mut h = Held::new();
-    let unsigned = h.enumeration("U", &[(vec![], 0), (vec![], 200)]);
-    let signed = h.enumeration("S", &[(vec![], -1), (vec![], 200)]);
-    let (a, b) = (h.named(unsigned, Vec::new()), h.named(signed, Vec::new()));
+    let held = h.enumeration("U", &[(vec![], 0), (vec![], 200)]);
+    let signed = h.enumeration("S", &[(vec![], -1), (vec![], 100)]);
+    let (a, b) = (h.named(held, Vec::new()), h.named(signed, Vec::new()));
     let mut l = laid(&h);
-    assert_eq!(l.tag(a), Some(1), "0 to 200 is a byte");
-    assert_eq!(l.tag(b), Some(2), "-1 to 200 is not");
+    assert_eq!(l.tag(a), Some(2), "0 to 200 does not fit in a signed byte");
+    assert_eq!(l.tag(b), Some(1), "-1 to 100 does");
 }
 
 #[test]

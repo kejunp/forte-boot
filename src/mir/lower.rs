@@ -665,6 +665,15 @@ impl<'a> Lowerer<'a> {
         self.b.blocks[at].insts.push(MIRInst { def: None, kind, line, col });
     }
 
+    // One of a width of its own, for the places where a working value is a
+    // number narrower than an address: `Convert` reads its source at the width
+    // it says it is converting from, so a byte handed over in a word-wide
+    // register names two sizes that do not go together.
+    pub(super) fn narrow(&mut self, bytes: usize, line: usize, col: usize) -> MIRRegId {
+        self.b.regs.push(MIRReg::one(Class::Int, bytes, line, col));
+        self.b.regs.len() - 1
+    }
+
     // A register the size of an address, which every working value that is not
     // a number is.
     pub(super) fn temp(&mut self, line: usize, col: usize) -> MIRRegId {
