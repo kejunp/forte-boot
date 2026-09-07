@@ -2107,6 +2107,16 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
          %derive(Show)\n\
          struct Both { pub one: Tick, pub two: Wrap }\n\
          \n\
+         // An enum is a choice among shapes, and each variant is written the\n\
+         // way it was declared: a name, a parenthesis, or a brace.\n\
+         %derive(Show)\n\
+         enum Held {\n\
+         \x20   Nothing,\n\
+         \x20   Some(i64, str),\n\
+         \x20   Deep(Point),\n\
+         \x20   Named { a: i64, b: Tick },\n\
+         }\n\
+         \n\
          fn main(): i64 {\n\
          \x20   println(\"{}\", &[&Point { x: 3, y: 4 }])\n\
          \x20   // A field that is a struct answers with its own body.\n\
@@ -2122,6 +2132,17 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
          \x20   println(\"[{:>22}]\", &[&Point { x: 7, y: 8 }])\n\
          \x20   // And a spec about the value, said of a value that is several.\n\
          \x20   println(\"{:x}\", &[&Point { x: 1, y: 2 }])\n\
+         \x20   // An enum, one line per shape a variant can have. The\n\
+         \x20   // `match` it is written as runs on a `&self`, so a payload\n\
+         \x20   // that does not copy is read where it lies.\n\
+         \x20   let n = Held::Nothing\n\
+         \x20   println(\"{}\", &[&n])\n\
+         \x20   let s = Held::Some(3, \"hi\")\n\
+         \x20   println(\"{}\", &[&s])\n\
+         \x20   let d = Held::Deep(Point { x: 5, y: 6 })\n\
+         \x20   println(\"{}\", &[&d])\n\
+         \x20   let m = Held::Named { a: 7, b: Tick { n: 8 } }\n\
+         \x20   println(\"{}\", &[&m])\n\
          \x20   0\n\
          }\n",
     )
@@ -2148,6 +2169,13 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
     );
     assert!(said.contains("[  Point { x: 7, y: 8 }]\n"), "{}", said);
     assert!(said.contains("several pieces"), "{}", said);
+    // An enum, one line per shape a variant can have: carrying nothing,
+    // carrying values by place, carrying one that does not copy, and naming
+    // what it carries.
+    assert!(said.contains("Nothing\n"), "{}", said);
+    assert!(said.contains("Some(3, hi)\n"), "{}", said);
+    assert!(said.contains("Deep(Point { x: 5, y: 6 })\n"), "{}", said);
+    assert!(said.contains("Named { a: 7, b: tick(8) }\n"), "{}", said);
 }
 
 // ---- A view's own length ---------------------------------------------------------

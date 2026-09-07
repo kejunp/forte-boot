@@ -208,7 +208,7 @@ the six:
                         collected and run on its own rather than compiled
                         into an ordinary build.
   %derive(Show)         Writes an impl the reader would have written, on the
-                        struct it stands in front of. What may be derived is
+                        struct or enum it stands in front of. What may be derived is
                         a closed list of one for now: deriving is the
                         compiler's knowledge and not a library's — the *body*
                         is the thing that has to exist, and only what is
@@ -2012,17 +2012,26 @@ answer is not obvious from the rules alone.
     what the compiler has to get right is a program a reader could have typed,
     which is a thing that can be looked at.
 
-    What "%derive(Show)" writes is the fields' own "show" in the order they
-    were declared, with the type's name and the punctuation around them. That
-    is three lines however deep the value goes: a field that is a struct with
-    a derive of its own answers with its own body, and one that is an "i64"
-    answers with "fmt"'s. Every name in the generated impl is spelled through
-    "fmt", so one "import fmt::Show" is the whole of what a file has to write.
+    What "%derive(Show)" writes for a struct is the fields' own "show" in the
+    order they were declared, with the type's name and the punctuation around
+    them. That is short however deep the value goes: a field that is a struct
+    with a derive of its own answers with its own body, and one that is an
+    "i64" answers with "fmt"'s. Every name in the generated impl is spelled
+    through "fmt", so one "import fmt::Show" is the whole of what a file has
+    to write.
 
-    What is not written yet is an enum, whose look is a "match" over its
-    variants, and a struct with parameters, whose impl has to bound each of
-    them -- every field of a "T" has to answer the trait too. Each is refused
-    in its own words rather than as one message about both.
+    For an enum it is a "match" over the variants, each written the way it was
+    declared: one carrying nothing is its name, one carrying values by place
+    is a parenthesis, and one naming what it carries is a brace. So what comes
+    back reads like the declaration, which is the point of a derive -- a
+    reader who wrote the enum can read the line without being told a
+    convention. The "match" runs on "self", which is a "&E", so every binding
+    in it is a reference into the value: a variant carrying a struct is read
+    where it lies and not moved out of the borrow. That is the entry above
+    this one, and it is why the enum half could not have been written first.
+
+    What is not written yet is a declaration with parameters, whose impl has
+    to bound each of them -- every field of a "T" has to answer the trait too.
 
     And one thing found while writing it, which is nothing to do with derives
     and is left where it was found. A struct with no fields made into a trait

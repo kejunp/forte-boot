@@ -272,16 +272,25 @@ fn a_derive_of_something_unwritten_is_refused() {
     assert!(said[0].contains("`Show`"), "{}", said[0]);
 }
 
-// The two shapes that are not written yet, each said in its own words rather
-// than as one message about both.
+// An enum is a choice among shapes and gets a `match` over them, which is a
+// second body this writes and not a second thing it refuses.
+#[test]
+fn a_derive_on_an_enum_writes_a_match_over_its_variants() {
+    let (p, root, errors) = expanded(
+        "%derive(Show)\nenum Held {\n    One,\n    Two(i64),\n    Three { x: i64 },\n}\n",
+    );
+    assert!(errors.is_empty(), "{:#?}", errors);
+    assert_eq!(impls_in(&p, &root).len(), 1);
+}
+
+// The one shape that is not written yet.
 #[test]
 fn a_derive_on_a_shape_that_is_not_written_yet_says_which() {
-    let said = errors_in("%derive(Show)\nenum Held {\n    One,\n    Two,\n}\n");
-    assert_eq!(said.len(), 1, "{:#?}", said);
-    assert!(said[0].contains("written on a struct"), "{}", said[0]);
-    assert!(said[0].contains("match"), "{}", said[0]);
-
     let said = errors_in("%derive(Show)\nstruct Box<T> {\n    pub held: T,\n}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("no parameters"), "{}", said[0]);
+    // And of an enum, which takes them the same way and for the same reason.
+    let said = errors_in("%derive(Show)\nenum Held<T> {\n    One(T),\n}\n");
     assert_eq!(said.len(), 1, "{:#?}", said);
     assert!(said[0].contains("no parameters"), "{}", said[0]);
 }

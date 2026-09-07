@@ -65,26 +65,28 @@ struct Subject {
     name:     String,
     generics: Vec<ASTNodeId>,
     fields:   Vec<ASTNodeId>,
-    // Whether it is a struct. An enum carries a derive as readily and there is
-    // nothing here that writes one yet, so the two are told apart to say so.
-    is_struct: bool,
+    // A variant apiece, where it is an enum. Empty for a struct, which is what
+    // tells the two apart: they are written differently and what is written
+    // for them differs, a struct being one shape and an enum a choice among
+    // several.
+    variants: Vec<ASTNodeId>,
 }
 
 fn subject_of(parser: &Parser, node: &ASTNodeKind) -> Option<Subject> {
     match node {
         ASTNodeKind::Struct { attrs, name, generics, fields, .. } => Some(Subject {
-            attrs:     attrs.clone(),
-            name:      name.clone(),
-            generics:  generics.clone(),
-            fields:    fields.clone(),
-            is_struct: true,
+            attrs:    attrs.clone(),
+            name:     name.clone(),
+            generics: generics.clone(),
+            fields:   fields.clone(),
+            variants: Vec::new(),
         }),
-        ASTNodeKind::Enum { attrs, name, generics, .. } => Some(Subject {
-            attrs:     attrs.clone(),
-            name:      name.clone(),
-            generics:  generics.clone(),
-            fields:    Vec::new(),
-            is_struct: false,
+        ASTNodeKind::Enum { attrs, name, generics, variants, .. } => Some(Subject {
+            attrs:    attrs.clone(),
+            name:     name.clone(),
+            generics: generics.clone(),
+            fields:   Vec::new(),
+            variants: variants.clone(),
         }),
         _ => {
             let _ = parser;
@@ -151,17 +153,6 @@ fn written(
         );
         return None;
     }
-    if !subject.is_struct {
-        errors.push(
-            Diagnostic::error(format!("`%derive({})` is written on a struct", name), at)
-                .with_label("this is an enum")
-                .with_note(
-                    "what an enum looks like is a `match` over its variants, and that \
-                     is a body this does not write yet",
-                ),
-        );
-        return None;
-    }
     if !subject.generics.is_empty() {
         errors.push(
             Diagnostic::error(
@@ -178,8 +169,48 @@ fn written(
         return None;
     }
 
-    let source = shows(parser, subject);
+    let source = match subject.variants.is_empty() {
+        true => shows(parser, subject),
+        false => chooses(parser, subject),
+    };
     graft(parser, errors, &source, at)
+}
+
+// The head and foot every `Show` body is written between.
+fn opens(name: &str) -> String {
+    format!("impl fmt::Show for {} {{\n    fn show(&self, into: &fmt::Sink) {{\n", name)
+}
+
+// `fmt::put(into, "..")`, indented. What a derived body is mostly made of: the
+// type's own name and the punctuation between its parts, which are the pieces
+// nothing else can write.
+fn says(depth: usize, text: &str) -> String {
+    format!("{}fmt::put(into, \"{}\")\n", " ".repeat(depth), text)
+}
+
+// The fields of one shape, written out between the punctuation that separates
+// them: `{ x: `, the field, `, y: `, the field, ` }`.
+//
+// Shared by the struct and the named variant because it is the same picture.
+// What differs is how a field is *reached*: a struct reaches its own through
+// `self`, and a variant's are bound by the pattern that matched it, so `reach`
+// is `"self."` for the one and nothing for the other.
+fn parts(depth: usize, head: &str, reach: &str, names: &[String]) -> String {
+    let pad = " ".repeat(depth);
+    if names.is_empty() {
+        return says(depth, head);
+    }
+    let mut out = String::new();
+    for (i, field) in names.iter().enumerate() {
+        let between = match i {
+            0 => format!("{} {{ {}: ", head, field),
+            _ => format!(", {}: ", field),
+        };
+        out.push_str(&says(depth, &between));
+        out.push_str(&format!("{}{}{}.show(into)\n", pad, reach, field));
+    }
+    out.push_str(&says(depth, " }"));
+    out
 }
 
 // `impl fmt::Show for Point { .. }`, as a reader would have typed it.
@@ -188,40 +219,83 @@ fn written(
 // whole of what a file has to write: the module is read because the import
 // reads it, and a path into a module that has been read finds what is in it.
 //
-// The fields' *own* `show` does the work, which is why this is three lines
-// however deep the value goes: a field that is a struct with a derive of its
-// own answers with its own body, and one that is an `i64` answers with `fmt`'s.
+// The fields' *own* `show` does the work, which is why this is short however
+// deep the value goes: a field that is a struct with a derive of its own
+// answers with its own body, and one that is an `i64` answers with `fmt`'s.
 fn shows(parser: &Parser, subject: &Subject) -> String {
-    let mut out = format!(
-        "impl fmt::Show for {} {{\n    fn show(&self, into: &fmt::Sink) {{\n",
-        subject.name
-    );
-    let names: Vec<String> = subject
-        .fields
+    let names = field_names(parser, &subject.fields);
+    format!("{}{}    }}\n}}\n", opens(&subject.name), parts(8, &subject.name, "self.", &names))
+}
+
+// `impl fmt::Show for E { .. }`, whose body is a `match` over the variants.
+//
+// A variant is written the way it was declared: one that carries nothing is its
+// name, one that names what it carries is a brace, and one that does not is a
+// parenthesis. So what comes back reads like the declaration, which is the
+// point of a derive -- a reader who wrote the enum can read the line without
+// being told a convention.
+//
+// It is a `match` on `self`, which is a `&E`, so every binding in it is a
+// reference into the value and nothing is moved out of the borrow. That is what
+// the derive needed and did not have: an enum carrying a struct could be lent
+// and not read (§8).
+fn chooses(parser: &Parser, subject: &Subject) -> String {
+    let mut out = opens(&subject.name);
+    out.push_str("        match self {\n");
+    for &held in &subject.variants {
+        let ASTNodeKind::EnumVariant { name, body, .. } = &parser.get_node(held).kind else {
+            continue;
+        };
+        let full = format!("{}::{}", subject.name, name);
+        let body = body.map(|b| parser.get_node(b).kind.clone());
+        match body {
+            // `E::Two(a, b)`. The bindings are named here and not in the
+            // declaration, a positional payload having no names of its own.
+            Some(ASTNodeKind::TuplePayload(tys)) if !tys.is_empty() => {
+                let held: Vec<String> =
+                    (0..tys.len()).map(|i| format!("held{}", i)).collect();
+                out.push_str(&format!("            {}({}) => {{\n", full, held.join(", ")));
+                for (i, bound) in held.iter().enumerate() {
+                    let between = match i {
+                        0 => format!("{}(", name),
+                        _ => ", ".to_string(),
+                    };
+                    out.push_str(&says(16, &between));
+                    out.push_str(&format!("                {}.show(into)\n", bound));
+                }
+                out.push_str(&says(16, ")"));
+                out.push_str("            },\n");
+            }
+            // `E::Three { x, y }`, in the shorthand, which binds each field
+            // under its own name -- so the body below reads like the struct's.
+            Some(ASTNodeKind::NamedPayload(fields)) if !fields.is_empty() => {
+                let held = field_names(parser, &fields);
+                out.push_str(&format!(
+                    "            {} {{ {} }} => {{\n",
+                    full,
+                    held.join(", ")
+                ));
+                out.push_str(&parts(16, name, "", &held));
+                out.push_str("            },\n");
+            }
+            // Carrying nothing, or carrying a discriminant, which is a number
+            // the compiler keeps and not a value the variant holds.
+            _ => out.push_str(&format!("            {} => fmt::put(into, \"{}\"),\n", full, name)),
+        }
+    }
+    out.push_str("        }\n    }\n}\n");
+    out
+}
+
+// The names a list of `FieldDecl`s declares, in order.
+fn field_names(parser: &Parser, fields: &[ASTNodeId]) -> Vec<String> {
+    fields
         .iter()
         .filter_map(|&f| match &parser.get_node(f).kind {
             ASTNodeKind::FieldDecl { name, .. } => Some(name.clone()),
             _ => None,
         })
-        .collect();
-
-    // A struct with no fields is its name and nothing else, which is what the
-    // reader wrote and what they will want to read back.
-    if names.is_empty() {
-        out.push_str(&format!("        fmt::put(into, \"{}\")\n", subject.name));
-    } else {
-        for (i, field) in names.iter().enumerate() {
-            let between = match i {
-                0 => format!("{} {{ {}: ", subject.name, field),
-                _ => format!(", {}: ", field),
-            };
-            out.push_str(&format!("        fmt::put(into, \"{}\")\n", between));
-            out.push_str(&format!("        self.{}.show(into)\n", field));
-        }
-        out.push_str("        fmt::put(into, \" }\")\n");
-    }
-    out.push_str("    }\n}\n");
-    out
+        .collect()
 }
 
 // The source read as a file, and its one item grafted into the tree this pass
