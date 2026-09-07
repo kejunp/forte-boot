@@ -25,6 +25,8 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::parse::ast_nodes::{ASTNode, ASTNodeId, ASTNodeKind};
 use crate::parse::parser::Parser;
 
+mod derive;
+
 // The fragments a parameter may ask for. Closed, as the attributes are: the
 // compiler knows every one there is, and one it does not know is an error where
 // it is written.
@@ -62,7 +64,7 @@ pub struct Expander<'a> {
 // This is `children_of` in `build/tests.rs` with the borrows the other way
 // round. Two of them rather than one because the test wants to look and this
 // wants to rewrite, and a shared shape would make one of the two clumsy.
-fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
+pub(super) fn children_mut(kind: &mut ASTNodeKind) -> Vec<&mut ASTNodeId> {
     let mut out: Vec<&mut ASTNodeId> = Vec::new();
     match kind {
         ASTNodeKind::Program(ids)
@@ -329,6 +331,14 @@ impl<'a> Expander<'a> {
     pub fn expand(&mut self, root: &ASTNode) -> ASTNode {
         self.collect(root);
         let mut kind = root.kind.clone();
+        // The derives first, so that what they stand for is in the tree before
+        // anything else walks it -- and so that a derived impl is copied along
+        // with everything else below, rather than being a subtree nothing
+        // visited.
+        if let ASTNodeKind::Program(items) = &mut kind {
+            let held = derive::derived(self.parser, &mut self.errors, items);
+            items.extend(held);
+        }
         self.strip_decls(&mut kind);
         self.copy_children(&mut kind, &HashMap::new());
         ASTNode::new(kind, root.line, root.col)

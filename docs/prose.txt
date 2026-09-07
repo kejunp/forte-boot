@@ -207,10 +207,18 @@ the six:
   %test                 Marks a fn as a test: no parameters, "null" returned,
                         collected and run on its own rather than compiled
                         into an ordinary build.
+  %derive(Show)         Writes an impl the reader would have written, on the
+                        struct it stands in front of. What may be derived is
+                        a closed list of one for now: deriving is the
+                        compiler's knowledge and not a library's — the *body*
+                        is the thing that has to exist, and only what is
+                        listed has one — so "%derive(Clone)" is an error
+                        naming what may be written rather than a trait
+                        somebody supplies later. Takes IDENTIFIERs.
 
-"%repr", "%derive" and "%cfg" are the names to expect next, and none of them
-is reserved: each needs something the language has not got — a layout story,
-and a configuration to ask about. Traits with code behind them was the third
+"%repr" and "%cfg" are the names to expect next, and neither is reserved:
+each needs something the language has not got — a layout story, and a
+configuration to ask about. "%derive" was the third and is written now, above. Traits with code behind them was the third
 and is no longer missing, which is what let "std/fmt.ft" become four routines
 where it was twenty and what took the tag out of "std/test.ft" as well: a value
 is asked what it looks like rather than told at the call, whether it is being
@@ -1986,11 +1994,43 @@ answer is not obvious from the rules alone.
     which is before anything reads a name: a macro is spent on the AST, and
     what "sema" is given has none left in it.
   - <attribute> is "%name" with its arguments, one per "%", the set of them
-    is closed, and an unknown one is an error (section 1). Settled. The six
-    are %symbol, %must_use, %inline, %noinline, %deprecated and %test;
-    "%repr", "%derive" and "%cfg" wait on features that do not exist. Nothing
-    says which declarations each of the six may sit on, beyond what its own
-    description implies.
+    is closed, and an unknown one is an error (section 1). Settled. The seven
+    are %symbol, %must_use, %inline, %noinline, %deprecated, %test and
+    %derive; "%repr" and "%cfg" wait on features that do not exist.
+
+    Which declarations each may sit on is answered now, and was not.
+    "%deprecated" goes on any declaration -- a name that should not be used is
+    a name whatever declared it. "%derive" goes on a type, being about what
+    one looks like. The other five say something only a function can be.
+
+    "%derive" is spent where a macro is spent, on the AST and before anything
+    reads a name, and what it stands for is *source*: the impl is generated as
+    text, read by a parser of its own, and grafted into the tree. Building the
+    nodes by hand would be the same tree written twice as long and would be a
+    second place where what this language means by "an impl" is spelled out --
+    the parser being the first, and the one that is right by construction. So
+    what the compiler has to get right is a program a reader could have typed,
+    which is a thing that can be looked at.
+
+    What "%derive(Show)" writes is the fields' own "show" in the order they
+    were declared, with the type's name and the punctuation around them. That
+    is three lines however deep the value goes: a field that is a struct with
+    a derive of its own answers with its own body, and one that is an "i64"
+    answers with "fmt"'s. Every name in the generated impl is spelled through
+    "fmt", so one "import fmt::Show" is the whole of what a file has to write.
+
+    What is not written yet is an enum, whose look is a "match" over its
+    variants, and a struct with parameters, whose impl has to bound each of
+    them -- every field of a "T" has to answer the trait too. Each is refused
+    in its own words rather than as one message about both.
+
+    And one thing found while writing it, which is nothing to do with derives
+    and is left where it was found. A struct with no fields made into a trait
+    object does not assemble: an address is a word however wide the thing it
+    addresses is, and the width asked for is the definition's, which for a
+    value of no bytes is a byte -- so "leaq" is written into "%al" and the
+    assembler refuses it. It is a back end question and not this one's, and
+    "%derive(Show)" on such a struct runs into it like anything else would.
   - A name is mangled as "__F" and then each part written as its length and
     then its characters, and "%symbol" gives the exact name instead
     (section 1). Settled, and the parts are these: where the fn is declared,

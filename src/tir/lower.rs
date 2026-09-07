@@ -23,7 +23,8 @@ use super::tir_nodes::*;
 
 // The six the compiler knows. A name outside this set is an error where it was
 // written -- see `docs/prose.txt` section 1, which is where the set is closed.
-const ATTRS: &[&str] = &["symbol", "must_use", "inline", "noinline", "deprecated", "test"];
+const ATTRS: &[&str] =
+    &["symbol", "must_use", "inline", "noinline", "deprecated", "test", "derive"];
 
 // What a `gc` binding was found to hold. Three answers and not two because
 // this pass has no types: only what the syntax settles on its own is decided
@@ -43,7 +44,22 @@ enum Holds {
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
     Fn,
+    // The two a `%derive` may sit on, told apart from the rest because that is
+    // the one attribute here that is about a type rather than about a fn.
+    Struct,
+    Enum,
     Other(&'static str),
+}
+
+impl Target {
+    fn what(self) -> &'static str {
+        match self {
+            Target::Fn => "a function",
+            Target::Struct => "a struct",
+            Target::Enum => "an enum",
+            Target::Other(held) => held,
+        }
+    }
 }
 
 pub struct Lowerer<'a> {
@@ -163,18 +179,22 @@ impl<'a> Lowerer<'a> {
             }
             seen.push((name.clone(), id));
 
-            // `%deprecated` is the one that goes on any declaration; the rest
-            // say something only a function can be.
-            if name != "deprecated" {
-                if let Target::Other(what) = target {
-                    self.errors.push(
-                        Diagnostic::error(format!("`%{}` goes on a function", name),
-                                          self.span(id))
-                            .with_label(format!("this is {}", what))
-                            .with_note("`%deprecated` is the one that goes on anything"),
-                    );
-                    continue;
-                }
+            // Where each may be written. `%deprecated` goes on any
+            // declaration -- a name that should not be used is a name whatever
+            // declared it. `%derive` goes on a type, being about what one looks
+            // like. The rest say something only a function can be.
+            let (goes, wants) = match name.as_str() {
+                "deprecated" => (true, ""),
+                "derive" => (matches!(target, Target::Struct | Target::Enum), "a type"),
+                _ => (matches!(target, Target::Fn), "a function"),
+            };
+            if !goes {
+                self.errors.push(
+                    Diagnostic::error(format!("`%{}` goes on {}", name, wants), self.span(id))
+                        .with_label(format!("this is {}", target.what()))
+                        .with_note("`%deprecated` is the one that goes on anything"),
+                );
+                continue;
             }
 
             match name.as_str() {
@@ -188,6 +208,11 @@ impl<'a> Lowerer<'a> {
                         out.common.deprecated = Some(text);
                     }
                 }
+                // Spent in `expand`, which writes the impl it stands for.
+                // Nothing below that pass reads one, and its arguments are
+                // names rather than the string or nothing every other
+                // attribute here takes.
+                "derive" => {}
                 "must_use" | "inline" | "noinline" | "test" => {
                     if !args.is_empty() {
                         self.errors.push(
@@ -263,7 +288,7 @@ impl<'a> Lowerer<'a> {
             }
 
             ASTNodeKind::Struct { attrs, vis, name, generics, fields } => {
-                let attrs = self.attrs(&attrs, Target::Other("a struct")).common;
+                let attrs = self.attrs(&attrs, Target::Struct).common;
                 TIRItemKind::Struct {
                     vis: visibility(vis),
                     attrs,
@@ -274,7 +299,7 @@ impl<'a> Lowerer<'a> {
             }
 
             ASTNodeKind::Enum { attrs, vis, name, generics, variants } => {
-                let attrs = self.attrs(&attrs, Target::Other("an enum")).common;
+                let attrs = self.attrs(&attrs, Target::Enum).common;
                 let variants = variants.iter().map(|&v| self.variant(v)).collect();
                 TIRItemKind::Enum {
                     vis: visibility(vis),

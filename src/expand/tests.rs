@@ -223,3 +223,78 @@ fn a_name_is_put_in_under_a_pointer() {
     }
     assert!(found, "no pointer type in the expansion of {}", source);
 }
+
+// ---- What a `%derive` stands for --------------------------------------------
+
+// The impl is in the tree after this pass and the reader wrote none, which is
+// the whole claim: `sema` is handed a file it cannot tell from one that was
+// typed. What the impl *does* is `src/tests.rs`', running being the only thing
+// that can say.
+fn impls_in(p: &Parser, root: &ASTNode) -> Vec<String> {
+    items(root)
+        .iter()
+        .filter_map(|&i| match &p.get_node(i).kind {
+            ASTNodeKind::Impl { for_ty: Some(held), .. } => {
+                Some(format!("{:?}", p.get_node(*held).kind))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_derive_writes_the_impl_it_stands_for() {
+    let (p, root, errors) = expanded(
+        "%derive(Show)\nstruct Point {\n    pub x: i64,\n    pub y: i64,\n}\n",
+    );
+    assert!(errors.is_empty(), "{:#?}", errors);
+    let held = impls_in(&p, &root);
+    assert_eq!(held.len(), 1, "one impl was meant to appear: {:?}", held);
+    assert!(held[0].contains("Point"), "{:?}", held);
+}
+
+// Two derives on one declaration are two impls, and a declaration with none is
+// left as it was.
+#[test]
+fn a_declaration_with_no_derive_grows_nothing() {
+    let (p, root, _) = expanded("struct Point {\n    pub x: i64,\n}\n");
+    assert!(impls_in(&p, &root).is_empty());
+}
+
+// A name this compiler does not know how to write. The set is closed as the
+// attributes' own set is, and for the same reason: the body is the thing that
+// has to exist, and only what is listed has one.
+#[test]
+fn a_derive_of_something_unwritten_is_refused() {
+    let said = errors_in("%derive(Clone)\nstruct Point {\n    pub x: i64,\n}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("`Clone` is not something `%derive` writes"), "{}", said[0]);
+    assert!(said[0].contains("`Show`"), "{}", said[0]);
+}
+
+// The two shapes that are not written yet, each said in its own words rather
+// than as one message about both.
+#[test]
+fn a_derive_on_a_shape_that_is_not_written_yet_says_which() {
+    let said = errors_in("%derive(Show)\nenum Held {\n    One,\n    Two,\n}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("written on a struct"), "{}", said[0]);
+    assert!(said[0].contains("match"), "{}", said[0]);
+
+    let said = errors_in("%derive(Show)\nstruct Box<T> {\n    pub held: T,\n}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("no parameters"), "{}", said[0]);
+}
+
+// A derive inside a namespace is a derive like any other: a namespace holds
+// items and this walks into one.
+#[test]
+fn a_derive_inside_a_namespace_is_written_too() {
+    let (p, root, errors) = expanded(
+        "namespace held {\n    %derive(Show)\n    struct Point {\n        pub x: i64,\n    }\n}\n",
+    );
+    assert!(errors.is_empty(), "{:#?}", errors);
+    // At the file's top level, where every impl in a suite lives: an impl is
+    // found by the type it is written for and not by where it stands.
+    assert_eq!(impls_in(&p, &root).len(), 1);
+}

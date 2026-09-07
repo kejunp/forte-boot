@@ -47,8 +47,12 @@ fn put_uint(into: &Sink, n: u64): null;
 %symbol("__rt_show_real")
 fn put_real(into: &Sink, x: f64): null;
 
+// Widened where the others are not, and it has to be: the runtime reads a
+// whole word and a `bool` is one byte, so what a narrow value leaves in the
+// rest of the register is whatever was there. Every `%symbol` here takes a
+// word for that reason, and `std/test.ft` widens its own for the same one.
 %symbol("__rt_show_truth")
-fn put_truth(into: &Sink, v: bool): null;
+fn put_truth(into: &Sink, v: i64): null;
 
 %symbol("__rt_show_text")
 pub fn put(into: &Sink, s: str): null;
@@ -127,7 +131,7 @@ impl Show for f64 {
 }
 
 impl Show for bool {
-    fn show(&self, into: &Sink) { put_truth(into, self) }
+    fn show(&self, into: &Sink) { put_truth(into, self as i64) }
 }
 
 impl Show for str {

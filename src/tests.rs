@@ -1964,6 +1964,90 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- The impl a reader would have written -----------------------------------------
+
+// `%derive(Show)`, which is the first thing the attribute list said was waiting
+// on "traits with code behind them" and is the last of the three that arrived
+// with them.
+//
+// What it asserts is what only running can say: that the derived body reaches
+// each field's *own* `show` -- so a field that is a struct with a derive of its
+// own answers with its own body, three levels down -- and that a derived impl
+// stands beside a hand-written one with nothing to tell them apart.
+#[test]
+fn a_derive_writes_the_impl_a_reader_would_have() {
+    let dir = std::env::temp_dir().join(format!("fortec-derive-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("derive.ft");
+    std::fs::write(
+        &root,
+        "import fmt::{Show, Sink, put, println};\n\
+         \n\
+         %derive(Show)\n\
+         struct Point { pub x: i64, pub y: i64 }\n\
+         \n\
+         %derive(Show)\n\
+         struct Wrap { pub name: str, pub at: Point, pub on: bool }\n\
+         \n\
+         // A hand-written one, which the derived bodies reach exactly as they\n\
+         // reach a derived one: what answers is the impl and not how it got\n\
+         // there.\n\
+         struct Tick { pub n: i64 }\n\
+         impl Show for Tick {\n\
+         \x20   fn show(&self, into: &Sink) {\n\
+         \x20       put(into, \"tick(\")\n\
+         \x20       self.n.show(into)\n\
+         \x20       put(into, \")\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %derive(Show)\n\
+         struct Both { pub one: Tick, pub two: Wrap }\n\
+         \n\
+         fn main(): i64 {\n\
+         \x20   println(\"{}\", &[&Point { x: 3, y: 4 }])\n\
+         \x20   // A field that is a struct answers with its own body.\n\
+         \x20   let w = Wrap { name: \"here\", at: Point { x: 1, y: 2 }, on: true }\n\
+         \x20   println(\"{}\", &[&w])\n\
+         \x20   // Three deep, and the hand-written one in the middle of it.\n\
+         \x20   let b = Both {\n\
+         \x20       one: Tick { n: 9 },\n\
+         \x20       two: Wrap { name: \"x\", at: Point { x: 5, y: 6 }, on: false },\n\
+         \x20   }\n\
+         \x20   println(\"{}\", &[&b])\n\
+         \x20   // The room around it is the room around the whole of it.\n\
+         \x20   println(\"[{:>22}]\", &[&Point { x: 7, y: 8 }])\n\
+         \x20   // And a spec about the value, said of a value that is several.\n\
+         \x20   println(\"{:x}\", &[&Point { x: 1, y: 2 }])\n\
+         \x20   0\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran_program(&root, "derive");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a derive was meant to work:\n{}", said);
+    assert!(said.contains("Point { x: 3, y: 4 }\n"), "{}", said);
+    assert!(
+        said.contains("Wrap { name: here, at: Point { x: 1, y: 2 }, on: true }\n"),
+        "{}",
+        said
+    );
+    assert!(
+        said.contains(
+            "Both { one: tick(9), two: Wrap { name: x, at: Point { x: 5, y: 6 }, \
+             on: false } }\n"
+        ),
+        "{}",
+        said
+    );
+    assert!(said.contains("[  Point { x: 7, y: 8 }]\n"), "{}", said);
+    assert!(said.contains("several pieces"), "{}", said);
+}
+
 // ---- A view's own length ---------------------------------------------------------
 
 // "The length moving out of the type and into the value" (§3) is what a view
