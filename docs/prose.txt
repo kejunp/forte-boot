@@ -2411,6 +2411,31 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - "&(deref p)" handed to a generic instantiates it wrongly, and this is a
+    bug rather than a question. It is found and not fixed, so here is what is
+    known.
+
+    "assert_eq(&(deref p), &1, ..)" builds, and what it builds calls
+    "assert_eq" instantiated with "ptr i64" for its "T" -- for which there is
+    no "impl Show", so the table beside the value holds an address nothing
+    made and the runtime follows it. "let h: &i64 = &(deref p)" first does not
+    help, which says the type is already wrong before the call.
+
+    What is ruled out: the checker types "&(deref p)" as a "&i64" and says so
+    when asked; there is no fold of a "&" over a "deref" in "gir"; and it is
+    not "sir::lower"'s retyping of what "address" gives back, though that is
+    worth its own line. That retyping is sound only where the value came from
+    an instruction the same call pushed, and there is one arm where it does
+    not -- "deref", which gives back the operand *itself*, the value already
+    being the address. Renaming that value renames one somebody else holds.
+    Making it a fresh value instead does not change what is instantiated, so
+    whatever decides the argument's type is reading something else again.
+
+    Where to look next is "mir::mono"'s recovery of a call's type arguments: it
+    matches what a declaration says against what a *SIR value* says it is, and
+    a SIR value's type is a machine-level answer that lowering is free to
+    change. Two types for one expression is the shape of the whole bug, and
+    which of them a pass may rewrite is the question nobody has answered.
   - A slot whose address an inlined call holds stays in the frame, which it did
     not -- and what that was is a wrong answer at "-O2" and above and nowhere
     else, which is the level everything is built at.
