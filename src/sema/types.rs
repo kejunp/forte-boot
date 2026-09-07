@@ -147,6 +147,19 @@ impl Types {
         self.intern(Ty::Var(var))
     }
 
+    // What a hole would come to if nothing ever filled it, asked for before
+    // the end. `finish` makes this guess for every hole that is still standing
+    // there; here it is handed out early, to a caller that has run out of
+    // later -- a table built for a trait object is built for one type, and
+    // `&5` has to be told which before there is anything to build.
+    //
+    // `None` for anything already filled and for a hole that takes anything:
+    // those have no guess to make, and `finish` calls them an `Error`.
+    pub fn standing(&self, id: TyId) -> Option<TIRPrim> {
+        let Ty::Var(var) = self.arena[self.shallow(id)] else { return None };
+        guess(self.fills[var])
+    }
+
     // `id` with any filled hole at the top followed. Shallow on purpose: what
     // `unify` needs is the outermost shape, and following further would build
     // types nobody asked for.
@@ -479,18 +492,14 @@ impl Types {
             if self.vars[var].is_some() {
                 continue;
             }
-            match self.fills[var] {
-                Fills::Whole => {
-                    let held = self.prim(TIRPrim::I32);
-                    self.vars[var] = Some(held);
-                }
-                Fills::Fractional => {
-                    let held = self.prim(TIRPrim::F64);
+            match guess(self.fills[var]) {
+                Some(prim) => {
+                    let held = self.prim(prim);
                     self.vars[var] = Some(held);
                 }
                 // A hole that stands is an `Error`, so nothing below has to
                 // carry a case for a type that was never settled.
-                Fills::Anything => open.push(var),
+                None => open.push(var),
             }
         }
         let error = self.error();
@@ -577,6 +586,16 @@ impl Types {
 }
 
 // Whether a hole of this kind takes that primitive.
+// What a hole nobody said anything about is worth. The one guess the checker
+// makes, in the one place it is written down.
+fn guess(wants: Fills) -> Option<TIRPrim> {
+    match wants {
+        Fills::Whole => Some(TIRPrim::I32),
+        Fills::Fractional => Some(TIRPrim::F64),
+        Fills::Anything => None,
+    }
+}
+
 fn takes(wants: Fills, prim: TIRPrim) -> bool {
     match wants {
         Fills::Anything => true,

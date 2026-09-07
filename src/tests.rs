@@ -1652,6 +1652,12 @@ fn a_gc_global_is_filled_in_before_the_program_starts() {
 // So the three paths are all asserted here, and each answers differently per
 // type: a lookup that found the wrong impl runs and gives a wrong number, and
 // only the number tells them apart.
+//
+// The last of the four wanted a second thing on top of the head, and gets a
+// fourth test below. An unsuffixed number is not a primitive yet -- it is a
+// hole -- and nobody writes an impl for a hole, so asking by head found
+// nothing however the head was worked out. What answers it is the type the
+// hole would settle as, which `Types::standing` hands over.
 #[test]
 fn a_primitive_answers_a_trait_like_anything_else() {
     let dir = std::env::temp_dir().join(format!("fortec-prim-src-{}", std::process::id()));
@@ -1670,6 +1676,7 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          struct Sq { pub s: i64 }\n\
          impl Tagged for Sq   { fn tag(&self): i64 { 100 } }\n\
          impl Tagged for i64  { fn tag(&self): i64 { 1 } }\n\
+         impl Tagged for i32  { fn tag(&self): i64 { 4 } }\n\
          impl Tagged for bool { fn tag(&self): i64 { 2 } }\n\
          impl Tagged for str  { fn tag(&self): i64 { 3 } }\n\
          \n\
@@ -1704,6 +1711,19 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \x20   assert_eq(&by_table(&n), &1, \"one body, three tables\")\n\
          \x20   assert_eq(&by_table(&b), &2, \"the second\")\n\
          \x20   assert_eq(&by_table(&q), &100, \"and the struct's\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_number_with_nothing_said_about_it_is_an_object_too() {\n\
+         \x20   // The guess and nothing else: an `i32`, so the `i32` body runs.\n\
+         \x20   assert_eq(&by_table(&5), &4, \"a bare literal\")\n\
+         \x20   // And the guess is not taken -- a line below still says what\n\
+         \x20   // the number is, and the table is built for what it ended as.\n\
+         \x20   let n = 5\n\
+         \x20   let held: &dyn Tagged = &n\n\
+         \x20   let m: i64 = n\n\
+         \x20   assert_eq(&held.tag(), &1, \"filled from below\")\n\
+         \x20   assert_eq(&m, &5, \"and it is still the value it was\")\n\
          }\n",
     )
     .expect("a file");
@@ -1714,7 +1734,7 @@ fn a_primitive_answers_a_trait_like_anything_else() {
 
     assert!(ok, "a primitive was meant to answer a trait:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
-    assert!(said.contains("running 3 tests"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
 }
 
 // ---- A reference read as what it refers to ---------------------------------------

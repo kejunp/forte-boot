@@ -916,7 +916,25 @@ impl<'a> Lowerer<'a> {
         // struct does (`impl Show for i64`), so `&5` becomes a `&dyn Show`
         // wherever a `&Sq` becomes one.
         let head = head_of(self.types.get(from));
-        self.answers(&head, of)
+        if self.answers(&head, of) {
+            return true;
+        }
+        // A literal that was never told what it is. `&5` beside a `&dyn Show`
+        // is a hole with no impl written for it, because a hole is not a type
+        // anybody writes an impl for -- so what is asked instead is the type
+        // it would settle as, which is the guess `finish` makes at the end and
+        // the one every unsuffixed number ends up taking.
+        //
+        // Asked and not taken: the hole is left standing, so a line further
+        // down may still fill it with something else. `let n = 5` used as an
+        // object and then as an `i64` is an `i64`, and the table is built for
+        // what it ended as rather than for what was guessed halfway through.
+        // Which means this answer is provisional, and `objects_answered` in
+        // `lower.rs` is what holds it: the same question, asked once more of
+        // every object in the finished tree, when there is nothing left to
+        // guess about.
+        let Some(prim) = self.types.standing(from) else { return false };
+        self.answers(&head_of(&Ty::Prim(prim)), of)
     }
 
     // Whether that type has an impl of that trait. What `dyn` is held to: a

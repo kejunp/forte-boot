@@ -75,7 +75,7 @@ use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
     TIRProgram, TIRVis,
 };
-use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRExpr, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRStmt, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{head_of, RegionId, TTIRBound, TTIRCapture, TTIRExpr, TTIRExprId, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRStmt, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
 
 mod binds;
 mod bodies;
@@ -485,6 +485,7 @@ impl<'a> Lowerer<'a> {
         }
         self.out.types = arena;
         literals_in_range(&self.out, &mut self.errors);
+        objects_answered(&self.out, &mut self.errors);
 
         // Moves and borrows, over the tree this just built. Only where nothing
         // has been turned down yet: a tree with an `Ty::Error` in it has holes
@@ -777,6 +778,85 @@ impl<'a> Lowerer<'a> {
 // After the types are settled and not while they are being worked out. A
 // number with no suffix is a hole until something fills it, so asking any
 // earlier would be asking what a hole can hold -- which is anything.
+// Every trait object in the finished tree, asked again of the type it was
+// made from.
+//
+// `objects` answers this while the checker is still working, and an unsuffixed
+// number is a hole then -- so what it can ask is what the hole *would* settle
+// as if nothing else filled it. Something else may: a hole is filled by
+// whatever unifies with it, and a line below the object is as good as a line
+// above. `let n = 5` used as a `&dyn Show` and then as an `i64` is an `i64`,
+// and the table is built for what it ended as. So the answer there is a guess
+// and this is where it is held to what happened.
+//
+// Of every object and not of the guessed ones only, there being no reason to
+// remember which were which: one that answered then answers now in the same
+// line of code, and the pass is a walk either way.
+fn objects_answered(out: &TTIRProgram, errors: &mut Diagnostics) {
+    for held in &out.exprs {
+        let TTIRExprKind::Cast(from) = held.kind else { continue };
+        let (Some(of), Some(made)) = (dyn_of(out, held.ty), referred(out, out.exprs[from].ty))
+        else {
+            continue;
+        };
+        let head = head_of(&out.types[made]);
+        let answered = out.items.iter().any(|item| {
+            let TTIRItemKind::Impl { ty, of: written, .. } = &item.kind else { return false };
+            *written == Some(of) && head_of(&out.types[*ty]) == head
+        });
+        if answered {
+            continue;
+        }
+        let (made, of) = (spelled(out, made), named(out, of));
+        errors.push(
+            Diagnostic::error(format!("`{}` does not answer `{}`", made, of), Span::at(held.line, held.col))
+                .with_label(format!("this is asked to be a `dyn {}`", of))
+                .with_note(format!(
+                    "a table is built out of an impl, and there is no `impl {} for {}`",
+                    of, made
+                )),
+        );
+    }
+}
+
+// The trait a `&dyn T` is of, and nothing for any other type.
+fn dyn_of(out: &TTIRProgram, ty: TyId) -> Option<TTIRItemId> {
+    let inner = referred(out, ty)?;
+    match out.types.get(inner)? {
+        Ty::Dyn(item) => Some(*item),
+        _ => None,
+    }
+}
+
+// What a reference refers to.
+fn referred(out: &TTIRProgram, ty: TyId) -> Option<TyId> {
+    match out.types.get(ty)? {
+        Ty::Ref { inner, .. } => Some(*inner),
+        _ => None,
+    }
+}
+
+// Enough of a type to name it in the message above. The only type that reaches
+// it is one a hole was filled with, and a whole-number hole takes numbers, so
+// what this spells in practice is a primitive; the rest is here to be honest
+// rather than because a program gets there.
+fn spelled(out: &TTIRProgram, ty: TyId) -> String {
+    match &out.types[ty] {
+        Ty::Prim(prim) => crate::sema::names::prim_name(*prim).to_string(),
+        Ty::Named { item, .. } => named(out, *item),
+        other => format!("{:?}", other),
+    }
+}
+
+fn named(out: &TTIRProgram, at: TTIRItemId) -> String {
+    match &out.items[at].kind {
+        TTIRItemKind::Struct { name, .. }
+        | TTIRItemKind::Enum { name, .. }
+        | TTIRItemKind::Trait { name, .. } => name.clone(),
+        _ => "?".to_string(),
+    }
+}
+
 fn literals_in_range(out: &TTIRProgram, errors: &mut Diagnostics) {
     for held in &out.exprs {
         let TTIRExprKind::Literal(TIRLit::Int(n)) = held.kind else { continue };

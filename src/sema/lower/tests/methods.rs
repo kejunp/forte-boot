@@ -306,6 +306,74 @@ fn a_collected_value_does_not_become_an_ordinary_one() {
     assert!(out.contains("gc Buf"), "{}", out);
 }
 
+// ---- A number with nothing said about it -----------------------------------------
+
+// `&5` becomes a `&dyn Show` the way `&q` becomes a `&dyn Shape`. It did not:
+// an unsuffixed number is a hole, an impl is never written for a hole, and so
+// the lookup found nothing and the conversion was refused. What is asked
+// instead is the type the hole would settle as -- `i32` for a whole number and
+// `f64` for a fraction, which is the guess `Types::finish` makes for every one
+// that is still standing at the end.
+#[test]
+fn a_literal_becomes_an_object() {
+    let with = "trait Show {\n    fn show(&self): i32\n}\n\
+                impl Show for i32 {\n    fn show(&self): i32 { 1 }\n}\n\
+                impl Show for f64 {\n    fn show(&self): i32 { 2 }\n}\n";
+    clean(&format!("{}fn f(): i32 {{\n    let s: &dyn Show = &5\n    s.show()\n}}\n", with));
+    clean(&format!("{}fn f(): i32 {{\n    let s: &dyn Show = &2.5\n    s.show()\n}}\n", with));
+    // And in an array of them, which is what a print's arguments are.
+    clean(&format!(
+        "{}fn f(a: &(&dyn Show)[]): i32 {{ 0 }}\n\
+         fn g(): i32 {{ f(&[&5, &2.5]) }}\n",
+        with));
+}
+
+// The guess is asked for and not taken: the hole is left standing, so a line
+// below the object fills it like any other. Which order the two are written in
+// does not change what the number is -- it would if the object settled it.
+#[test]
+fn a_line_below_the_object_still_says_what_the_number_is() {
+    let with = "trait Show {\n    fn show(&self): i32\n}\n\
+                impl Show for i32 {\n    fn show(&self): i32 { 1 }\n}\n\
+                impl Show for i64 {\n    fn show(&self): i32 { 2 }\n}\n";
+    clean(&format!(
+        "{}fn f(): i32 {{\n    let n = 5\n    let s: &dyn Show = &n\n\
+         \x20   let m: i64 = n\n    s.show()\n}}\n",
+        with));
+    // The other way round, which worked before this and has to keep working.
+    clean(&format!(
+        "{}fn f(): i32 {{\n    let n = 5\n    let m: i64 = n\n\
+         \x20   let s: &dyn Show = &n\n    s.show()\n}}\n",
+        with));
+}
+
+// Which means the answer given while the checker is working is provisional,
+// and the tree is asked once more at the end: a hole that took the guess and
+// was then filled with something the trait has no impl for is caught there
+// rather than reaching a back end with no table to build.
+#[test]
+fn what_the_number_turned_out_to_be_is_held_to_the_trait() {
+    let with = "trait Show {\n    fn show(&self): i32\n}\n\
+                impl Show for i32 {\n    fn show(&self): i32 { 1 }\n}\n";
+    let out = refused(&format!(
+        "{}fn f(): i32 {{\n    let n = 5\n    let s: &dyn Show = &n\n\
+         \x20   let m: i64 = n\n    s.show()\n}}\n",
+        with));
+    assert!(out.contains("`i64` does not answer `Show`"), "{}", out);
+}
+
+// And a number whose guess answers nothing is refused where it is written,
+// which is what it always was.
+#[test]
+fn a_number_the_trait_has_no_impl_for_is_refused() {
+    let out = refused(
+        "trait Show {\n    fn show(&self): i32\n}\n\
+         impl Show for bool {\n    fn show(&self): i32 { 1 }\n}\n\
+         fn f(): i32 {\n    let s: &dyn Show = &5\n    s.show()\n}\n",
+    );
+    assert!(out.contains("dyn Show"), "{}", out);
+}
+
 // ---- What a value is expected to be ---------------------------------------------
 
 // A conversion happens where a type is expected of a value, and the four

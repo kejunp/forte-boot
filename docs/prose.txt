@@ -218,11 +218,12 @@ printed or being asserted about.
 
 "assert_eq" takes a bound and not a trait object, which is the one decision in
 that pair worth writing down. Both sides being one "T" is what an equality
-assert means — a number is never equal to a piece of text, so
-"assert_eq(&5, &\"5\")" is refused rather than answered — and it is also what
-settles a bare literal: "assert_eq(&count, &10, ..)" is the commonest shape
-there is, and a "10" with no suffix is a hole that a trait object gives nothing
-to fill from and a "&T" beside a "&count" fills exactly.
+assert means: a number is never equal to a piece of text, so
+"assert_eq(&5, &\"5\")" is refused rather than answered, where a pair of objects
+would have compared what the two of them printed. It also settles a bare
+literal against the other side rather than against a guess —
+"assert_eq(&count, &10, ..)" is the commonest shape there is, and the "10" is
+whatever "count" is.
 
 Where a program begins. A suite is compiled from the one file named on the
 command line, that file's module is the root, and the program starts at a fn
@@ -808,6 +809,24 @@ the other way: an object has forgotten which type it was.
 
     let q = Sq { s: 5 }
     total(&q)               // &Sq becomes &dyn Shape here
+
+A number written without a suffix becomes one too, and needs a word because it
+is not a type yet. "5" is a hole until something says what it is, and nobody
+writes an impl for a hole — so what is asked of it is the type it would settle
+as if nothing ever did, which is the "i32" every whole number that stands alone
+ends up being ("f64" for a fraction). "&5" is therefore a "&dyn Show" wherever
+"i32" answers "Show".
+
+Asked and not taken: the hole stays a hole, so a line further down still says
+what the number is, and the table is built for what it ended as rather than for
+what was guessed halfway through. Which means the guess can be wrong — the
+number may settle as something the trait has no impl for — and the answer is
+checked again once every hole is filled, where it is a refusal naming the type
+it turned out to be.
+
+    let n = 5
+    let s: &dyn Show = &n   // guessed i32 here
+    let m: i64 = n          // and it is an i64, so the table is the i64 one
 
 <gc_type>. "gc T" is a value the collector holds rather than a scope. The same
 word a <var_decl> writes in front of a binding, said where a type is wanted:
@@ -2607,7 +2626,18 @@ answer is not obvious from the rules alone.
     a type's is asked it by name, so a primitive fell out of all four —
     a method call found no field, a generic reached the trait's member and
     failed at the link step, a "dyn" built no table, and "&5" was refused where
-    a "&dyn Show" was wanted. One question asked one way answers all four.
+    a "&dyn Show" was wanted. One question asked one way answers three of the
+    four.
+
+    The fourth wanted a second thing on top of the head, and has it: an
+    unsuffixed number is not a primitive yet but a hole, and nobody writes an
+    impl for a hole, so asking by head found nothing however the head was
+    worked out. What answers it is the type the hole would settle as, which is
+    the guess the checker already makes for every hole still standing at the
+    end — handed out early here because a table is built for one type and "&5"
+    names none. The hole is left standing all the same, so a line below the
+    object still fills it, and every object in the finished tree is asked the
+    question once more when there is nothing left to guess about (section 2).
   - A trait is answered dynamically as well as statically, and "&dyn Shape" is
     how the second is written (section 3). Settled, and it is what "%derive"
     and a "Display" were waiting for -- "traits with code behind them" is the
@@ -2642,9 +2672,7 @@ answer is not obvious from the rules alone.
     What is not done. A bare "dyn Shape" as a parameter or a return type is
     not refused where it is written, which is the gap a "T[]" has in the same
     place and for the same reason -- nothing checks a signature for types
-    nothing can hold. An array element and a struct field are not yet places
-    an expectation reaches, so a "&dyn Shape" in either is written out rather
-    than converted into. And there is no owned form: a trait object lives as
+    nothing can hold. And there is no owned form: a trait object lives as
     long as what it was made from, so a container of them wants a "gc" of one,
     which is a shape neither word has been asked to make yet.
   - Where a program begins is settled, and what it is handed is settled now
