@@ -171,3 +171,44 @@ fn each_width_holds_what_it_holds() {
         assert!(out.contains(said), "{}\n{}", source, out);
     }
 }
+
+// ---- And what a global's initialiser is held to ------------------------------
+
+// It is walked like any other expression, which it was not: only the folding
+// evaluator ever looked at it, so nothing about a global's initialiser was
+// checked at all.
+#[test]
+fn a_globals_initialiser_is_type_checked() {
+    let out = refused("var q: i64 = \"not a number\"\nfn main(): i64 { 0 }\n");
+    assert!(out.contains("`str`"), "{}", out);
+    // Into the initialiser and not only at the top of it: a field that is the
+    // wrong type, and a field that is not there.
+    let with = "struct Point {\n    pub x: i64,\n    pub y: i64,\n}\n";
+    let out = refused(&format!(
+        "{}var p: Point = Point {{ x: \"no\", y: 4 }}\nfn main(): i64 {{ 0 }}\n", with));
+    assert!(out.contains("`x` is `str` and the field is `i64`"), "{}", out);
+    let out = refused(&format!(
+        "{}var p: Point = Point {{ x: 1, y: 2, z: 3 }}\nfn main(): i64 {{ 0 }}\n", with));
+    assert!(out.contains("has no field `z`"), "{}", out);
+}
+
+// And what it comes to is kept, so the back end has something to make a segment
+// out of. A folded literal still wins where the evaluator folded one: the image
+// can hold a 42 and cannot hold an arithmetic tree.
+#[test]
+fn an_aggregate_initialiser_is_kept_and_a_folded_one_still_wins() {
+    let ttir = clean(
+        "struct Point {\n    pub x: i64,\n    pub y: i64,\n}\n\
+         var p: Point = Point { x: 3, y: 4 }\n\
+         fn main(): i64 { 0 }\n",
+    );
+    let init = ttir.items.iter().find_map(|i| match &i.kind {
+        TTIRItemKind::Global { init, .. } => Some(*init),
+        _ => None,
+    }).expect("a global").expect("an initialiser");
+    assert!(
+        matches!(&ttir.exprs[init].kind, TTIRExprKind::StructLit { .. }),
+        "{:#?}",
+        ttir.exprs[init]
+    );
+}

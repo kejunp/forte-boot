@@ -2429,6 +2429,23 @@ answer is not obvious from the rules alone.
     float divided by nought is an infinity on all three machines and not a
     trap, so it folds and there is nothing to say about it.
 
+    And a global's initialiser is walked like any other expression now, which
+    it was not: only the folding evaluator ever looked at it. That one gap was
+    three wrong answers. A structure or an array reached the segment as
+    noughts, because only a folded *literal* was ever written into an image --
+    so "var p: Point = Point { x: 3, y: 4 }" read back as two zeroes. Nothing
+    about an initialiser was type checked at all: a field that does not exist,
+    a "str" where an "i64" was declared, both accepted in silence. And a "gc"
+    global got a handle of nought.
+
+    It is walked in the pass that walks bodies and not in the one that
+    resolves declarations, which is where the three came from: that pass
+    settles the *outside* of a declaration, and what an expression comes to is
+    the next one's. What the evaluator folded still wins where it folded
+    anything -- an image can hold a 42 and cannot hold an arithmetic tree --
+    and an initialiser this cannot write bytes for still leaves them at nought,
+    which is the rule above unchanged.
+
     What is still not done: the collector has to be told to look here, there
     being no other root outside a stack.
   - "gc" is a word on a binding, and what may stand under one is a heap value

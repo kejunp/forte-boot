@@ -53,7 +53,7 @@ use crate::sema::borrows::Copies;
 use crate::sema::names::Mangler;
 use crate::sir::sir_nodes::*;
 use crate::tir::tir_nodes::{TIRLit, TIRPrim};
-use crate::tir::ttir_nodes::{TTIRExprKind, TTIRItemKind, Ty, TyId};
+use crate::tir::ttir_nodes::{TTIRExprId, TTIRExprKind, TTIRItemKind, Ty, TyId};
 
 use super::layout::{Layout, Layouts, Shape};
 use super::machine::{Class, Machine};
@@ -261,31 +261,8 @@ impl<'a> Lowerer<'a> {
             // as well.
             let mut image = vec![0u8; bytes];
             let mut relocs = Vec::new();
-            if let Some(held) = init.and_then(|at| self.made.ttir.exprs.get(at)) {
-                if let TTIRExprKind::Literal(lit) = &held.kind.clone() {
-                    // A `str` is the one literal whose image this cannot
-                    // write: it is a pointer and a length, and where the bytes
-                    // end up is the linker's to say. So the bytes go in the
-                    // pool, the length goes in the image, and the pointer is
-                    // left as a name for the linker to fill in.
-                    //
-                    // Which is what §8 meant by "a `str` global writes no
-                    // bytes": what it wrote was sixteen noughts, and a program
-                    // reading one read the empty string and was told nothing.
-                    if let TIRLit::Str(text) = lit {
-                        let word = self.machine.word;
-                        if image.len() >= word * 2 {
-                            let held = text.clone();
-                            let at = self.pooled(held.clone().into_bytes());
-                            relocs.push((0, at));
-                            let len = (held.len() as i64).to_le_bytes();
-                            image[word..word + len.len().min(word)]
-                                .copy_from_slice(&len[..len.len().min(word)]);
-                        }
-                    } else {
-                        write_lit(&mut image, lit);
-                    }
-                }
+            if let Some(held) = init {
+                self.written_at(&mut image, &mut relocs, 0, ty, held);
             }
             self.out.data.push(MIRGlobal {
                 symbol,
@@ -293,6 +270,81 @@ impl<'a> Lowerer<'a> {
                 align: layout.align.max(1),
                 relocs,
             });
+        }
+    }
+
+    // One initialiser written into a global's image, at the offset it stands
+    // at. Recursive, because a value written down is a tree and an image is
+    // flat: what turns the one into the other is the layout, which is the same
+    // set of offsets a field read is compiled against.
+    //
+    // A global holding a structure or an array had been *all noughts*. Only a
+    // bare literal was written, so `Point { x: 3, y: 4 }` reached the segment
+    // as sixteen zero bytes and a program reading it was told nothing at all --
+    // the same silence a `str` global had, and the same shape of wrong answer.
+    //
+    // What still writes nothing is what still cannot be worked out here: a call,
+    // a name, anything the const evaluator declined. Those leave their bytes at
+    // nought, which is what §8 says a global this cannot read starts as.
+    fn written_at(
+        &mut self,
+        image: &mut [u8],
+        relocs: &mut Vec<(usize, String)>,
+        at: usize,
+        ty: TyId,
+        expr: TTIRExprId,
+    ) {
+        let Some(held) = self.made.ttir.exprs.get(expr).map(|e| e.kind.clone()) else { return };
+        match held {
+            // A `str` is the one literal whose bytes this cannot write: it is a
+            // pointer and a length, and where the bytes end up is the linker's
+            // to say. So the bytes go in the pool, the length goes in the image,
+            // and the pointer is left as a name.
+            TTIRExprKind::Literal(TIRLit::Str(text)) => {
+                let word = self.machine.word;
+                if at + word * 2 > image.len() {
+                    return;
+                }
+                let held = self.pooled(text.clone().into_bytes());
+                relocs.push((at, held));
+                let len = (text.len() as i64).to_le_bytes();
+                let take = len.len().min(word);
+                image[at + word..at + word + take].copy_from_slice(&len[..take]);
+            }
+            TTIRExprKind::Literal(lit) => {
+                let wide = self.bytes_of(ty).max(1);
+                let end = image.len().min(at + wide);
+                if at < end {
+                    write_lit(&mut image[at..end], &lit);
+                }
+            }
+            // A structure and a tuple are one shape: "a tuple is a structure
+            // whose fields are numbered" (`mir::layout`), so one arm answers
+            // both and the offsets come from the same place.
+            TTIRExprKind::StructLit { fields, .. } | TTIRExprKind::TupleLit(fields) => {
+                let Some(laid) = self.layouts.of(ty) else { return };
+                let Shape::Fields(offsets) = laid.shape else { return };
+                for (i, &field) in fields.iter().enumerate() {
+                    let Some(&off) = offsets.get(i) else { continue };
+                    let Some(held) = self.made.ttir.exprs.get(field).map(|e| e.ty) else {
+                        continue;
+                    };
+                    self.written_at(image, relocs, at + off, held, field);
+                }
+            }
+            // Every element the same width, so one stride answers for all of
+            // them rather than an offset each.
+            TTIRExprKind::ArrayLit(elems) => {
+                let Some(laid) = self.layouts.of(ty) else { return };
+                let Shape::Elements { stride, .. } = laid.shape else { return };
+                for (i, &elem) in elems.iter().enumerate() {
+                    let Some(held) = self.made.ttir.exprs.get(elem).map(|e| e.ty) else {
+                        continue;
+                    };
+                    self.written_at(image, relocs, at + i * stride, held, elem);
+                }
+            }
+            _ => {}
         }
     }
 

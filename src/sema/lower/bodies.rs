@@ -66,6 +66,63 @@ impl<'a> Lowerer<'a> {
                     self.params.clear();
                     self.bounds.clear();
                 }
+                // A global's initialiser, walked like any other expression.
+                //
+                // It never was, and that one gap was three wrong answers. Only
+                // the *folding* evaluator ever looked at it (`resolve`), so a
+                // `Point { x: 3, y: 4 }` reached the data segment as sixteen
+                // noughts, nothing about it was type checked at all -- a field
+                // that does not exist, a `str` where an `i64` was declared, all
+                // accepted in silence -- and a `gc` global got a handle of
+                // nought and dereferenced null on the first read.
+                //
+                // Walked here and not in `resolve` because that is the pass
+                // that settles the *outside* of a declaration; what an
+                // expression comes to is this one's, and it needs every
+                // declaration resolved before it can look anything up.
+                //
+                // `expecting` and not `expr`, so the declared type is held to
+                // *and* converts: a `var g: gc Buf = Buf { .. }` is the same
+                // conversion a `let gc` makes, and it is what puts the value in
+                // the collector's room rather than in the segment.
+                TIRItemKind::Global { init: Some(written), .. } => {
+                    let Some(made) = self.made[self.at][id] else { continue };
+                    let TTIRItemKind::Global { ty, init, .. } = &self.out.items[made].kind
+                    else {
+                        continue;
+                    };
+                    let (ty, folded) = (*ty, *init);
+                    self.here = self.span(id);
+                    self.frames.push(Frame::new(ty, false));
+                    let held = self.expecting(written, ty);
+                    self.frames.pop();
+
+                    let found = self.out.exprs[held].ty;
+                    if self.types.unify(found, ty).is_err() {
+                        let (found, ty) = (self.spell(found), self.spell(ty));
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("this is `{}` and the global says `{}`", found, ty),
+                                self.here,
+                            )
+                            .with_label("the two disagree"),
+                        );
+                    }
+
+                    // What the evaluator folded wins where it folded anything:
+                    // `6 * 7` is a 42 in the image and an arithmetic tree here,
+                    // and the back end can write the first and not the second.
+                    // Where it folded nothing, this is what there is.
+                    if folded.is_none() {
+                        let TTIRItemKind::Global { init, .. } =
+                            &mut self.out.items[made].kind
+                        else {
+                            continue;
+                        };
+                        *init = Some(held);
+                    }
+                }
+
                 TIRItemKind::Impl { generics, ty, for_ty, members, .. } => {
                     self.open_regions(&generics);
                     self.close_regions();

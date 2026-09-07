@@ -1472,3 +1472,80 @@ fn a_str_global_holds_the_bytes_it_was_written_with() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- A global that holds more than one number ------------------------------------
+
+// A structure, an array and a tuple in the data segment, and every one of them
+// used to be noughts.
+//
+// Only a folded *literal* was ever written into a global's image, so
+// `Point { x: 3, y: 4 }` reached the segment as sixteen zero bytes and a program
+// reading it was told nothing at all -- the same silence a `str` global had, and
+// the same shape of wrong answer.
+//
+// The cause was one thing and it cost three: a global's initialiser was never
+// lowered as an expression. So nothing about it was type checked either, and a
+// `gc` global got a handle of nought. Walking it in the `bodies` pass answers
+// all three, and this is the half a running program can see.
+#[test]
+fn a_global_holds_the_aggregate_it_was_written_with() {
+    let dir = std::env::temp_dir().join(format!("fortec-aggg-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("aggg.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::{int, text};\n\
+         \n\
+         struct Point { pub x: i64, pub y: i64 }\n\
+         struct Held { pub tag: i64, pub at: Point, pub name: str }\n\
+         \n\
+         var p: Point = Point { x: 3, y: 4 }\n\
+         var a: i64[4] = [7, 8, 9, 10]\n\
+         var t: (i64, i64) = (11, 12)\n\
+         // Nested, and with a `str` inside it -- so the relocation has to land\n\
+         // at an offset rather than at the front.\n\
+         var deep: Held = Held { tag: 1, at: Point { x: 5, y: 6 }, name: \"held\" }\n\
+         // And the folding evaluator's answer still wins where it folds.\n\
+         var folded: i64 = 6 * 7\n\
+         \n\
+         %test\n\
+         fn a_structure_holds_its_fields() {\n\
+         \x20   assert_eq(int(p.x), int(3), \"the first\")\n\
+         \x20   assert_eq(int(p.y), int(4), \"and the second, at its offset\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn an_array_holds_its_elements() {\n\
+         \x20   assert_eq(int(a[0]), int(7), \"the first\")\n\
+         \x20   assert_eq(int(a[3]), int(10), \"and the last, at its stride\")\n\
+         \x20   assert_eq(int(t.0), int(11), \"a tuple is a structure numbered\")\n\
+         \x20   assert_eq(int(t.1), int(12), \"and its second\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_inside_another_holds_too() {\n\
+         \x20   assert_eq(int(deep.tag), int(1), \"the field before it\")\n\
+         \x20   assert_eq(int(deep.at.y), int(6), \"a structure inside a structure\")\n\
+         \x20   assert_eq(text(deep.name), text(\"held\"), \"and a `str` after it\")\n\
+         \x20   assert_eq(int(folded), int(42), \"what the evaluator folded\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_global_is_still_a_place() {\n\
+         \x20   p = Point { x: 30, y: 40 }\n\
+         \x20   assert_eq(int(p.x), int(30), \"written over\")\n\
+         \x20   assert_eq(int(a[0]), int(7), \"and the one beside it is untouched\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "aggg");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a global was meant to hold its fields:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}
