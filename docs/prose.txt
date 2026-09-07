@@ -2373,6 +2373,28 @@ answer is not obvious from the rules alone.
     "PayloadAddr" says where it is, which is the pair "Field" and "FieldAddr"
     already were -- so a match through a reference is the address-giving half
     of each pair and the same tests around it.
+  - A slot whose address an inlined call holds stays in the frame, which it did
+    not -- and what that was is a wrong answer at "-O2" and above and nowhere
+    else, which is the level everything is built at.
+
+    "opt::inline" makes a call's answer with a phi over the blocks that
+    returned one. So a callee that gives back a reference it was handed puts
+    the *caller's own address* in a phi, and "sir::promote" -- whose one rule
+    is that a slot comes out when its address never goes anywhere but the
+    "from" of a load or the "to" of a store -- read every instruction and both
+    terminators looking for one that escapes, and read no phis. There were
+    none carrying an address until inlining ran: the ones "promote" makes are
+    made after it, and the ones the lowering makes carry values rather than
+    places. So "f(&x)" written out promoted "x" out from under the phi, and
+    what was left was a load from a register nothing had written.
+
+    Worth saying what did *not* find it. Every pass above the SIR was right
+    about the program, so nothing that reads a tree could have. The SIR that
+    came out is not in SSA form and says so -- "sir::fixture::sound" is the
+    check and it is a test fixture, run by the tests of the passes and never
+    on a real compilation, so it was there to be asked and nobody asked it.
+    Whether it should run on every build is a question about what a compiler
+    owes its own output and is not answered here.
   - An address is a word, and the four instructions that compute one now say
     so. They did not: each named its answer's register at the *definition's*
     width, and that is the same number for every type held by its address

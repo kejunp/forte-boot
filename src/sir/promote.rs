@@ -102,6 +102,20 @@ fn promotable(body: &SIRBody, owners: &HashMap<SIRValueId, SIRSlotId>) -> Vec<bo
         }
     };
     for block in &body.blocks {
+        // An address carried in by a phi is an address that came from
+        // somewhere this pass is not looking, so the slot behind it does not
+        // come out. There was no such phi to find until `opt::inline` ran: the
+        // ones this pass makes are made after it, and the ones the lowering
+        // makes carry values and not places. A call written out puts the
+        // *argument* in a phi -- that being where a callee's answer is made --
+        // so `f(&x)` inlined is `&x` in a phi, and `x` was promoted out from
+        // under it. What came of that was a load from a register nothing had
+        // written, at `-O2` and above and nowhere else.
+        for phi in &block.phis {
+            for (_, held) in &phi.edges {
+                keep(held, &mut out);
+            }
+        }
         for inst in &block.insts {
             match &inst.kind {
                 // The two uses that are not an escape. A load reads what is
@@ -116,9 +130,9 @@ fn promotable(body: &SIRBody, owners: &HashMap<SIRValueId, SIRSlotId>) -> Vec<bo
                 }
             }
         }
-        // An address that leaves by an edge is an address this pass cannot
-        // follow. Neither terminator can carry one out of a program that type
-        // checks, and saying so costs two lines.
+        // An address that leaves by a terminator, which is the other way one
+        // crosses an edge. Neither terminator can carry one out of a program
+        // that type checks, and saying so costs two lines.
         match &block.term {
             SIRTerm::Branch { cond, .. } => keep(cond, &mut out),
             SIRTerm::Return(Some(value)) => keep(value, &mut out),

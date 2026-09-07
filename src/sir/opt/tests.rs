@@ -204,3 +204,38 @@ const EVERYTHING: &str = "struct Range<T> { pub lo: T, pub hi: T }\n\
 
 // Nothing at all, which is what `-O0` is for: what comes out is what the
 // lowering and the promotion made of the source.
+
+// ---- What an inlined call leaves behind ----------------------------------------
+
+// A slot whose address is handed to a fn that is written out does not come out
+// of the frame.
+//
+// `opt::inline` makes the call's answer with a *phi* over the blocks that
+// returned one -- and where the callee gives back a reference it was handed,
+// what that phi carries is the caller's own address. `promote` reads every
+// instruction and both terminators looking for an address that escapes, and
+// read no phis: there were none carrying an address until `inline` ran, the
+// ones `promote` itself makes being made after it, and the ones the lowering
+// makes carrying values rather than places.
+//
+// So `f(&x)` written out promoted `x` out from under the phi, and what was
+// left was a load from a register nothing had written. Correct at `-O0` and
+// `-O1` and wrong at `-O2` and above, which is the level everything is built
+// at -- `src/tests.rs` is where that is asserted by running one.
+#[test]
+fn a_slot_whose_address_an_inlined_call_holds_stays_in_the_frame() {
+    let (program, stats) = compiled(
+        "fn r(n: &i64): &i64 { n }\n\
+         fn main(): i64 {\n\
+         \x20   let x: i64 = 7\n\
+         \x20   let h = r(&x)\n\
+         \x20   h + 0\n\
+         }\n",
+    );
+    assert!(stats.inlined > 0, "the call was meant to be written out");
+    // Somewhere in what came out there is still a frame to load from. Without
+    // this the whole program holds no slot at all and the load reads a
+    // register nothing wrote.
+    let held: usize = program.bodies.iter().map(|b| b.slots.len()).sum();
+    assert!(held > 0, "the slot was meant to stay in the frame\n{:#?}", program.bodies);
+}

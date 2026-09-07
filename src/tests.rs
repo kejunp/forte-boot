@@ -1970,6 +1970,73 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- What a written-out call leaves behind ------------------------------------------
+
+// A fn that gives back a reference it was handed, called and then read through.
+//
+// It was a wrong answer at `-O2` and above, and only there. `opt::inline` makes
+// a call's answer with a phi over the blocks that returned one, so a callee
+// that gives back a reference it was handed puts the *caller's own address* in
+// a phi -- and `promote` read every instruction and both terminators looking
+// for an address that escapes and read no phis. So the slot came out from under
+// the phi and what was left was a load from a register nothing had written.
+//
+// Every program here is built at the level it happened at, so what this asserts
+// is what nothing else did: the same answer at every level. A test that only
+// checked the tree would have passed, the tree being right; the SIR was not.
+#[test]
+fn a_call_that_gives_back_a_reference_is_written_out_soundly() {
+    let dir = std::env::temp_dir().join(format!("fortec-inref-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("inref.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         struct B { pub n: i64 }\n\
+         \n\
+         // The shape: what comes back is what went in, so the phi the\n\
+         // inlining makes carries the caller's own address.\n\
+         fn same(n: &i64): &i64 { n }\n\
+         fn whole(b: &B): &B { b }\n\
+         // And one with two ways back, which is a phi with two edges.\n\
+         fn pick(c: bool, a: &i64, b: &i64): &i64 { if c { a } else { b } }\n\
+         \n\
+         %test\n\
+         fn a_reference_handed_in_and_back_reads_what_it_points_at() {\n\
+         \x20   let x: i64 = 7\n\
+         \x20   let h = same(&x)\n\
+         \x20   assert_eq(&(h + 0), &7, \"read through what came back\")\n\
+         \x20   // Straight through, with nothing to bind it to.\n\
+         \x20   assert_eq(&(same(&x) + 0), &7, \"and without a name\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_struct_handed_in_and_back_is_reached_into() {\n\
+         \x20   let b = B { n: 9 }\n\
+         \x20   assert_eq(&whole(&b).n, &9, \"a field of what came back\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn two_ways_back_are_two_edges_of_one_phi() {\n\
+         \x20   let x: i64 = 3\n\
+         \x20   let y: i64 = 4\n\
+         \x20   assert_eq(&(pick(true, &x, &y) + 0), &3, \"the first\")\n\
+         \x20   assert_eq(&(pick(false, &x, &y) + 0), &4, \"and the second\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "inref");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a written-out call was meant to be sound:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- A value of no bytes ------------------------------------------------------------
 
 // A struct with no fields, whose *address* is a word like any other.
