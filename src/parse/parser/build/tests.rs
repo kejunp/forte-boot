@@ -379,9 +379,16 @@ fn a_signature_without_a_body_has_none() {
 }
 
 #[test]
-fn a_type_is_read_from_the_inside_out() {
-    // `x: i32[8][]` is a run of arrays of 8.
-    let (p, stmts) = statements("    let x: i32[8][] = y;");
+fn a_type_reads_its_suffixes_outermost_first() {
+    // "Suffixes read left to right, outermost first, which is the order the
+    // indexing that undoes them reads in" (§2). So `i32[][8]` is a run of
+    // arrays of eight -- the `[]` is written first and is the outer of the two
+    // -- and `i32[8][]` would be eight things of no size and is not a type.
+    //
+    // They were the other way round here, which read every such type
+    // backwards. Nothing in the tree wrote one, so what it cost was the two
+    // spellings swapping.
+    let (p, stmts) = statements("    let x: i32[][8] = y;");
     let ty = match &p.get_node(stmts[0]).kind {
         ASTNodeKind::Variable { ty: Some(id), intro, .. } => {
             assert_eq!(*intro, ASTVariableIntro::Let);

@@ -2913,14 +2913,23 @@ answer is not obvious from the rules alone.
     what it was made from, so a container of them wants a "gc" of one, which
     is a shape neither word has been asked to make yet.
 
-    And an <array_suffix> nests the other way round from the way section 2
-    says it does. "Suffixes read left to right, outermost first" is written
-    there and "i32[3][2] is three arrays of two, an a[i] of one is an
-    i32[2]"; what the parser builds is two arrays of three, an "a[i]" of one
-    being an "i32[3]". Which is C's spelling and Rust's read backwards, so it
-    is the parser that is wrong and not the prose. Nothing depends on it
-    today beyond which of "i32[][3]" and "i32[3][]" the rule above refuses --
-    it refuses the array of runs either way, and the two spellings swap.
+    An <array_suffix> nested the other way round from the way section 2 says
+    it does, and does not now. "Suffixes read left to right, outermost first"
+    is written there and "i32[3][2] is three arrays of two, an a[i] of one is
+    an i32[2]"; what the parser built was two arrays of three. That is C's
+    spelling and Rust's read backwards, so it was the parser that was wrong
+    and not the prose. Nothing in the tree wrote such a type, so what it cost
+    was the two spellings "i32[][3]" and "i32[3][]" swapping -- the first is a
+    view of rows of three and the second is three things of no size, and the
+    rule above refused whichever of them was the array of runs.
+
+    Spelling one wanted the same change. A type was written as its element
+    with the bracket hung on the end of what that came to, which gives the
+    chain inside out once the suffixes nest the way they are written: an
+    "i32[3][2]" has an "i32[2]" for an element and came back as an
+    "i32[2][3]", which is a type and not the one. The suffixes are gathered
+    before any of them is printed now, so a message reads back what somebody
+    typed -- and a mangled name does too, that being the same spelling.
   - Where a program begins is settled, and what it is handed is settled now
     too. "main" at the top of the root module, taking nothing, its integer
     answer the exit status and everything else exiting zero (section 1).

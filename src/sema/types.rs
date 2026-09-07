@@ -555,8 +555,7 @@ impl Types {
             ),
             Ty::Ptr(inner) => format!("ptr {}", self.spell(*inner, name)),
             Ty::GC(inner) => format!("gc {}", self.spell(*inner, name)),
-            Ty::Array { elem, len } => format!("{}[{}]", self.spell(*elem, name), len),
-            Ty::Run(elem) => format!("{}[]", self.spell(*elem, name)),
+            Ty::Array { .. } | Ty::Run(_) => self.suffixed(id, name),
             Ty::Tuple(members) => format!("({})", self.spell_all(members, name)),
             Ty::Fn { uses, params, ret, is_unsafe } => format!(
                 "{}{}fn({}): {}",
@@ -578,6 +577,34 @@ impl Types {
             Ty::Dyn(item) => format!("dyn {}", name(*item)),
             Ty::Error => "?".to_string(),
         }
+    }
+
+
+    // A type written as its base and the suffixes hanging off it, in the order
+    // they were written.
+    //
+    // Gathered before any of it is printed, because suffixes read outermost
+    // first (§2) and spelling the element and hanging the bracket on the end
+    // of what came back gives the chain inside out: an `i32[3][2]` is an array
+    // of three arrays of two, its element spells `i32[2]`, and a bracket on
+    // the end of that reads `i32[2][3]` -- which is a type, and not the one.
+    fn suffixed(&self, id: TyId, name: &dyn Fn(TTIRItemId) -> String) -> String {
+        let mut out = String::new();
+        let mut here = id;
+        loop {
+            match &self.arena[here] {
+                Ty::Array { elem, len } => {
+                    out.push_str(&format!("[{}]", len));
+                    here = *elem;
+                }
+                Ty::Run(elem) => {
+                    out.push_str("[]");
+                    here = *elem;
+                }
+                _ => break,
+            }
+        }
+        format!("{}{}", self.spell(here, name), out)
     }
 
     fn spell_all(&self, ids: &[TyId], name: &dyn Fn(TTIRItemId) -> String) -> String {

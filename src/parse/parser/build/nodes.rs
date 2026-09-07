@@ -214,7 +214,19 @@ impl Parser {
     pub(super) fn fold_suffixes(&mut self, base: ASTNodeId, suffixes: ASTNodeId) -> ASTNode {
         let mut built = self.pass(base);
         let mut elem = base;
-        for suffix in self.list(suffixes) {
+        // Right to left, so that the *first* suffix written is the outermost.
+        // "Suffixes read left to right, outermost first, which is the order
+        // the indexing that undoes them reads in" (§2) -- so `i32[3][2]` is
+        // three arrays of two and an `a[i]` of one is an `i32[2]`, which is
+        // C's reading and Rust's.
+        //
+        // Left to right until now, which made it two arrays of three and read
+        // every such type backwards. Nothing in the tree wrote one, so what it
+        // cost was the two spellings `&i32[][3]` and `i32[3][]` swapping:
+        // section 2 gives the first as a view of rows of three and the second
+        // as three things of no size, and the compiler had them the other way
+        // about.
+        for suffix in self.list(suffixes).into_iter().rev() {
             let mut node = self.at(self.kind(suffix).clone(), base);
             match &mut node.kind {
                 ASTNodeKind::Array { elem: under, .. } => *under = elem,

@@ -428,8 +428,26 @@ impl Mangler {
             Ty::Ptr(inner) => format!("ptr {}", self.spell(*inner, p)),
             Ty::GC(inner) => format!("gc {}", self.spell(*inner, p)),
 
-            Ty::Array { elem, len } => format!("{}[{}]", self.spell(*elem, p), len),
-            Ty::Run(elem) => format!("{}[]", self.spell(*elem, p)),
+            // Outermost first, as it is written and as `Types::spell` says
+            // it: a symbol reads back as the type somebody typed.
+            Ty::Array { .. } | Ty::Run(_) => {
+                let mut out = String::new();
+                let mut here = id;
+                loop {
+                    match &p.types[here] {
+                        Ty::Array { elem, len } => {
+                            out.push_str(&format!("[{}]", len));
+                            here = *elem;
+                        }
+                        Ty::Run(elem) => {
+                            out.push_str("[]");
+                            here = *elem;
+                        }
+                        _ => break,
+                    }
+                }
+                format!("{}{}", self.spell(here, p), out)
+            }
             Ty::Tuple(members) => format!("({})", self.spell_all(members, p)),
 
             Ty::Fn { uses, params, ret, is_unsafe } => format!(

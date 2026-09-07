@@ -253,10 +253,9 @@ fn a_type_nothing_holds_is_refused_where_it_is_written() {
         // `&Vec<dyn Shape>` is a reference to the `Vec`.
         ("struct V<T> {\n    pub t: T,\n}\nfn f(v: &V<dyn Shape>): i32 { 0 }\n", "trait object"),
         // And an element, since "an element must have a size" (§2). This is
-        // the array *of* runs -- the parser nests a suffix the other way
-        // round from the way §2 says it does, so the spelling §2 gives for
-        // this is the other one (§8).
-        ("fn f(a: &i32[][3]): i32 { 0 }\n", "is a run"),
+        // the array *of* runs: the `[3]` is written first and is the outer of
+        // the two, so what is inside it is a run.
+        ("fn f(a: &i32[3][]): i32 { 0 }\n", "is a run"),
     ] {
         let out = refused(&format!("{}{}", with, source));
         assert!(out.contains(said), "{}\n{}", source, out);

@@ -485,3 +485,35 @@ fn a_value_of_neither_type_is_still_refused() {
     );
     assert!(said.contains("cannot be assigned to"), "{}", said);
 }
+
+// ---- Suffixes read outermost first --------------------------------------------
+
+// "Suffixes read left to right, outermost first, which is the order the
+// indexing that undoes them reads in: `i32[3][2]` is three arrays of two, an
+// `a[i]` of one is an `i32[2]`" (§2). The parser folded them the other way,
+// which read every such type backwards -- and nothing in the tree wrote one, so
+// what it cost was the two spellings `i32[][3]` and `i32[3][]` swapping.
+#[test]
+fn a_suffix_written_first_is_the_outer_one() {
+    // What an element of one is says which way it nests, and it is the only
+    // thing that does.
+    let out = refused("fn f(a: &i32[3][2]): i32 { a[0] }\n");
+    assert!(out.contains("gives back `i32[2]`"), "{}", out);
+    // A view of rows of three, which is what §2 gives for this spelling.
+    clean("fn f(a: &i32[][3]): i32 { 0 }\n");
+    // And the other way round is three things of no size, which is not a type.
+    let out = refused("fn f(a: &i32[3][]): i32 { 0 }\n");
+    assert!(out.contains("`i32[]` is a run and nothing holds one"), "{}", out);
+}
+
+// And a type reads back the way it was written, which wanted the same change:
+// spelling the element and hanging the bracket on the end of what came back
+// gave the chain inside out, so an `i32[3][2]` came back as an `i32[2][3]` --
+// a type, and not the one.
+#[test]
+fn a_type_is_spelled_the_way_it_was_written() {
+    let out = refused("fn f(a: &i32[3][2]): i32 { a }\n");
+    assert!(out.contains("`&i32[3][2]`"), "{}", out);
+    let out = refused("fn f(a: &i32[][3]): i32 { a }\n");
+    assert!(out.contains("`&i32[][3]`"), "{}", out);
+}
