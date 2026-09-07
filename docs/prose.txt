@@ -2373,6 +2373,25 @@ answer is not obvious from the rules alone.
     "PayloadAddr" says where it is, which is the pair "Field" and "FieldAddr"
     already were -- so a match through a reference is the address-giving half
     of each pair and the same tests around it.
+  - A table built for a generic impl names the instance, which it did not. The
+    entry a table holds is a symbol, and "mir::mono" works out what the impl's
+    parameter stands for by matching the receiver it was handed against the
+    receiver the impl declared -- "&Box<i64>" against "&Box<A>" is the whole of
+    what makes it the i64 one. It handed that over as a parameter *list*, and a
+    list is paired against a declaration by length, so a member taking anything
+    besides its receiver never matched: the table named the declaration, and
+    the linker had nothing to point it at.
+
+    So "impl<T: Show> Show for Box<T>" did not link, "show" taking a sink
+    beside its receiver, and neither did anything else with a member of more
+    than one parameter. What a table entry knows is the receiver and only the
+    receiver -- the member's own parameters are the *trait's* and say nothing
+    about the impl's -- and saying that is the fix.
+
+    Nothing below the linker could have found it. Every symbol in the table was
+    spelled and one of them was spelled for a type no body was ever made for,
+    which is a question only something reading the whole program at once can
+    ask.
   - A slot whose address an inlined call holds stays in the frame, which it did
     not -- and what that was is a wrong answer at "-O2" and above and nowhere
     else, which is the level everything is built at.

@@ -1970,6 +1970,77 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A table built for a generic impl ------------------------------------------------
+
+// `impl<A: T> T for Box<A>`, made into a trait object.
+//
+// The entry a table holds is a *symbol*, and for a generic impl it has to be
+// the instance's -- `mir::mono` works out what `A` stands for by matching the
+// receiver it was handed against the receiver the impl declared. It handed
+// that over as a one-item parameter list, and `recover` pairs a list against
+// the member's declared parameters by *length*: a member taking anything
+// besides its receiver never matched, so the table named the declaration and
+// the linker had nothing to point it at.
+//
+// So a trait whose member takes one argument is the whole of the test, and
+// nothing below the linker could have caught it: every symbol in the table was
+// spelled, and one of them was spelled for a type no body was made for.
+#[test]
+fn a_table_for_a_generic_impl_names_the_instance() {
+    let dir = std::env::temp_dir().join(format!("fortec-gentab-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("gentab.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         trait T {\n\
+         \x20   // Two parameters, which is what it took: a member of one\n\
+         \x20   // matched by length and this one never did.\n\
+         \x20   fn f(&self, k: i64): i64\n\
+         }\n\
+         \n\
+         struct Box<A> { pub held: A }\n\
+         impl<A: T> T for Box<A> { fn f(&self, k: i64): i64 { self.held.f(k) * 2 } }\n\
+         impl T for i64 { fn f(&self, k: i64): i64 { self + k } }\n\
+         impl T for bool { fn f(&self, k: i64): i64 { k * 10 } }\n\
+         \n\
+         fn by_table(s: &dyn T): i64 { s.f(1) }\n\
+         \n\
+         %test\n\
+         fn a_generic_impl_answers_through_a_table() {\n\
+         \x20   let b: Box<i64> = Box { held: 20 }\n\
+         \x20   assert_eq(&by_table(&b), &42, \"the i64 instance\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_instance_is_not_another() {\n\
+         \x20   // Two of them, so a table naming the declaration would be one\n\
+         \x20   // symbol where two bodies are wanted.\n\
+         \x20   let a: Box<i64> = Box { held: 20 }\n\
+         \x20   let b: Box<bool> = Box { held: true }\n\
+         \x20   assert_eq(&by_table(&a), &42, \"one\")\n\
+         \x20   assert_eq(&by_table(&b), &20, \"and the other\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_inside_another_is_the_same_question_twice() {\n\
+         \x20   let held: Box<Box<i64>> = Box { held: Box { held: 20 } }\n\
+         \x20   assert_eq(&by_table(&held), &84, \"nested\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "gentab");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a generic impl was meant to answer through a table:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- What a written-out call leaves behind ------------------------------------------
 
 // A fn that gives back a reference it was handed, called and then read through.

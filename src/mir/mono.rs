@@ -102,6 +102,13 @@ pub struct Made {
 enum Said {
     Whole(TyId),
     Parts { params: Vec<TyId>, ret: Option<TyId> },
+    // The receiver and nothing else, which is all a table entry knows. The
+    // member's own parameters are the *trait's* and say nothing about the
+    // impl's, so what fills `A` in is `&Box<i64>` against a declared
+    // `&Box<A>` -- and handing that over as one `Parts` was handing over a
+    // list whose length disagreed with the declaration's, which `recover`
+    // reads as a shape it cannot pair up.
+    Receiver(TyId),
     Nothing,
 }
 
@@ -549,9 +556,9 @@ impl<'a> Mono<'a> {
             // for: `&Box<i64>` against a declared `&Box<T>` is the whole of
             // what makes this the `i64` instance. `declaration` both names it
             // and asks for the body, which is what keeps a member nothing else
-            // calls from being a symbol the linker never saw.
-            let said = Said::Parts { params: vec![held], ret: None };
-            out.push(self.declaration(answered, said, job)?);
+            // calls from being a symbol the linker never saw -- and it was
+            // one, for every member that takes anything besides its receiver.
+            out.push(self.declaration(answered, Said::Receiver(held), job)?);
         }
         Some(out)
     }
@@ -725,6 +732,13 @@ impl<'a> Mono<'a> {
         match said {
             Said::Nothing => {}
             Said::Whole(actual) => self.against(decl, *actual, &mut found),
+            Said::Receiver(actual) => {
+                let Some(Ty::Fn { params: declared, .. }) = self.p.types.get(decl) else {
+                    return Vec::new();
+                };
+                let Some(&first) = declared.first() else { return Vec::new() };
+                self.against(first, *actual, &mut found);
+            }
             Said::Parts { params, ret } => {
                 let Some(Ty::Fn { params: declared, ret: declared_ret, .. }) =
                     self.p.types.get(decl)
