@@ -1876,3 +1876,64 @@ fn a_view_answers_how_many_it_names() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 1 test"), "{}", said);
 }
+
+// ---- A cast of a reference -------------------------------------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3) -- and a cast had been the one
+// thing that took the reference itself. `r as i64` on a `&i32` widened the
+// *address*, and said nothing about it.
+//
+// What that looked like is worth writing down, because it is why this is a test
+// and not a note: an assertion reported `left: 140721311482340` where a 5 was
+// meant to be. The value was never wrong; the thing being widened was.
+//
+// A `ptr` is deliberately not read through, and the second test is that half:
+// "`p as i64`, `n as ptr u8` and `p as ptr i32` all lower to a conversion of the
+// width they are" (§8), so an address is exactly what a `ptr` cast is about.
+#[test]
+fn a_reference_is_cast_as_the_place_it_refers_to() {
+    let dir = std::env::temp_dir().join(format!("fortec-cast-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("cast.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import mem::room;\n\
+         \n\
+         fn widened(r: &i32): i64 { r as i64 }\n\
+         fn narrowed(r: &i64): i32 { r as i32 }\n\
+         fn floated(r: &i64): f64 { r as f64 }\n\
+         \n\
+         %test\n\
+         fn a_cast_reads_through_the_reference() {\n\
+         \x20   let small: i32 = 7\n\
+         \x20   let big: i64 = 300\n\
+         \x20   assert_eq(&widened(&small), &7, \"the value and not its address\")\n\
+         \x20   assert_eq(&narrowed(&big), &300, \"and the other way round\")\n\
+         \x20   assert_eq(&floated(&big), &300.0, \"and into a float\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_pointer_is_still_cast_as_the_address_it_is() {\n\
+         \x20   unsafe let p = room(16) as ptr i64\n\
+         \x20   unsafe p[0] = 9\n\
+         \x20   // Out to a number and back, which is only a round trip if what\n\
+         \x20   // went out was the address.\n\
+         \x20   unsafe let held = p as i64\n\
+         \x20   unsafe let back = held as ptr i64\n\
+         \x20   unsafe let read = back[0]\n\
+         \x20   assert_eq(&read, &9, \"a `ptr` keeps its address\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "cast");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a cast was meant to read through a reference:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}

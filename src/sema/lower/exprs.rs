@@ -281,6 +281,25 @@ impl<'a> Lowerer<'a> {
             TIRExprKind::Cast { value, ty } => {
                 let v = self.expr(value);
                 let to = self.ty(ty);
+                // A reference is cast as the place it refers to is, which is
+                // the rule §3 gives for everything else one is: read, called,
+                // indexed, reached into. A cast had been the one thing that
+                // took the reference itself -- so `r as i64` on a `&i32` was
+                // the *address* widened, and it said nothing about it. What
+                // that looked like was an assertion reporting `left:
+                // 140721311482340` where a 5 was meant to be.
+                //
+                // To a primitive only. A `ptr` is deliberately not read
+                // through -- "`p as i64`, `n as ptr u8` and `p as ptr i32` all
+                // lower to a conversion of the width they are" (§8), and an
+                // address is exactly what a `ptr` cast is about; and a `&T as
+                // ptr T` is left alone for the same reason, `addr` being how
+                // an address is asked for by name.
+                let held = self.types.shallow(to);
+                let v = match self.types.get(held) {
+                    Ty::Prim(_) => self.read_through(v),
+                    _ => v,
+                };
                 self.make(TTIRExprKind::Cast(v), to, id)
             }
 

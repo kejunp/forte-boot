@@ -904,7 +904,11 @@ said here is which of the three a trait wants of the impls that answer it.
 
 A reference is *read* as what it refers to where the value is wanted, which is
 the last of the four things §3 says it stands for: "f(&b)" hands over the "b",
-"return &b" gives it back, and "let n: i64 = &b" binds it. A primitive only,
+"return &b" gives it back, and "let n: i64 = &b" binds it. A cast reads through
+one too — "r as i64" on a "&i32" is the number widened and not the address,
+which is what it had been. A "ptr" is not read through and deliberately: an
+address is exactly what a "ptr" cast is about (§8), and "addr" is how one is
+asked for by name. A primitive only,
 for now — every primitive copies, so nothing here has to ask what moving out of
 a reference would mean, and that question is the borrow checker's rather than
 this rule's.
