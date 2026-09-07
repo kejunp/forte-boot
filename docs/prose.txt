@@ -210,7 +210,10 @@ the six:
 
 "%repr", "%derive" and "%cfg" are the names to expect next, and none of them
 is reserved: each needs something the language has not got — a layout story,
-traits with code behind them, and a configuration to ask about.
+and a configuration to ask about. Traits with code behind them was the third
+and is no longer missing, which is what let "std/fmt.ft" become four routines
+where it was twenty: a value is asked what it looks like rather than told at
+the call.
 
 Where a program begins. A suite is compiled from the one file named on the
 command line, that file's module is the root, and the program starts at a fn
@@ -1390,6 +1393,25 @@ where it could not be, the method answers. So a container declaring "len"
 beside a "len()" is written the way it reads: "b.len" is the field and
 "b.len()" is the method, and the only call the method takes from the field is
 one the field could never have answered.
+
+A run answers "len", which is how many it names. "The length moving out of the
+type and into the value" (§3) is what a view is, and the value has been two
+words ever since — where the elements begin and how many there are — with only
+the first of them reachable. So a routine over a view took a count beside it
+and was trusted to be told the truth, and now it does not:
+
+    fn summed(xs: &i64[]): i64 {
+        var t = 0
+        var i = 0
+        while i < xs.len {
+            t = t + xs[i]
+            i = i + 1
+        }
+        t
+    }
+
+One field and not two. Where the elements *begin* is an address, and handing
+one out is what "ptr" is for and what an index already does without it.
 
 A tuple member is counted rather than named, so what follows the "." is the
 number: "p.0" is the first of them and "p.1" the second. It is the same "."

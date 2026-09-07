@@ -77,8 +77,14 @@ impl<'a> Lowerer<'a> {
                 self.expr(field.value);
                 continue;
             };
-            let value = self.expr(field.value);
-            let (found, want) = (self.out.exprs[value].ty, declared[index].1);
+            // What the field was declared as is what is expected of the value
+            // put in it, so a branch inside knows it and the conversions
+            // happen here as they do at a call: a `&T[8]` becomes a view, a
+            // `&Sq` becomes a `&dyn Shape`, a `T` becomes a `gc T`, and a
+            // reference reads as what it refers to.
+            let want = declared[index].1;
+            let value = self.expecting(field.value, want);
+            let found = self.out.exprs[value].ty;
             if self.types.unify(found, want).is_err() {
                 let (found, want) = (self.spell(found), self.spell(want));
                 self.errors.push(

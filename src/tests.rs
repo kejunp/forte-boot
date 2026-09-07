@@ -380,9 +380,9 @@ fn a_program_that_cannot_go_on_says_so_and_stops() {
          }\n\
          \n\
          fn main(): i32 {\n\
-         \x20   println(\"BEFORE\")\n\
+         \x20   println(\"BEFORE\", &[])\n\
          \x20   let held = checked(-1)\n\
-         \x20   println(\"AFTER\")\n\
+         \x20   println(\"AFTER\", &[])\n\
          \x20   held as i32\n\
          }\n",
     )
@@ -1300,21 +1300,23 @@ fn a_program_reads_what_it_was_started_with() {
     let root = dir.join("args.ft");
     std::fs::write(
         &root,
-        "import fmt::{println1, println2, int, text};\n\
+        "import fmt::println;\n\
          import env::{count, arg, get, has};\n\
          \n\
          fn main(): i64 {\n\
-         \x20   println1(\"count={}\", int(count()))\n\
+         \x20   println(\"count={}\", &[&count()])\n\
          \x20   var i = 1\n\
          \x20   while i < count() {\n\
-         \x20       println2(\"arg{}={}\", int(i), text(arg(i)))\n\
+         \x20       println(\"arg{}={}\", &[&i, &arg(i)])\n\
          \x20       i = i + 1\n\
          \x20   }\n\
          \x20   // Past the end, which is empty and not the next thing along.\n\
-         \x20   println1(\"past=[{}]\", text(arg(count())))\n\
-         \x20   println1(\"held={}\", text(get(\"FORTEC_HELD\")))\n\
-         \x20   println1(\"has={}\", int(if has(\"FORTEC_HELD\") { 1 } else { 0 }))\n\
-         \x20   println1(\"missing={}\", int(if has(\"FORTEC_MISSING\") { 1 } else { 0 }))\n\
+         \x20   println(\"past=[{}]\", &[&arg(count())])\n\
+         \x20   println(\"held={}\", &[&get(\"FORTEC_HELD\")])\n\
+         \x20   let held: i64 = if has(\"FORTEC_HELD\") { 1 } else { 0 }\n\
+         \x20   println(\"has={}\", &[&held])\n\
+         \x20   let gone: i64 = if has(\"FORTEC_MISSING\") { 1 } else { 0 }\n\
+         \x20   println(\"missing={}\", &[&gone])\n\
          \x20   0\n\
          }\n",
     )
@@ -1758,6 +1760,119 @@ fn a_reference_is_read_as_what_it_refers_to() {
     let Some((ok, said)) = held else { return };
 
     assert!(ok, "a reference was meant to read as its value:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 1 test"), "{}", said);
+}
+
+// ---- One `println`, and one of everything else -----------------------------------
+
+// Twenty printing routines became four, and the tag a caller wrote became a
+// body the value answers with.
+//
+// Both halves were the same missing thing and §8 named it: "traits with code
+// behind them". Without one there was no way to ask a value what it was, so
+// every argument was wrapped at the call -- `int(x)`, `text(s)` -- and no way
+// to take "a format string and whatever follows it", so the arity was in the
+// name and stopped at four.
+//
+// What this asserts is what only running can say: that each value reached its
+// own `show`, that the count is the view's own length and not something the
+// caller was trusted to get right, and that a `str` and an `i64` in one call
+// come out in the order they were written.
+#[test]
+fn one_println_prints_whatever_it_was_handed() {
+    let dir = std::env::temp_dir().join(format!("fortec-say-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("say.ft");
+    std::fs::write(
+        &root,
+        "import fmt::{println, print, eprintln};\n\
+         \n\
+         fn main(): i64 {\n\
+         \x20   // Nought, one, and more than the old ladder could take.\n\
+         \x20   println(\"none\", &[])\n\
+         \x20   let n: i64 = 5\n\
+         \x20   println(\"one={}\", &[&n])\n\
+         \x20   let s: str = \"text\"\n\
+         \x20   let b: bool = true\n\
+         \x20   let f: f64 = 1.5\n\
+         \x20   println(\"five={} {} {} {} {}\", &[&n, &s, &b, &f, &n])\n\
+         \x20   // A `str` and a number in one call, in the order written.\n\
+         \x20   println(\"{}-{}\", &[&s, &n])\n\
+         \x20   // The other three families are the same routine with a flag.\n\
+         \x20   print(\"nolinebreak \", &[])\n\
+         \x20   println(\"after\", &[])\n\
+         \x20   eprintln(\"to the error stream {}\", &[&n])\n\
+         \x20   0\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran_program(&root, "say");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "printing was meant to work:\n{}", said);
+    assert!(said.contains("none\n"), "{}", said);
+    assert!(said.contains("one=5\n"), "{}", said);
+    assert!(said.contains("five=5 text true 1.5 5\n"), "{}", said);
+    assert!(said.contains("text-5\n"), "{}", said);
+    // `print` ended no line, so the next one runs on from it.
+    assert!(said.contains("nolinebreak after\n"), "{}", said);
+    assert!(said.contains("to the error stream 5\n"), "{}", said);
+}
+
+// ---- A view's own length ---------------------------------------------------------
+
+// "The length moving out of the type and into the value" (§3) is what a view
+// is, and the value has been two words since -- where the elements begin and
+// how many there are -- with only the first of them reachable. So every routine
+// taking a view took a count beside it and was trusted to be told the truth.
+//
+// It is what let the printing above take one parameter rather than two.
+#[test]
+fn a_view_answers_how_many_it_names() {
+    let dir = std::env::temp_dir().join(format!("fortec-vlen-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("vlen.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         fn counted(xs: &i64[]): i64 { xs.len }\n\
+         // And summed by its own length rather than by a number handed beside\n\
+         // it, which is what every routine over a view had to take.\n\
+         fn summed(xs: &i64[]): i64 {\n\
+         \x20   var t = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < xs.len {\n\
+         \x20       t = t + xs[i]\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   t\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_view_knows_how_many_it_names() {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   assert_eq(int(counted(&a)), int(4), \"the whole of it\")\n\
+         \x20   assert_eq(int(counted(&a[1..3])), int(2), \"and a slice of it\")\n\
+         \x20   assert_eq(int(summed(&a)), int(10), \"walked by its own length\")\n\
+         \x20   assert_eq(int(summed(&a[1..3])), int(5), \"and the slice too\")\n\
+         \x20   let none: i64[4] = [9, 9, 9, 9]\n\
+         \x20   assert_eq(int(summed(&none[2..2])), int(0), \"an empty one names none\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "vlen");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a view was meant to know its length:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 1 test"), "{}", said);
 }

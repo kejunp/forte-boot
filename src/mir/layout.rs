@@ -110,8 +110,17 @@ impl<'a> Layouts<'a> {
 
     // Where one field of a structure or a tuple begins.
     pub fn field(&mut self, ty: TyId, index: usize) -> Option<usize> {
+        let word = self.machine.word;
         match self.of(ty)?.shape {
             Shape::Fields(at) => at.get(index).copied(),
+            // A fat value's two words are two fields, and the second of a run
+            // is its length -- which the value has carried since a reference to
+            // an array became a view of it, and which nothing could read.
+            Shape::Fat => match index {
+                0 => Some(0),
+                1 => Some(word),
+                _ => None,
+            },
             _ => None,
         }
     }

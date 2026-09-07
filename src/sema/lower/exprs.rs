@@ -50,6 +50,18 @@ impl<'a> Lowerer<'a> {
             }
 
             TIRExprKind::Unary { op, operand } => {
+                // A `&` is transparent to what is expected of it: `&[&a, &b]`
+                // where a `&(&dyn Show)[]` was wanted has to hand the array
+                // what the reference was told, or the elements never hear it.
+                // The other three take a value and make something else of it,
+                // so what is wanted of the whole says nothing about the part.
+                if let crate::tir::tir_nodes::TIRUnaryOp::Ref(_) = op {
+                    if let Some(Ty::Ref { inner, .. }) =
+                        want.map(|held| self.types.get(held).clone())
+                    {
+                        self.want = Some(inner);
+                    }
+                }
                 let held = self.expr(operand);
                 let inner = self.out.exprs[held].ty;
                 let ty = match op {
@@ -169,7 +181,27 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let c = self.expr(callee);
-                let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
+                // What each parameter is, where the callee says plainly. A
+                // generic one is left alone: what its parameters stand for is
+                // not settled until the call is, and offering a hole as an
+                // expectation would be offering nothing twice. `calling` below
+                // is still where a conversion is committed -- this only lets an
+                // argument that is itself a choice, or an array, hear what was
+                // wanted of it before its parts are worked out.
+                let hints: Vec<Option<TyId>> = match self.types.get(self.out.exprs[c].ty) {
+                    Ty::Fn { params, .. } if !self.types.has_param(self.out.exprs[c].ty) => {
+                        params.iter().map(|&p| Some(p)).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                let made: Vec<TTIRExprId> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &a)| {
+                        self.want = hints.get(i).copied().flatten();
+                        self.expr(a)
+                    })
+                    .collect();
                 let mut made = made;
                 let ty = self.calling(c, &mut made, id);
                 self.make(TTIRExprKind::Call { callee: c, args: made }, ty, id)
@@ -260,29 +292,50 @@ impl<'a> Lowerer<'a> {
             }
 
             TIRExprKind::ArrayLit(elems) => {
-                let made: Vec<TTIRExprId> = elems.iter().map(|&e| self.expr(e)).collect();
-                let elem = match made.first() {
-                    Some(&first) => {
-                        let mut held = self.out.exprs[first].ty;
-                        for &other in &made[1..] {
-                            let ty = self.out.exprs[other].ty;
-                            match self.types.unify(held, ty) {
-                                Ok(one) => held = one,
-                                Err(_) => {
-                                    self.errors.push(
-                                        Diagnostic::error(
-                                            "an array holds one type".to_string(),
-                                            self.at(id),
-                                        )
-                                        .with_label("these are not all one"),
-                                    );
-                                    held = self.types.error();
-                                    break;
-                                }
+                // What each element is expected to be, where anything expects
+                // one: an array of what was wanted, or a run of it.
+                //
+                // It stands as a *virtual first element*, which is what makes
+                // this one rule rather than two. With no expectation `held`
+                // starts empty, the first element fills it and the rest unify
+                // against it -- which is exactly what this did before. With
+                // one, the expectation is what they all unify against, and
+                // each converts to it first. That order is the point:
+                // `&[&a, &b]` where the two are references to different
+                // structs are two types that never agree, and each becoming a
+                // `&dyn Shape` before they are compared is what makes them one.
+                let want = match want.map(|held| self.types.get(held).clone()) {
+                    Some(Ty::Array { elem, .. }) | Some(Ty::Run(elem)) => Some(elem),
+                    _ => None,
+                };
+                let mut made: Vec<TTIRExprId> = Vec::with_capacity(elems.len());
+                let mut held: Option<TyId> = want;
+                for &e in &elems {
+                    self.want = want;
+                    let one = self.expr(e);
+                    let one = self.held_to(one, want);
+                    made.push(one);
+                    let ty = self.out.exprs[one].ty;
+                    match held {
+                        None => held = Some(ty),
+                        Some(first) => match self.types.unify(first, ty) {
+                            Ok(one) => held = Some(one),
+                            Err(_) => {
+                                self.errors.push(
+                                    Diagnostic::error(
+                                        "an array holds one type".to_string(),
+                                        self.at(id),
+                                    )
+                                    .with_label("these are not all one"),
+                                );
+                                held = Some(self.types.error());
+                                break;
                             }
-                        }
-                        held
+                        },
                     }
+                }
+                let elem = match held {
+                    Some(held) => held,
                     None => self.types.fresh(),
                 };
                 let ty = self.types.intern(Ty::Array { elem, len: made.len() as u64 });
@@ -732,6 +785,20 @@ impl<'a> Lowerer<'a> {
             _ => ty,
         };
         let held = self.types.shallow(held);
+        // A run's length, which the value carries and nothing could ask for.
+        // "The length moving out of the type and into the value" (§3) is what a
+        // view is, and the value has been two words since -- where the elements
+        // begin and how many there are -- with only the first of them reachable.
+        //
+        // One field and not two: where the elements *begin* is an address, and
+        // handing one out is what `ptr` is for and what an index already does
+        // without it.
+        if matches!(self.types.get(held), Ty::Run(_)) {
+            return match name {
+                "len" => Some((1, self.types.prim(TIRPrim::I64))),
+                _ => None,
+            };
+        }
         let Ty::Named { item, args, .. } = self.types.get(held).clone() else { return None };
         let TTIRItemKind::Struct { fields, .. } = &self.out.items[item].kind else {
             return None;

@@ -623,58 +623,36 @@ fn emit(how: i64, fmt: *const Str, args: &[&Arg]) {
     }
 }
 
-// The arguments arrive as pointers to copies the caller made, one per
-// parameter, because that is how this compiler hands an aggregate over. A null
-// among them is a caller that disagrees with this file about how many it has,
-// and is dropped rather than followed.
-fn gather<'a>(held: &[*const Arg]) -> Vec<&'a Arg> {
-    held.iter().filter_map(|p| unsafe { p.as_ref() }).collect()
-}
-
-// Five arities, because there is no sixth thing to write. A Forte macro cannot
-// take "a format string and whatever follows it" (see the head of this file),
-// so the arity is in the name on the Forte side and in the symbol here.
+// One entry, and the arity is a length rather than a name.
+//
+// It used to be five, `__rt_print0` through `__rt_print4`, because a Forte
+// macro cannot take "a format string and whatever follows it" and a fn has no
+// variadic form -- so the number was in the symbol. It is in a parameter now:
+// `std/fmt.ft` walks what it was handed, asks each value for its `Arg` through
+// the `Show` trait, and hands over a run of them.
+//
+// A pointer and a count rather than a view, deliberately. A view is two words
+// and this compiler hands every aggregate over as the address of a copy, so a
+// view would be one more indirection to agree about for nothing -- where two
+// plain parameters are two registers and no agreement at all.
+///
+/// # Safety
+/// `fmt` is one `Str` and `args` is `n` `Arg`s, all the caller's, and all of
+/// them live for the length of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt_print0(how: i64, fmt: *const Str) {
-    emit(how, fmt, &[]);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt_print1(how: i64, fmt: *const Str, a: *const Arg) {
-    emit(how, fmt, &gather(&[a]));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt_print2(
-    how: i64,
-    fmt: *const Str,
-    a: *const Arg,
-    b: *const Arg,
-) {
-    emit(how, fmt, &gather(&[a, b]));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt_print3(
-    how: i64,
-    fmt: *const Str,
-    a: *const Arg,
-    b: *const Arg,
-    c: *const Arg,
-) {
-    emit(how, fmt, &gather(&[a, b, c]));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt_print4(
-    how: i64,
-    fmt: *const Str,
-    a: *const Arg,
-    b: *const Arg,
-    c: *const Arg,
-    d: *const Arg,
-) {
-    emit(how, fmt, &gather(&[a, b, c, d]));
+pub unsafe extern "C" fn __rt_print(how: i64, fmt: *const Str, args: *const Arg, n: i64) {
+    let held: Vec<&Arg> = match (args.is_null(), n) {
+        // Nothing to say about the arguments is not nothing to print: a
+        // format string with no `{}` in it is the commonest call there is.
+        (true, _) | (_, 0) => Vec::new(),
+        (false, n) if n > 0 => {
+            unsafe { std::slice::from_raw_parts(args, n as usize) }.iter().collect()
+        }
+        // A negative count is a caller that has lost track of what it holds,
+        // and reading nothing is the only safe answer.
+        _ => Vec::new(),
+    };
+    emit(how, fmt, &held);
 }
 
 #[cfg(test)]

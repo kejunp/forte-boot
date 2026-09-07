@@ -32,6 +32,8 @@
 // the dispatch, and it is written at the call because there is nowhere else to
 // write it.
 
+import vec::{Vec, empty, push};
+
 // One thing to print. The tag says which field means anything; the others are
 // there because a struct has all of its fields whatever it holds.
 //
@@ -85,111 +87,127 @@ pub fn text(s: str): Arg {
 // and a seventh is a call the back end declines to write. Two flags made the
 // four-argument rung one of those, and what it left was a `print4` that printed
 // nothing at all.
-%symbol("__rt_print0")
-fn out0(how: i64, f: str): null;
+// ---- What crosses to the runtime --------------------------------------------
 
-%symbol("__rt_print1")
-fn out1(how: i64, f: str, a: Arg): null;
-
-%symbol("__rt_print2")
-fn out2(how: i64, f: str, a: Arg, b: Arg): null;
-
-%symbol("__rt_print3")
-fn out3(how: i64, f: str, a: Arg, b: Arg, c: Arg): null;
-
-%symbol("__rt_print4")
-fn out4(how: i64, f: str, a: Arg, b: Arg, c: Arg, d: Arg): null;
+// One routine, and the number of arguments is a count rather than part of the
+// name. `how` is the two flags: 1 for the newline, 2 for the error stream.
+//
+// A `ptr Arg` and a length rather than a `&Arg[]`, which is what the runtime
+// asks for and why is written there: a view is two words and every aggregate
+// crosses as an address, so a view would be one more indirection to agree
+// about for nothing.
+%symbol("__rt_print")
+fn out(how: i64, f: str, args: ptr Arg, n: i64): null;
 
 // ---- Printing ---------------------------------------------------------------
 
+// Four routines where there were twenty.
+//
+// The ladder is gone. It was there because a Forte macro has no repetition and
+// a fn has no variadic form, so `print` through `print4` were five spellings of
+// one idea and the arity was in the name -- and every argument had to be
+// wrapped at the call, `int(x)` and `text(s)`, because there was no way to ask
+// a value what it was. Both of those were the same missing thing, and §8 named
+// it: "traits with code behind them". There are traits with code behind them
+// now.
+//
+// So what a caller writes is what it means:
+//
+//     println("x is {}", &[&x])
+//     println("{} and {}", &[&name, &count])
+//     println("no arguments here", &[])
+//
+// The `&[..]` is an array of trait objects, borrowed as a view -- which is one
+// argument however many things are in it, and is the whole reason the arity
+// left the name.
+//
 // The format string is read even where nothing follows it, so that `{{` is a
 // brace here as it is everywhere else and a stray `{}` is reported rather than
 // printed.
-pub fn print(f: str) {
-    out0(0, f)
+
+// What every one of the four does: ask each value for its `Arg`, then hand the
+// run of them over. The walk is here and not in the runtime because the runtime
+// cannot call into a Forte body -- it is handed values, it does not go and ask
+// for them.
+//
+// `args.len` is what makes this one parameter rather than two. A view has
+// carried its length since a reference to an array became a view of it (§3);
+// until now nothing could read it, and a caller would have had to count its own
+// arguments and be believed.
+fn said(how: i64, f: str, args: &(&dyn Show)[]) {
+    var held: Vec<Arg> = empty()
+    var i = 0
+    while i < args.len {
+        push(*held, args[i].show())
+        i = i + 1
+    }
+    out(how, f, held.at, held.len)
 }
 
-pub fn print1(f: str, a: Arg) {
-    out1(0, f, a)
+pub fn print(f: str, args: &(&dyn Show)[]) {
+    said(0, f, args)
 }
 
-pub fn print2(f: str, a: Arg, b: Arg) {
-    out2(0, f, a, b)
+pub fn println(f: str, args: &(&dyn Show)[]) {
+    said(1, f, args)
 }
 
-pub fn print3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(0, f, a, b, c)
+pub fn eprint(f: str, args: &(&dyn Show)[]) {
+    said(2, f, args)
 }
 
-pub fn print4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(0, f, a, b, c, d)
+pub fn eprintln(f: str, args: &(&dyn Show)[]) {
+    said(3, f, args)
 }
 
-// ---- Printing, with the line ended ------------------------------------------
+// ---- What a value looks like when it is written down ------------------------
 
-pub fn println(f: str) {
-    out0(1, f)
+// Section 8 said what this was waiting for and the head of this file said it
+// too: "a trait would be how this is done in a language that ran the code
+// behind one, and section 8 says that is what a trait here is still waiting
+// for". It is not waiting any more, so the tag a caller used to write is a body
+// the value answers with.
+//
+// **Why it gives back an `Arg` rather than doing the writing.** What formats a
+// value is the runtime, in Rust, and the runtime cannot call into a Forte body.
+// So the dispatch happens on this side and what crosses the boundary is what
+// always crossed it: `Arg` stays the wire format and stops being something a
+// caller writes.
+//
+// **Here and not in a file of its own**, because every impl needs `Arg` and the
+// wrappers, and a file of its own would have to import this one while this one
+// imported it back.
+//
+// **Five impls, and exactly five.** They are the five tags the runtime reads
+// (`runtime/src/fmt.rs`), and a sixth would have nothing to make an `Arg` out
+// of. Not `i32` or `f32`: `int` takes an `i64` and `float` an `f64`, and what a
+// narrowing at the call would mean is a question the language has not answered.
+//
+// Every body here reads its receiver, which is a `&i64` standing where an `i64`
+// is wanted (§3). That was the last of the four things a reference is said to
+// stand for and the one that was not implemented, and it is why this could not
+// have been written before.
+
+pub trait Show {
+    fn show(&self): Arg
 }
 
-pub fn println1(f: str, a: Arg) {
-    out1(1, f, a)
+impl Show for i64 {
+    fn show(&self): Arg { int(self) }
 }
 
-pub fn println2(f: str, a: Arg, b: Arg) {
-    out2(1, f, a, b)
+impl Show for u64 {
+    fn show(&self): Arg { uint(self) }
 }
 
-pub fn println3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(1, f, a, b, c)
+impl Show for f64 {
+    fn show(&self): Arg { float(self) }
 }
 
-pub fn println4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(1, f, a, b, c, d)
+impl Show for bool {
+    fn show(&self): Arg { truth(self) }
 }
 
-// ---- Printing to the error stream --------------------------------------------
-
-// Which is not buffered, so half a line written to it is already where the
-// reader can see it -- there is nothing here that a `print` needs a newline or
-// the end of the program to flush.
-pub fn eprint(f: str) {
-    out0(2, f)
-}
-
-pub fn eprint1(f: str, a: Arg) {
-    out1(2, f, a)
-}
-
-pub fn eprint2(f: str, a: Arg, b: Arg) {
-    out2(2, f, a, b)
-}
-
-pub fn eprint3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(2, f, a, b, c)
-}
-
-pub fn eprint4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(2, f, a, b, c, d)
-}
-
-// ---- Printing to the error stream, with the line ended ------------------------
-
-pub fn eprintln(f: str) {
-    out0(3, f)
-}
-
-pub fn eprintln1(f: str, a: Arg) {
-    out1(3, f, a)
-}
-
-pub fn eprintln2(f: str, a: Arg, b: Arg) {
-    out2(3, f, a, b)
-}
-
-pub fn eprintln3(f: str, a: Arg, b: Arg, c: Arg) {
-    out3(3, f, a, b, c)
-}
-
-pub fn eprintln4(f: str, a: Arg, b: Arg, c: Arg, d: Arg) {
-    out4(3, f, a, b, c, d)
+impl Show for str {
+    fn show(&self): Arg { text(self) }
 }
