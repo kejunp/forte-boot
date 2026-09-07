@@ -232,6 +232,54 @@ fn nothing_holds_a_bare_trait_object() {
     assert!(out.contains("is a trait object and nothing holds one"), "{}", out);
 }
 
+// And everywhere else a type is written, which is where it was *not* said. A
+// local was the only position asked about, so a signature, a field, a payload
+// and a type argument each resolved a type nothing can hold and let it
+// through -- and what the reader got was a message at the call, "argument 1 is
+// `Sq` and it takes `dyn Shape`", blaming a caller for a signature nobody
+// could have satisfied.
+#[test]
+fn a_type_nothing_holds_is_refused_where_it_is_written() {
+    let with = "trait Shape {\n    fn area(&self): i32\n}\n";
+    for (source, said) in [
+        // A parameter and a return.
+        ("fn f(s: dyn Shape): i32 { 0 }\n", "trait object"),
+        ("fn f(a: &i32[]): i32[] { a }\n", "is a run"),
+        // A field and a payload.
+        ("struct B {\n    pub s: dyn Shape,\n}\n", "trait object"),
+        ("struct B {\n    pub r: i32[],\n}\n", "is a run"),
+        ("enum E {\n    One(dyn Shape),\n}\n", "trait object"),
+        // A type argument, which is the one a `&` in front does not save:
+        // `&Vec<dyn Shape>` is a reference to the `Vec`.
+        ("struct V<T> {\n    pub t: T,\n}\nfn f(v: &V<dyn Shape>): i32 { 0 }\n", "trait object"),
+        // And an element, since "an element must have a size" (§2). This is
+        // the array *of* runs -- the parser nests a suffix the other way
+        // round from the way §2 says it does, so the spelling §2 gives for
+        // this is the other one (§8).
+        ("fn f(a: &i32[][3]): i32 { 0 }\n", "is a run"),
+    ] {
+        let out = refused(&format!("{}{}", with, source));
+        assert!(out.contains(said), "{}\n{}", source, out);
+        assert!(out.contains("nothing holds one"), "{}\n{}", source, out);
+    }
+}
+
+// A reference is what one stands behind, and a pointer counts: a `ptr`
+// promises nothing about what it addresses, which is the whole of what it is
+// (§2). A `gc` does not -- the collector has to know how big the thing it
+// allocated is, and neither of these says.
+#[test]
+fn a_reference_and_a_pointer_are_what_one_stands_behind() {
+    let with = "trait Shape {\n    fn area(&self): i32\n}\n";
+    clean(&format!(
+        "{}fn f(a: &i32[], s: &dyn Shape): i32 {{ a[0] + s.area() }}\n\
+         fn g(a: *i32[], s: *dyn Shape): i32 {{ 0 }}\n\
+         fn h(p: ptr u8[], q: ptr dyn Shape): i32 {{ 0 }}\n",
+        with));
+    let out = refused(&format!("{}fn f(s: gc dyn Shape): i32 {{ 0 }}\n", with));
+    assert!(out.contains("nothing holds one"), "{}", out);
+}
+
 // A method reached through an object is the *trait's* member: which impl
 // answers is what the table says, and it says it while the program runs.
 #[test]

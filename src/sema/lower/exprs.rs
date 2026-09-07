@@ -639,45 +639,12 @@ impl<'a> Lowerer<'a> {
                         // answer for" -- a hole, until something fills it.
                         (None, None) => self.types.fresh(),
                     };
-                    // "`T[]` is a type of no known size, and nothing can hold
-                    // one: no local, no field, no parameter and no return may
-                    // be a `T[]`. It exists only behind a reference" (§3).
-                    //
-                    // A slice is where one turns up without being written --
-                    // `a[1..3]` is a place of type `T[]` and `let x = a[1..3]`
-                    // asks a name to hold it -- so this is said here, where the
-                    // name is, rather than left to the layout to fail over.
-                    if matches!(self.types.get(ty), Ty::Run(_)) {
-                        let held = self.spell(ty);
-                        self.errors.push(
-                            Diagnostic::error(
-                                format!("`{}` is a run and nothing holds one", held),
-                                self.at(at),
-                            )
-                            .with_label("a name would have to know how many there are")
-                            .with_help(format!(
-                                "`&{}` borrows a view of it, which carries the length",
-                                held
-                            )),
-                        );
-                    }
-                    // And a trait object, for the same reason said the other
-                    // way round: how wide one is is not a question with an
-                    // answer, which is what makes it dynamic at all.
-                    if matches!(self.types.get(ty), Ty::Dyn(_)) {
-                        let held = self.spell(ty);
-                        self.errors.push(
-                            Diagnostic::error(
-                                format!("`{}` is a trait object and nothing holds one", held),
-                                self.at(at),
-                            )
-                            .with_label("a name would have to know how wide it is")
-                            .with_help(format!(
-                                "`&{}` borrows one, which carries the table beside it",
-                                held
-                            )),
-                        );
-                    }
+                    // A run or a trait object, which nothing holds. Said
+                    // here and not only where a type is written, because this
+                    // is where one turns up without being written: `a[1..3]`
+                    // is a place of type `T[]`, and `let x = a[1..3]` asks a
+                    // name to hold it.
+                    self.unheld(ty, self.at(at));
                     let where_ = match init {
                         Some(init) => Span::at(
                             self.out.exprs[init].line,

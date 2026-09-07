@@ -498,10 +498,66 @@ impl<'a> Lowerer<'a> {
 
     // ---- Types -----------------------------------------------------------
 
+    // A type of no known size, said where something was asked to hold one.
+    // `false` is "nothing to say", so it may be asked about any type at all.
+    //
+    // "`T[]` is a run of T whose length the type does not give. That makes it
+    // a type of no known size, and nothing can hold one: no local, no field,
+    // no parameter and no return may be a `T[]`. It exists only behind a
+    // reference" (§2) -- and a `dyn` is that sentence again with a different
+    // reason for the width being unknown.
+    //
+    // Two callers, and they reach different halves of the rule. `exprs` asks
+    // it of a local's type however that was arrived at, which is the half a
+    // written type cannot reach: `let x = a[1..3]` is a place of type `T[]`
+    // and nobody wrote a type down. `ty` below asks it of every type that
+    // *was* written, which is the half a local cannot reach -- a parameter, a
+    // return, a field, a payload, a type argument.
+    pub(super) fn unheld(&mut self, ty: TyId, at: Span) -> bool {
+        let (what, knowing, borrows) = match self.types.get(ty) {
+            Ty::Run(_) => ("a run", "how many there are", "a view of it, which carries the length"),
+            Ty::Dyn(_) => {
+                ("a trait object", "how wide it is", "one, which carries the table beside it")
+            }
+            _ => return false,
+        };
+        let held = self.spell(ty);
+        self.errors.push(
+            Diagnostic::error(format!("`{}` is {} and nothing holds one", held, what), at)
+                .with_label(format!("holding it would mean knowing {}", knowing))
+                .with_note("no local, no field, no parameter and no return is one of these")
+                .with_help(format!("`&{}` borrows {}", held, borrows)),
+        );
+        true
+    }
+
+    // The same question asked of a type as it is resolved, and the one place
+    // the answer may be no: what a reference refers to.
+    //
+    // Both shapes resolved and were let through before this. What the reader
+    // got instead was a message at every *call* -- "argument 1 is `Sq` and it
+    // takes `dyn Shape`" -- blaming a caller for a signature nobody could have
+    // satisfied; and `mir::layout` says outright that a bare `dyn` is "a
+    // program already turned down" by this pass, which it was not.
+    //
+    // A pointer counts as behind. It promises nothing about what it addresses
+    // -- "the one type the checker has nothing to say about" (§2) -- so
+    // `ptr u8[]` is an address in a run and `ptr dyn Shape` carries the table
+    // beside it exactly as a `&dyn Shape` does.
+    fn holdable(&mut self, behind: bool, held: Ty, at: Span) -> bool {
+        if behind {
+            return true;
+        }
+        let ty = self.types.intern(held);
+        !self.unheld(ty, at)
+    }
+
     // What a written type is. "`<grouped_type>` is gone, `_` is gone, and a
     // name has become the declaration it names."
     pub(super) fn ty(&mut self, id: TIRTypeId) -> TyId {
         let at = Span::at(self.tir.types[id].line, self.tir.types[id].col);
+        // Taken, so it reaches this type and no other -- see `Lowerer::behind`.
+        let behind = std::mem::take(&mut self.behind);
         match self.tir.types[id].kind.clone() {
             TIRTypeKind::Prim(prim) => self.types.prim(prim),
 
@@ -591,6 +647,9 @@ impl<'a> Lowerer<'a> {
                     );
                     return self.types.error();
                 }
+                if !self.holdable(behind, Ty::Dyn(item), at) {
+                    return self.types.error();
+                }
                 self.types.intern(Ty::Dyn(item))
             }
 
@@ -602,15 +661,23 @@ impl<'a> Lowerer<'a> {
                     Some(name) => self.life(&name, at),
                     None => self.region(),
                 };
+                // What a reference refers to is the one place a type of no
+                // known size stands, and a pointer below says the same: both
+                // supply the width the type itself has not got.
+                self.behind = true;
                 let inner = self.ty(inner);
                 self.types.intern(Ty::Ref { op, life, inner })
             }
             TIRTypeKind::Ptr(inner) => {
+                self.behind = true;
                 let inner = self.ty(inner);
                 self.types.intern(Ty::Ptr(inner))
             }
             TIRTypeKind::Run(elem) => {
                 let elem = self.ty(elem);
+                if !self.holdable(behind, Ty::Run(elem), at) {
+                    return self.types.error();
+                }
                 self.types.intern(Ty::Run(elem))
             }
             TIRTypeKind::Tuple(members) => {

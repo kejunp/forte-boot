@@ -228,6 +228,18 @@ pub struct Lowerer<'a> {
     // spent it. That is what keeps `f(if c { 1 } else { 2 })` from offering
     // the argument's type to the two numbers inside the `if`.
     want: Option<TyId>,
+    // Whether the type being resolved stands directly behind a reference or a
+    // pointer, which are the only two places a type of no known size may
+    // stand: "nothing can hold one: no local, no field, no parameter and no
+    // return may be a `T[]`" (§2), and a `dyn` is the same for the same
+    // reason.
+    //
+    // Taken at the top of `ty` as `want` is taken at the top of `expr`, and
+    // set again only by the two arms that may pass it on. So it says *here*
+    // and not *somewhere above here*: a `&Vec<dyn Shape>` is a reference to a
+    // `Vec`, and the `dyn` inside it stands behind a generic argument and is
+    // as unheld as a bare one.
+    behind: bool,
     // The globals whose value has to be *stored* when the program starts,
     // rather than written into the data segment as bytes -- and the expression
     // each is stored from.
@@ -360,6 +372,7 @@ impl<'a> Lowerer<'a> {
             bounds: Vec::new(),
             starts: Vec::new(),
             want: None,
+            behind: false,
             guarded: 0,
             consts: HashMap::new(),
             answers: HashMap::new(),
