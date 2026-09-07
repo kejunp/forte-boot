@@ -2669,6 +2669,17 @@ answer is not obvious from the rules alone.
     body, a branch, an arm and a block's tail all know what is expected of
     them, so "let s: &dyn Shape = if c { &a } else { &b }" is written.
 
+    What may be converted includes a bounded parameter, which it did not. A
+    "fn f<T: Show>(x: &T)" has already said that whatever "T" turns out to be
+    answers "Show" -- that is the whole of what the bound is -- so an object
+    may be made of it, and which table is built is a question for the
+    instance, where "T" is a type and not a name. Before this the bound bought
+    a method call and nothing else: handing the "&T" on to something taking a
+    "&dyn Show" was refused, and the way round it was to take the bound off
+    and lose the dispatch it was there for. The lookup is the one "holds"
+    already does -- an impl for anything with a head, and a bound where the
+    type is a parameter of the declaration being walked.
+
     A type nothing can hold is refused where it is written, which it was not.
     Section 2 has said all along that a "T[]" is "a type of no known size, and
     nothing can hold one: no local, no field, no parameter and no return may

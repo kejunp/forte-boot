@@ -812,6 +812,13 @@ fn objects_answered(out: &TTIRProgram, errors: &mut Diagnostics) {
         else {
             continue;
         };
+        // A parameter is answered by its bound and not by an impl written for
+        // it: `fn f<T: Show>(x: &T)` says every `T` a caller supplies answers
+        // `Show`, and `holds` is what checks each caller did. Which table is
+        // built is the instance's question, and `mir::mono` asks it there.
+        if matches!(out.types[made], Ty::Param { .. }) {
+            continue;
+        }
         let head = head_of(&out.types[made]);
         let answered = out.items.iter().any(|item| {
             let TTIRItemKind::Impl { ty, of: written, .. } = &item.kind else { return false };

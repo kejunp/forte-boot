@@ -55,7 +55,7 @@ impl<'a> Lowerer<'a> {
     // -- where the type is a parameter of the declaration being walked -- a
     // bound saying it will be. A generic holding another generic to a trait is
     // answered by the caller and not here.
-    fn answers_to(&mut self, arg: TyId, want: TTIRItemId) -> bool {
+    pub(super) fn answers_to(&mut self, arg: TyId, want: TTIRItemId) -> bool {
         let arg = self.types.shallow(arg);
         if let Ty::Param { index, .. } = self.types.get(arg).clone() {
             return self.param_bounds(index).iter().any(|bound| {

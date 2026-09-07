@@ -1682,6 +1682,7 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \n\
          fn by_bound<T: Tagged>(x: &T): i64 { x.tag() }\n\
          fn by_table(x: &dyn Tagged): i64 { x.tag() }\n\
+         fn by_both<T: Tagged>(x: &T): i64 { by_table(x) }\n\
          \n\
          %test\n\
          fn a_method_is_called_on_a_primitive() {\n\
@@ -1724,6 +1725,18 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \x20   let m: i64 = n\n\
          \x20   assert_eq(&held.tag(), &1, \"filled from below\")\n\
          \x20   assert_eq(&m, &5, \"and it is still the value it was\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_bound_is_enough_to_make_an_object_of() {\n\
+         \x20   // The bound already said this type answers the trait, so the\n\
+         \x20   // object may be made -- and which table, the instance says.\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let b: bool = true\n\
+         \x20   let q = Sq { s: 1 }\n\
+         \x20   assert_eq(&by_both(&n), &1, \"the i64 table\")\n\
+         \x20   assert_eq(&by_both(&b), &2, \"the bool one\")\n\
+         \x20   assert_eq(&by_both(&q), &100, \"and the struct's\")\n\
          }\n",
     )
     .expect("a file");
@@ -1734,7 +1747,7 @@ fn a_primitive_answers_a_trait_like_anything_else() {
 
     assert!(ok, "a primitive was meant to answer a trait:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
-    assert!(said.contains("running 4 tests"), "{}", said);
+    assert!(said.contains("running 5 tests"), "{}", said);
 }
 
 // ---- A reference read as what it refers to ---------------------------------------

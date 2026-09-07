@@ -882,6 +882,15 @@ impl<'a> Lowerer<'a> {
         // By head and not by name: a primitive answers a trait exactly as a
         // struct does (`impl Show for i64`), so `&5` becomes a `&dyn Show`
         // wherever a `&Sq` becomes one.
+        // A parameter answers by its bound. `fn f<T: Show>(x: &T)` has said
+        // that whatever `T` turns out to be answers `Show`, so an object may
+        // be made of it -- and which table is built is a question for the
+        // instance, where `T` is a type and not a name. Without this a bound
+        // bought a method call and nothing else: `by_table(x)` inside such a
+        // body was "argument 1 is `&T` and it takes `&dyn Show`".
+        if matches!(self.types.get(from), Ty::Param { .. }) {
+            return self.answers_to(from, of);
+        }
         let head = head_of(self.types.get(from));
         if self.answers(&head, of) {
             return true;

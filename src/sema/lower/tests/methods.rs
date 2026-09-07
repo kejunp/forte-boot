@@ -422,6 +422,42 @@ fn a_number_the_trait_has_no_impl_for_is_refused() {
     assert!(out.contains("dyn Show"), "{}", out);
 }
 
+// ---- A bound is enough to make an object of --------------------------------------
+
+// `fn f<T: Show>(x: &T)` has already said that whatever `T` turns out to be
+// answers `Show`. So an object may be made of it, and which table gets built is
+// a question for the instance -- where `T` is a type and not a name. Without
+// this a bound bought a method call and nothing else: handing the `&T` on to
+// something taking a `&dyn Show` was "argument 1 is `&T` and it takes
+// `&dyn Show`", and the way round it was to take the bound off and lose the
+// dispatch it was there for.
+#[test]
+fn a_bounded_parameter_becomes_an_object() {
+    let with = "trait Show {\n    fn show(&self): i32\n}\n\
+                fn by_table(s: &dyn Show): i32 { s.show() }\n";
+    clean(&format!("{}fn f<T: Show>(x: &T): i32 {{ by_table(x) }}\n", with));
+    // And at a name that says so, which is the other place an expectation
+    // reaches.
+    clean(&format!(
+        "{}fn f<T: Show>(x: &T): i32 {{\n    let s: &dyn Show = x\n    s.show()\n}}\n",
+        with));
+}
+
+// A parameter with no such bound is refused, which is what makes the bound the
+// thing that bought it.
+#[test]
+fn a_parameter_with_no_bound_makes_no_object() {
+    let with = "trait Show {\n    fn show(&self): i32\n}\n\
+                trait Other {\n    fn other(&self): i32\n}\n\
+                fn by_table(s: &dyn Show): i32 { s.show() }\n";
+    let out = refused(&format!("{}fn f<T>(x: &T): i32 {{ by_table(x) }}\n", with));
+    assert!(out.contains("dyn Show"), "{}", out);
+    // And one bounded by a different trait, so it is the trait that answers
+    // and not the fact of there being a bound at all.
+    let out = refused(&format!("{}fn f<T: Other>(x: &T): i32 {{ by_table(x) }}\n", with));
+    assert!(out.contains("dyn Show"), "{}", out);
+}
+
 // ---- What a value is expected to be ---------------------------------------------
 
 // A conversion happens where a type is expected of a value, and the four
