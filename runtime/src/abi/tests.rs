@@ -14,19 +14,12 @@
 // thing the tests have to arrange around rather than a thing the runtime is
 // wrong about.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use super::super::shape::{Kind, Made};
 use super::*;
 
-static ORDER: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn alone() -> MutexGuard<'static, ()> {
-    match ORDER.get_or_init(|| Mutex::new(())).lock() {
-        Ok(held) => held,
-        Err(held) => held.into_inner(),
-    }
-}
+// The whole crate's, not this module's: the phase these check is one flag for
+// the process and `gc`'s tests raise it too. See `crate::alone`.
+use crate::alone;
 
 fn number() -> Made {
     Made::new(8, 8, Kind::Signed)

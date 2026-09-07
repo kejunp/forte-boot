@@ -23,6 +23,11 @@ use super::super::shape::{Kind, Made};
 use super::super::{alloc, Runtime};
 use super::*;
 
+// Taken by every test below that starts a cycle: `open` raises a flag that is
+// the whole *process's*, so a cycle begun here is one every test running beside
+// it can see. See `crate::alone`.
+use crate::alone;
+
 // A node: a pointer at word nought and a number at word one, so that every
 // node has something the marker must follow and something it must not.
 fn node_shape() -> Made {
@@ -169,6 +174,7 @@ fn an_object_with_no_pointers_in_it_is_never_read() {
 // holding right now.
 #[test]
 fn something_made_during_a_cycle_survives_that_cycle() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = node_shape();
     start_from(&mut rt, &[]);
@@ -183,6 +189,7 @@ fn something_made_during_a_cycle_survives_that_cycle() {
 // immortal".
 #[test]
 fn something_made_during_a_cycle_is_collected_by_the_next() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = node_shape();
     start_from(&mut rt, &[]);
@@ -210,6 +217,7 @@ fn a_cycle_leaves_the_barrier_off_and_the_number_moved_on() {
 
 #[test]
 fn the_barrier_is_on_for_as_long_as_the_marker_is_walking() {
+    let _held = alone();
     let mut rt = Runtime::new();
     start_from(&mut rt, &[]);
     assert_eq!(rt.gc.phase, Phase::Mark);
@@ -222,6 +230,7 @@ fn the_barrier_is_on_for_as_long_as_the_marker_is_walking() {
 // the work list the first was in the middle of.
 #[test]
 fn a_cycle_started_twice_is_one_cycle() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = node_shape();
     let held = chain(&mut rt, &shape, 20);
@@ -297,6 +306,7 @@ fn a_cycle_that_freed_nothing_says_so() {
 // what stops it outrunning the marker.
 #[test]
 fn allocating_during_a_cycle_does_some_of_the_marking() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = node_shape();
     let held = chain(&mut rt, &shape, 500);

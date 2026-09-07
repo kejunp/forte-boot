@@ -61,6 +61,30 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+// ---- One at a time -----------------------------------------------------------
+
+// The lock every test that touches the *process-wide* collector phase takes.
+//
+// `gc::phase` is one flag for the whole process -- the barrier reads it on
+// every write and cannot afford a runtime to ask -- so a test that starts a
+// cycle raises it for every other test running beside it. Three modules test
+// through it and each had a lock of its own, which is three locks and no
+// order: `gc`'s tests raised the flag while `abi`'s asserted it was down, and
+// what that looked like was a test failing about one run in four.
+//
+// One lock, named here so that all three take the same one. It is not
+// tidiness: the runtime is written for one mutator and a test binary has a
+// dozen, which is a thing the tests arrange around rather than a thing the
+// runtime is wrong about.
+#[cfg(test)]
+pub(crate) fn alone() -> std::sync::MutexGuard<'static, ()> {
+    static ORDER: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    match ORDER.get_or_init(|| std::sync::Mutex::new(())).lock() {
+        Ok(held) => held,
+        Err(held) => held.into_inner(),
+    }
+}
+
 pub mod abi;
 pub mod alloc;
 pub mod env;
