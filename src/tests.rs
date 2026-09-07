@@ -1964,6 +1964,86 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A method named through what declared it ---------------------------------------
+
+// A method was reachable through a `.` and through nothing else, and a `.`
+// answers with the nearest thing -- so a field that could be the thing called
+// won and the method of that name could not be reached at all (§5, §8). There
+// is a second spelling now, and what only running can say is which body it
+// reached: every one of these answers a different number.
+#[test]
+fn a_method_is_named_through_the_declaration_it_belongs_to() {
+    let dir = std::env::temp_dir().join(format!("fortec-named-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("named.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         trait T {\n\
+         \x20   fn f(&self): i64\n\
+         }\n\
+         trait A {\n\
+         \x20   fn both(&self): i64\n\
+         }\n\
+         trait B {\n\
+         \x20   fn both(&self): i64\n\
+         }\n\
+         \n\
+         // A struct whose field is callable and whose method has the field's\n\
+         // name, which is the shape that had no spelling.\n\
+         struct Q { pub f: fn(): i64, pub n: i64 }\n\
+         impl T for Q { fn f(&self): i64 { self.n * 10 } }\n\
+         impl Q { fn own(&self): i64 { self.n * 100 } }\n\
+         impl A for Q { fn both(&self): i64 { 1 } }\n\
+         impl B for Q { fn both(&self): i64 { 2 } }\n\
+         \n\
+         fn seven(): i64 { 7 }\n\
+         \n\
+         fn by_a<P: A + B>(p: &P): i64 { A::both(p) }\n\
+         fn by_b<P: A + B>(p: &P): i64 { B::both(p) }\n\
+         \n\
+         %test\n\
+         fn a_field_and_the_method_it_hides_are_both_reachable() {\n\
+         \x20   let q = Q { f: seven, n: 3 }\n\
+         \x20   // The `.` is the field, which is what it always was.\n\
+         \x20   assert_eq(&q.f(), &7, \"the field is nearer\")\n\
+         \x20   // And the method is reached through what declared it.\n\
+         \x20   assert_eq(&T::f(&q), &30, \"the trait that declared it\")\n\
+         \x20   assert_eq(&Q::f(&q), &30, \"or the type an impl wrote it in\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn an_impl_that_answers_no_trait_is_named_by_its_type() {\n\
+         \x20   let q = Q { f: seven, n: 3 }\n\
+         \x20   assert_eq(&Q::own(&q), &300, \"an inherent impl\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_bound_naming_two_of_one_name_is_settled_by_saying_which() {\n\
+         \x20   let q = Q { f: seven, n: 3 }\n\
+         \x20   assert_eq(&by_a(&q), &1, \"the one A declared\")\n\
+         \x20   assert_eq(&by_b(&q), &2, \"and the one B did\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_receiver_may_be_the_value_and_not_a_reference_to_it() {\n\
+         \x20   let q = Q { f: seven, n: 3 }\n\
+         \x20   assert_eq(&Q::f(q), &30, \"a place is addressed where a method asks\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "named");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a method was meant to be named through its declaration:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}
+
 // ---- The number a variant is -------------------------------------------------------
 
 // "A variant with no payload may fix its discriminant instead, which is what

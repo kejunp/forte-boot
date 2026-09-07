@@ -174,6 +174,11 @@ impl<'a> Lowerer<'a> {
                     if let Some((of, index)) = self.variant_path(&path) {
                         return self.variant_lit(of, index, &args, id);
                     }
+                    // `T::f(&q)`: a method named through the declaration it
+                    // belongs to, the receiver written first.
+                    if let Some(made) = self.named_method(&path, &args, id) {
+                        return made;
+                    }
                 }
                 if let TIRExprKind::Field { base, name } = self.tir.exprs[callee].kind.clone() {
                     if let Some(made) = self.method(base, &name, &args, id) {

@@ -134,6 +134,27 @@ impl<'a> Lowerer<'a> {
         args: &[TIRExprId],
         at: TIRExprId,
     ) -> Option<TTIRExprId> {
+        self.method_in(base, name, args, at, true, None)
+    }
+
+    // `shadowed` is whether a field of the same name may win. It does where
+    // the call was written with a `.`, which is the rule below; it does not
+    // where the method was named through the declaration it belongs to, that
+    // spelling being the one thing that reaches past a field (`paths`).
+    //
+    // `named` is the declaration written in front of the method, where one
+    // was. It settles the one thing a bound could not: a parameter held to two
+    // traits that each declare a name has no rule for choosing between them,
+    // and `A::f(p)` is the reader saying which they meant.
+    pub(super) fn method_in(
+        &mut self,
+        base: TIRExprId,
+        name: &str,
+        args: &[TIRExprId],
+        at: TIRExprId,
+        shadowed: bool,
+        named: Option<TTIRItemId>,
+    ) -> Option<TTIRExprId> {
         let recv = self.expr(base);
         let held = self.out.exprs[recv].ty;
         // A field of the same name wins where it could be the thing called: it
@@ -153,12 +174,14 @@ impl<'a> Lowerer<'a> {
         // not have worked -- and `b.len` still reads it. A parenthesis says
         // nothing here either way: a `<grouping>` does not survive into the
         // TIR, so `(b.len)()` and `b.len()` are the one expression.
-        if let Some((_, held)) = self.field_of(held, name) {
-            if self.callable(held) {
-                return None;
+        if shadowed {
+            if let Some((_, held)) = self.field_of(held, name) {
+                if self.callable(held) {
+                    return None;
+                }
             }
         }
-        let item = self.method_of(held, name)?;
+        let item = self.method_of(held, name, named)?;
 
         let made: Vec<TTIRExprId> = args.iter().map(|&a| self.expr(a)).collect();
         let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return None };
@@ -295,7 +318,12 @@ impl<'a> Lowerer<'a> {
     // The method of that name written for that type. "an impl makes methods for
     // its type and holds nothing else" (§8), so this is every impl whose
     // subject is the type, and the member of it with that name.
-    fn method_of(&mut self, ty: TyId, name: &str) -> Option<TTIRItemId> {
+    fn method_of(
+        &mut self,
+        ty: TyId,
+        name: &str,
+        named: Option<TTIRItemId>,
+    ) -> Option<TTIRItemId> {
         // Through the hole first: what a generic gave back, or a number with
         // no suffix, is a `Ty::Var` until something fills it, and the arms
         // below read the entry as it stands.
@@ -313,7 +341,7 @@ impl<'a> Lowerer<'a> {
             // say -- so what answers is the trait a bound named, and the member
             // is the trait's. Which impl that becomes is settled where the
             // caller's type is known, in `mir::mono`.
-            Ty::Param { index, .. } => return self.bound_method(index, name, ty),
+            Ty::Param { index, .. } => return self.bound_method(index, name, ty, named),
             // A trait object, whose methods are the trait's. There is no impl
             // to find and there is not meant to be: which one answers is what
             // the table beside the value says, and it says it while the
@@ -352,6 +380,33 @@ impl<'a> Lowerer<'a> {
         None
     }
 
+    // Whether that declaration is where this method comes from.
+    //
+    // A trait owns a member two ways: the member is one of the trait's own,
+    // which is what a `&dyn T` and a bound give back, or it came out of an
+    // impl of that trait. A struct or an enum owns whatever any impl of it
+    // wrote, whether or not the impl answers a trait -- `impl Q { .. }` and
+    // `impl T for Q { .. }` both write a method of `Q`.
+    //
+    // By head for the second, so that a member of `impl<T> Box<T>` belongs to
+    // `Box` however the receiver filled the parameter in.
+    pub(super) fn owns(&self, owner: TTIRItemId, member: TTIRItemId) -> bool {
+        if let TTIRItemKind::Trait { members, .. } = &self.out.items[owner].kind {
+            if members.contains(&member) {
+                return true;
+            }
+            return self.out.items.iter().any(|held| {
+                matches!(&held.kind, TTIRItemKind::Impl { of: Some(of), members, .. }
+                         if *of == owner && members.contains(&member))
+            });
+        }
+        let want = Head::Named(owner);
+        self.out.items.iter().any(|held| {
+            matches!(&held.kind, TTIRItemKind::Impl { ty, members, .. }
+                     if head_of(self.types.get(*ty)) == want && members.contains(&member))
+        })
+    }
+
     // The method of that name among the traits this parameter is held to.
     //
     // Every bound is asked and not just the first, so that a parameter held to
@@ -359,11 +414,23 @@ impl<'a> Lowerer<'a> {
     // than one of them silently winning. There is no rule anywhere for choosing
     // between them, and the reader has a spelling for saying which they meant
     // once there is: none of this is reached for a concrete type.
-    fn bound_method(&mut self, index: usize, name: &str, ty: TyId) -> Option<TTIRItemId> {
+    fn bound_method(
+        &mut self,
+        index: usize,
+        name: &str,
+        ty: TyId,
+        named: Option<TTIRItemId>,
+    ) -> Option<TTIRItemId> {
         let mut found: Vec<(TTIRItemId, String)> = Vec::new();
         for bound in self.param_bounds(index) {
             let TTIRBound::Trait(held) = bound else { continue };
             let Ty::Named { item, .. } = self.types.get(held).clone() else { continue };
+            // The one written in front, where one was. `A::f(p)` on a `P: A + B`
+            // is the reader saying which of the two they meant, and it is the
+            // only thing that can: nothing here has a rule for choosing.
+            if named.is_some_and(|held| held != item) {
+                continue;
+            }
             let TTIRItemKind::Trait { members, name: trait_name, .. } =
                 self.out.items[item].kind.clone()
             else {

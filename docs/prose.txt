@@ -2407,9 +2407,29 @@ answer is not obvious from the rules alone.
     wins, so "b.f(x)" is still the field; where it is not, the method takes
     only a call that could not have worked, and "b.len" still reads it. A
     parenthesis says nothing either way — a <grouping> does not survive
-    lowering, so "(b.len)()" and "b.len()" are the one expression. What is
-    still not said is how to reach the *method* where a callable field of that
-    name shadows it, which is the one direction with no spelling.
+    lowering, so "(b.len)()" and "b.len()" are the one expression.
+
+    And the direction that had no spelling has one. A method may be named
+    through the declaration it belongs to, with the receiver written first
+    where a "." would have put it in front: "T::f(&q)" through the trait that
+    declared it, "Q::f(&q)" through the type an impl wrote it in, and
+    "Q::own(&q)" for an impl that answers no trait. That was the only thing a
+    "." could not reach, and it turns out to have been three things rather
+    than one.
+
+    The field a "." answers with is the first. The second is a parameter held
+    to two traits that each declare a name: nothing here has a rule for
+    choosing between them and none is invented, so "p.f()" is refused and
+    "A::f(p)" is the reader saying which they meant — which is what section 8
+    said that refusal was waiting for. The third is that a method was reachable
+    through a "." and through nothing else, which is a hole with or without a
+    field in the way.
+
+    The name in front is checked and not merely parsed: "R::f(&q)" where "Q"
+    has an "f" would otherwise run "Q"'s and name a declaration with nothing to
+    do with it. What answers is still the receiver's — the name says which
+    method is meant and not which body runs, so a "&dyn T" dispatches through
+    its table exactly as it does under a ".".
   - <array_suffix> takes a <const_expr>, so a constant gives an array its
     size: "i32[ROWS]" parses and "i32[rows()]" does too when "rows" is a
     const fn. Settled. Whether two array types whose sizes are written

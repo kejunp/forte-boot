@@ -450,6 +450,79 @@ fn a_value_receiver_is_addressed() {
     assert!(!addressed, "a reference was meant to be left alone\n{:#?}", ttir.exprs);
 }
 
+// ---- A method named through what declared it ---------------------------------------
+
+// `T::f(&q)`, with the receiver written first where a `.` would have put it in
+// front. A method was reachable through a `.` and through nothing else, which
+// left three things with no spelling at all.
+#[test]
+fn a_method_is_named_through_the_declaration_it_belongs_to() {
+    let with = "trait T {\n    fn f(&self): i32\n}\n\
+                struct Q {\n    pub n: i32,\n}\n\
+                impl T for Q {\n    fn f(&self): i32 { self.n }\n}\n\
+                impl Q {\n    fn own(&self): i32 { self.n }\n}\n";
+    // Through the trait that declared it,
+    clean(&format!("{}fn g(q: &Q): i32 {{ T::f(q) }}\n", with));
+    // through the type an impl wrote it in,
+    clean(&format!("{}fn g(q: &Q): i32 {{ Q::f(q) }}\n", with));
+    // including an impl that answers no trait,
+    clean(&format!("{}fn g(q: &Q): i32 {{ Q::own(q) }}\n", with));
+    // and on a receiver that is the value rather than a reference to it.
+    clean(&format!("{}fn g(q: Q): i32 {{ Q::f(q) }}\n", with));
+}
+
+// The first of the three: a field of the same name wins with a `.` where it
+// could be the thing called (§5), which made the method unreachable and left
+// nothing to write instead. This is what to write instead.
+#[test]
+fn a_method_a_field_hides_is_reachable() {
+    let with = "trait T {\n    fn f(&self): i32\n}\n\
+                struct Q {\n    pub f: fn(): i32,\n}\n\
+                impl T for Q {\n    fn f(&self): i32 { 1 }\n}\n";
+    clean(&format!("{}fn g(q: &Q): i32 {{ T::f(q) }}\n", with));
+    // And the `.` still reads the field, nothing having been taken away.
+    clean(&format!("{}fn g(q: &Q): i32 {{ q.f() }}\n", with));
+}
+
+// The second: a parameter held to two traits that each declare a name. There is
+// no rule for choosing between them and none is invented -- what settles it is
+// the reader saying which they meant.
+#[test]
+fn a_bound_naming_two_of_one_name_is_settled_by_saying_which() {
+    let with = "trait A {\n    fn f(&self): i32\n}\n\
+                trait B {\n    fn f(&self): i32\n}\n";
+    clean(&format!("{}fn g<P: A + B>(p: &P): i32 {{ A::f(p) }}\n", with));
+    clean(&format!("{}fn g<P: A + B>(p: &P): i32 {{ B::f(p) }}\n", with));
+    // And with neither said it is refused, which is what it always was.
+    let out = refused(&format!("{}fn g<P: A + B>(p: &P): i32 {{ p.f() }}\n", with));
+    assert!(out.contains("has more than one `f`"), "{}", out);
+}
+
+// The name in front is checked and not merely parsed. Without that,
+// `Other::f(&q)` would run `Q`'s `f` and name something with nothing to do
+// with it.
+#[test]
+fn the_declaration_named_in_front_has_to_be_the_one_it_came_from() {
+    let with = "trait T {\n    fn f(&self): i32\n}\n\
+                struct Q {\n    pub n: i32,\n}\n\
+                struct R {\n    pub m: i32,\n}\n\
+                impl T for Q {\n    fn f(&self): i32 { self.n }\n}\n";
+    let out = refused(&format!("{}fn g(q: &Q): i32 {{ R::f(q) }}\n", with));
+    assert!(out.contains("`R` has no method `f`"), "{}", out);
+    // A receiver with no such method at all is the message it always was.
+    let out = refused(&format!("{}fn g(r: &R): i32 {{ T::f(r) }}\n", with));
+    assert!(out.contains("nothing is called `T::f`"), "{}", out);
+}
+
+// A path that names no method is a call like any other, which is what keeps a
+// fn in a namespace working: `held::f(x)` is this shape exactly, and what tells
+// them apart is whether the name in front is a declaration methods go on.
+#[test]
+fn a_path_that_names_no_method_is_a_call_like_any_other() {
+    clean("namespace held {\n    pub fn f(x: i32): i32 { x }\n}\n\
+           fn g(): i32 { held::f(1) }\n");
+}
+
 // ---- A bound is enough to make an object of --------------------------------------
 
 // `fn f<T: Show>(x: &T)` has already said that whatever `T` turns out to be

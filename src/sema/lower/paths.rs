@@ -30,6 +30,74 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    // `T::f(&q)` and `Q::f(&q)`: a method named through the declaration it
+    // belongs to, with the receiver written first where a `.` would have put
+    // it in front.
+    //
+    // `None` for a path that names no such thing, which leaves the call to be
+    // read as every other call is: a fn in a namespace is `held::f(x)` and is
+    // this shape exactly, so what tells them apart is whether the name in
+    // front is a declaration methods are written on.
+    //
+    // **Why there is a second spelling at all.** A `.` answers with the
+    // nearest thing, and where a field could be the thing called the field
+    // wins (§5) -- so a struct holding a fn called `f` made a method called
+    // `f` unreachable, with nothing to write instead. It also settles a
+    // parameter held to two traits that each declare a name: `bounds` refuses
+    // that for want of a way to say which was meant, and `A::f(p)` is the way.
+    //
+    // The owner is checked and not merely parsed: `Other::f(&q)` where `Q` has
+    // an `f` of its own would otherwise run `Q`'s and name something that had
+    // nothing to do with it.
+    pub(super) fn named_method(
+        &mut self,
+        path: &[String],
+        args: &[TIRExprId],
+        at: TIRExprId,
+    ) -> Option<TTIRExprId> {
+        if path.len() < 2 || args.is_empty() {
+            return None;
+        }
+        let owner = self.look(&path[..path.len() - 1].join("::"))?;
+        if !matches!(
+            self.out.items[owner].kind,
+            TTIRItemKind::Trait { .. } | TTIRItemKind::Struct { .. } | TTIRItemKind::Enum { .. }
+        ) {
+            return None;
+        }
+        let name = path.last()?.clone();
+        // The field of the same name does not win here, that being the whole
+        // of what this spelling is for.
+        let made = self.method_in(args[0], &name, &args[1..], at, false, Some(owner))?;
+
+        let TTIRExprKind::Method { item, .. } = self.out.exprs[made].kind else { return Some(made) };
+        if !self.owns(owner, item) {
+            let owner = self.spell_item(owner);
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` has no method `{}`", owner, name),
+                    self.at(at),
+                )
+                .with_label("this is what was named in front")
+                .with_note(
+                    "a method is named through the trait that declared it or the type an \
+                     impl wrote it in, and what answers is still the receiver's",
+                ),
+            );
+        }
+        Some(made)
+    }
+
+    // A declaration's own name, for a message about it.
+    fn spell_item(&self, at: TTIRItemId) -> String {
+        match &self.out.items[at].kind {
+            TTIRItemKind::Struct { name, .. }
+            | TTIRItemKind::Enum { name, .. }
+            | TTIRItemKind::Trait { name, .. } => name.clone(),
+            _ => "?".to_string(),
+        }
+    }
+
     // A name, however it was spelled: a slot of this body, a variant of an
     // enum, or a declaration.
     pub(super) fn named(&mut self, path: &[String], id: TIRExprId) -> TTIRExprId {
