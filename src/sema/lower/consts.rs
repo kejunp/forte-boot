@@ -21,9 +21,10 @@
 // declared type and the literal takes it on at the use, so what is worked out
 // here is the value and not its width -- exactly as `const_lit`'s comment
 // already says: "the type is the const's declared one and not the literal's".
-// A value too big for what it was declared as is a question nothing in this
-// compiler asks yet, of a const or of a plain literal, and asking it here alone
-// would be answering it in one place out of two.
+// A value too big for what it was declared as is asked of every literal and
+// not here: it would be answering it in one place out of two, and both places
+// wanted it. `sema::lower::literals_in_range` is where, after the types are
+// settled -- a number with no suffix is a hole until something fills it.
 //
 // **What is refused is refused by giving nothing back.** Every caller already
 // has an answer for a const it cannot read -- a use stays a symbol -- so an
@@ -31,6 +32,7 @@
 // programs that are not wrong, only ones written with something this cannot
 // yet do.
 
+use crate::error::Span;
 use crate::tir::tir_nodes::*;
 
 use super::Lowerer;
@@ -55,6 +57,52 @@ impl Value {
 }
 
 impl Lowerer<'_> {
+    // Where a constant expression divides by nought, if it does.
+    //
+    // The evaluator refuses one by giving nothing back, which is the same
+    // answer it gives for everything it cannot read -- and the two want
+    // different things said. A const written with something this cannot fold
+    // yet is not wrong; a const written `1 / 0` is, and what it got was an
+    // undefined symbol at the link step, which says nothing about nought.
+    //
+    // Told apart here rather than by making the evaluator report: it is `&self`
+    // and its header defends that ("an evaluator that reported its own
+    // diagnostics would be reporting them for programs that are not wrong").
+    // So this is a second walk, asked only where the first came back empty.
+    //
+    // Integers only. A float divided by nought is an infinity on all three of
+    // these machines and not a trap, which is what `binary` already says by
+    // folding it.
+    pub(super) fn divides_by_nought(&self, at: TIRExprId, depth: usize) -> Option<Span> {
+        if depth > 64 {
+            return None;
+        }
+        let held = self.tir.exprs.get(at)?;
+        match &held.kind {
+            TIRExprKind::Binary { op, lhs, rhs } => {
+                if matches!(op, TIRBinOp::Div | TIRBinOp::Rem)
+                    && matches!(self.eval_int(*rhs, depth + 1), Some(0))
+                {
+                    return Some(Span::at(held.line, held.col));
+                }
+                self.divides_by_nought(*lhs, depth + 1)
+                    .or_else(|| self.divides_by_nought(*rhs, depth + 1))
+            }
+            TIRExprKind::Unary { operand, .. } | TIRExprKind::Cast { value: operand, .. } => {
+                self.divides_by_nought(*operand, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    // What an operand comes to as a whole number, where it comes to one.
+    fn eval_int(&self, at: TIRExprId, depth: usize) -> Option<i64> {
+        match self.eval(at, depth)? {
+            Value::Int(n) => Some(n),
+            _ => None,
+        }
+    }
+
     // A constant expression's value, or nothing where it is not one.
     //
     // `depth` is not a recursion guard for a cycle -- `const A = B` and

@@ -213,8 +213,30 @@ impl<'a> Lowerer<'a> {
                     // the symbol it was -- which links against nothing, and is
                     // the same failure as before for a shrinking set of
                     // programs rather than a new one for any.
-                    if let Some(lit) = self.literal_of(value) {
-                        self.consts.insert(made, lit);
+                    // Held to what it was declared as, here rather than at a
+                    // use. A const's value becomes a `Literal` node where the
+                    // name is written and not where the const is, so the walk
+                    // that holds every literal to its type would point at a
+                    // use -- and would say nothing at all about a const
+                    // nobody used. Both are the wrong answer to "this value
+                    // does not fit".
+                    //
+                    // One that does not fit is left out of the map as one this
+                    // could not read is, so nothing puts it at a use either.
+                    // Which link error that would be is not a question: a
+                    // program with an error reported does not get as far as a
+                    // linker.
+                    match self.literal_of(value) {
+                        Some(lit) => {
+                            if self.fits_declared(&lit, held, self.span(id)) {
+                                self.consts.insert(made, lit);
+                            }
+                        }
+                        // Nothing folded. Where the reason is one worth saying,
+                        // say it: a `1 / 0` written in a const is a mistake and
+                        // not a shape the evaluator has not got to, and what it
+                        // used to get was an undefined symbol at the link step.
+                        None => self.no_nought(value),
                     }
                     let TTIRItemKind::Const { ty, .. } = &mut self.out.items[made].kind else {
                         continue;
@@ -237,6 +259,11 @@ impl<'a> Lowerer<'a> {
                     // Kept on the item rather than in a map beside it, because
                     // `TTIRItemKind::Global` has an `init` for exactly this and
                     // has been carrying `None` since it was written.
+                    if let Some(at) = written {
+                        if self.literal_of(at).is_none() {
+                            self.no_nought(at);
+                        }
+                    }
                     let start = written
                         .and_then(|at| Some((self.literal_of(at)?, at)))
                         .map(|(lit, at)| self.make(TTIRExprKind::Literal(lit), held, at));
@@ -308,6 +335,40 @@ impl<'a> Lowerer<'a> {
                 TIRItemKind::Import { .. } => {}
             }
         }
+    }
+
+    // A divide by nought in something that had to fold, said where it stands.
+    // Nothing where the expression is merely one the evaluator cannot read,
+    // which is not a mistake and has never been reported as one.
+    fn no_nought(&mut self, at: TIRExprId) {
+        let Some(where_) = self.divides_by_nought(at, 0) else { return };
+        self.errors.push(
+            Diagnostic::error("this divides by nought".to_string(), where_)
+                .with_label("the right side is nought")
+                .with_note(
+                    "a constant is worked out where it is written, so there is nowhere \
+                     for this to happen but here",
+                ),
+        );
+    }
+
+    // Whether the value fits the type it was declared as, and a message where
+    // it does not. `true` for everything this does not ask about, which is a
+    // float, a string and every type that is not a whole number.
+    fn fits_declared(&mut self, lit: &TIRLit, ty: TyId, at: Span) -> bool {
+        let TIRLit::Int(n) = lit else { return true };
+        let Ty::Prim(prim) = self.types.get(ty).clone() else { return true };
+        let Some((low, high)) = crate::sema::lower::range_of(prim) else { return true };
+        if *n >= low && *n <= high {
+            return true;
+        }
+        let name = crate::sema::names::prim_name(prim);
+        self.errors.push(
+            Diagnostic::error(format!("{} does not fit in `{}`", n, name), at)
+                .with_label("this is what it was declared as")
+                .with_note(format!("a `{}` holds {} to {}", name, low, high)),
+        );
+        false
     }
 
     // What an expression is worth at compile time: what the evaluator folds

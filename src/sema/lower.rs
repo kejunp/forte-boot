@@ -75,7 +75,7 @@ use crate::tir::tir_nodes::{
     TIRAttrs, TIRBinding, TIRExprId, TIRFn, TIRItemId, TIRItemKind, TIRLit, TIRPrim,
     TIRProgram, TIRVis,
 };
-use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRFn, TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{RegionId, TTIRBound, TTIRCapture, TTIRExprKind, TTIRFn, TTIRGeneric, TTIRItem, TTIRItemId, TTIRItemKind, TTIRLocal, TTIRLocalId, TTIRModule, TTIRProgram, Ty, TyId};
 
 mod binds;
 mod bodies;
@@ -461,6 +461,7 @@ impl<'a> Lowerer<'a> {
             );
         }
         self.out.types = arena;
+        literals_in_range(&self.out, &mut self.errors);
 
         // Moves and borrows, over the tree this just built. Only where nothing
         // has been turned down yet: a tree with an `Ty::Error` in it has holes
@@ -650,4 +651,65 @@ impl<'a> Lowerer<'a> {
             body: None,
         })
     }
+}
+
+// Every number held to the type it took on.
+//
+// §8 asked for this of a *constant* -- "nothing checks a constant for
+// range, so a value too big for the type it was declared as is neither
+// folded away nor complained about" -- and `sema::lower::consts` gave the
+// reason it was not done there: "a value too big for what it was declared
+// as is a question nothing in this compiler asks yet, of a const or of a
+// plain literal, and asking it here alone would be answering it in one
+// place out of two". It was right. `let x: u8 = 300` was 300 as readily as
+// `const X: u8 = 300` was, and a `u8` global written 300 kept the byte 44.
+//
+// So it is asked of every literal, which is both places at once: a const's
+// value is a `Literal` node by the time it is here (`resolve` makes one
+// out of what the evaluator folded), a global's is too, and a number
+// written in a body always was. One walk answers all three.
+//
+// After the types are settled and not while they are being worked out. A
+// number with no suffix is a hole until something fills it, so asking any
+// earlier would be asking what a hole can hold -- which is anything.
+fn literals_in_range(out: &TTIRProgram, errors: &mut Diagnostics) {
+    for held in &out.exprs {
+        let TTIRExprKind::Literal(TIRLit::Int(n)) = held.kind else { continue };
+        let Some(Ty::Prim(prim)) = out.types.get(held.ty) else { continue };
+        let Some((low, high)) = range_of(*prim) else { continue };
+        if n >= low && n <= high {
+            continue;
+        }
+        let name = crate::sema::names::prim_name(*prim);
+        errors.push(
+            Diagnostic::error(
+                format!("{} does not fit in `{}`", n, name),
+                Span::at(held.line, held.col),
+            )
+            .with_label("this is the value")
+            .with_note(format!("a `{}` holds {} to {}", name, low, high)),
+        );
+    }
+}
+
+// What a whole-number type holds, low and high. `None` for everything that is
+// not one -- and for `i128` and `u128`, whose range is wider than what this
+// evaluator counts in: the arithmetic is done in `i64` (`consts`), so a value
+// it could hold is one that fits either way and a value it could not never
+// reached here.
+pub(super) fn range_of(prim: TIRPrim) -> Option<(i64, i64)> {
+    let held = match prim {
+        TIRPrim::I8 => (i8::MIN as i64, i8::MAX as i64),
+        TIRPrim::I16 => (i16::MIN as i64, i16::MAX as i64),
+        TIRPrim::I32 => (i32::MIN as i64, i32::MAX as i64),
+        TIRPrim::I64 => (i64::MIN, i64::MAX),
+        TIRPrim::U8 => (0, u8::MAX as i64),
+        TIRPrim::U16 => (0, u16::MAX as i64),
+        TIRPrim::U32 => (0, u32::MAX as i64),
+        // A `u64` holds more than an `i64` counts to, so what can be said is
+        // the half that can: a negative number is not one of them.
+        TIRPrim::U64 => (0, i64::MAX),
+        _ => return None,
+    };
+    Some(held)
 }

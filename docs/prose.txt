@@ -2405,12 +2405,32 @@ answer is not obvious from the rules alone.
     perfectly good one to be given, so that is where the one case the
     evaluator declines is taken instead.
 
-    What is still not done is the part that was never only about a segment.
-    Nothing checks a constant for range, so a value too big for the type it
-    was declared as is neither folded away nor complained about — and a
-    division by zero in a const is left unfolded rather than reported, there
-    being nothing to report it. And the collector still has to be told to look
-    here, there being no other root outside a stack.
+    A value is held to the type it took on now, and a divide by nought in a
+    const is said rather than left.
+
+    The range check is of every literal and not of a const alone, which is the
+    objection the evaluator itself raised against doing it there: "asking it
+    here alone would be answering it in one place out of two". It was right.
+    "let x: u8 = 300" was 300 as readily as "const X: u8 = 300" was, and a "u8"
+    global written 300 kept the byte 44 and said nothing. So it is asked once,
+    over the tree, after the types are settled — a number with no suffix is a
+    hole until something fills it, and asking earlier would be asking what a
+    hole can hold, which is anything. A const is the one that is also asked at
+    its declaration: its value becomes a literal where the *name* is written,
+    so the walk alone would point at a use and would say nothing at all about
+    a const nobody used.
+
+    The divide is told from what the evaluator merely cannot read, which it
+    was not: both came back as nothing, and a use of the const then got an
+    undefined symbol at the link step, which says nothing about nought. It is
+    a second walk asked only where the first came back empty, so the
+    evaluator's own rule holds — "an evaluator that reported its own
+    diagnostics would be reporting them for programs that are not wrong". A
+    float divided by nought is an infinity on all three machines and not a
+    trap, so it folds and there is nothing to say about it.
+
+    What is still not done: the collector has to be told to look here, there
+    being no other root outside a stack.
   - "gc" is a word on a binding, and what may stand under one is a heap value
     or a pointer (section 2, <var_decl>). Settled as far as the grammar and
     the front end go: it sits between the intro and the name so that it

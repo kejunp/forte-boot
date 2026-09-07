@@ -553,7 +553,7 @@ fn name_of(id: TTIRItemId, p: &TTIRProgram) -> String {
     }
 }
 
-fn prim_name(prim: TIRPrim) -> &'static str {
+pub(crate) fn prim_name(prim: TIRPrim) -> &'static str {
     match prim {
         TIRPrim::I8 => "i8",
         TIRPrim::I16 => "i16",
