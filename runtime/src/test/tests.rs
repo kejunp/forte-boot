@@ -10,6 +10,7 @@
 use std::sync::{Mutex, MutexGuard};
 
 use super::*;
+use crate::fmt::fake::{made, Held};
 
 static ALONE: Mutex<()> = Mutex::new(());
 
@@ -28,16 +29,14 @@ fn text(s: &str) -> Str {
     Str { at: s.as_ptr(), len: s.len() as i64 }
 }
 
-fn empty() -> Str {
-    Str { at: std::ptr::null(), len: 0 }
+// A `&dyn Show` without a Forte program to make one -- see `fmt::fake`, which
+// is the table and the body behind these.
+fn int(n: i64) -> Object {
+    made(Held::Int(n))
 }
 
-fn int(n: i64) -> Arg {
-    Arg { tag: 1, word: n, real: 0.0, held: empty() }
-}
-
-fn word(s: &str) -> Arg {
-    Arg { tag: 5, word: 0, real: 0.0, held: text(s) }
+fn word(s: &str) -> Object {
+    made(Held::Text(s.to_string()))
 }
 
 #[test]
@@ -126,14 +125,19 @@ fn two_strings_compare_by_what_they_say() {
     assert_eq!(__rt_test_failed(), 1);
 }
 
-// Two arguments of different kinds are never equal, whatever bits they carry:
-// `int(1)` and `truth(true)` were written by somebody who meant two things.
+// Two arguments of different kinds are never equal: a `1` and a `true` were
+// written by somebody who meant two things.
+//
+// It holds now because the two do not *look* alike, where it used to hold
+// because their tags differed. Neither reason is reachable from `assert_eq`
+// anyway -- it takes a bound, so both sides are one type -- and what this
+// asserts is that the runtime does not answer yes to a question nobody could
+// ask it through the front door.
 #[test]
 fn two_kinds_of_thing_are_never_the_same_thing() {
     let _held = alone();
     let why = text("a number is not a bool");
-    let truth = Arg { tag: 4, word: 1, real: 0.0, held: empty() };
-    __rt_assert_cmp(1, &int(1), &truth, &why);
+    __rt_assert_cmp(1, &int(1), &made(Held::Truth(true)), &why);
     assert_eq!(__rt_test_failed(), 1);
 }
 

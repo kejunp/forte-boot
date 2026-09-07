@@ -168,7 +168,7 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::{int, float};\n\
+         \n\
          \n\
          %noinline\n\
          fn nine(a: i64, b: i64, c: i64, d: i64, e: i64,\n\
@@ -241,7 +241,7 @@ fn a_slice_is_a_view_of_the_elements_it_names() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          fn sum(xs: &i64[], n: i64): i64 {\n\
          \x20   var t = 0\n\
@@ -305,7 +305,7 @@ fn a_reference_to_an_array_carries_the_length_it_left_behind() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          fn sum(xs: &i64[], n: i64): i64 {\n\
          \x20   var t = 0\n\
@@ -418,7 +418,7 @@ fn a_method_reached_through_a_bound_runs_the_impl_of_the_type_it_was_given() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          trait Show {\n\
          \x20   fn show(&self): i64\n\
@@ -486,7 +486,7 @@ fn a_test_that_fails_is_reported_and_leaves_a_status_behind() {
     std::fs::write(
         &root,
         "import test::{assert, assert_eq};\n\
-         import fmt::int;\n\
+         \n\
          \n\
          %test\n\
          fn this_one_holds() {\n\
@@ -558,7 +558,7 @@ fn a_closure_runs_as_what_it_was_written_as() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          fn twice(f: fn(i64): i64, x: i64): i64 {\n\
          \x20   f(f(x))\n\
@@ -665,7 +665,7 @@ fn a_generic_impl_is_made_once_for_each_receiver() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::{int, truth};\n\
+         \n\
          \n\
          struct Box<T> {\n\
          \x20   pub v: T,\n\
@@ -764,7 +764,7 @@ fn an_unsafe_tail_is_the_value_of_the_body_it_ends() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          import mem::room;\n\
          \n\
          fn indexed(p: ptr i64): i64 { unsafe p[0] }\n\
@@ -833,7 +833,7 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          import mem::room;\n\
          \n\
          fn read(p: ptr i64): i64 { unsafe p[0] }\n\
@@ -920,7 +920,7 @@ fn a_field_and_a_method_of_one_name_are_both_reachable() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          struct Buf {\n\
          \x20   pub len: i64,\n\
@@ -992,7 +992,7 @@ fn a_call_through_a_trait_object_reaches_the_type_it_was_made_from() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          trait Shape {\n\
          \x20   fn area(&self): i64\n\
@@ -1094,7 +1094,7 @@ fn a_collected_value_outlives_the_frame_that_made_it() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          import vec::{Vec, empty, push, at, len};\n\
          \n\
          struct Buf { pub n: i64 }\n\
@@ -1188,7 +1188,7 @@ fn a_conversion_happens_wherever_a_type_is_expected() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          trait Shape {\n\
          \x20   fn area(&self): i64\n\
@@ -1368,7 +1368,7 @@ fn a_program_asks_for_a_cycle_and_what_it_holds_survives_one() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          import heap::collect;\n\
          \n\
          struct Buf { pub n: i64 }\n\
@@ -1432,7 +1432,7 @@ fn a_str_global_holds_the_bytes_it_was_written_with() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::text;\n\
+         \n\
          \n\
          const TAG: str = \"tag\"\n\
          var name: str = \"forte\"\n\
@@ -1498,7 +1498,7 @@ fn a_global_holds_the_aggregate_it_was_written_with() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::{int, text};\n\
+         \n\
          \n\
          struct Point { pub x: i64, pub y: i64 }\n\
          struct Held { pub tag: i64, pub at: Point, pub name: str }\n\
@@ -1578,7 +1578,7 @@ fn a_gc_global_is_filled_in_before_the_program_starts() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          import heap::collect;\n\
          \n\
          struct Buf { pub n: i64 }\n\
@@ -1667,7 +1667,7 @@ fn a_primitive_answers_a_trait_like_anything_else() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          trait Tagged {\n\
          \x20   fn tag(&self): i64\n\
@@ -1846,7 +1846,7 @@ fn a_reference_is_read_as_what_it_refers_to() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          fn takes(n: i64): i64 { n * 2 }\n\
          fn handed(r: &i64): i64 { takes(r) }\n\
@@ -1900,7 +1900,19 @@ fn one_println_prints_whatever_it_was_handed() {
     let root = dir.join("say.ft");
     std::fs::write(
         &root,
-        "import fmt::{println, print, eprintln};\n\
+        "import fmt::{println, print, eprintln, Show, Sink, put};\n\
+         \n\
+         struct Point { pub x: i64, pub y: i64 }\n\
+         \n\
+         impl Show for Point {\n\
+         \x20   fn show(&self, into: &Sink) {\n\
+         \x20       put(into, \"Point { x: \")\n\
+         \x20       self.x.show(into)\n\
+         \x20       put(into, \", y: \")\n\
+         \x20       self.y.show(into)\n\
+         \x20       put(into, \" }\")\n\
+         \x20   }\n\
+         }\n\
          \n\
          fn main(): i64 {\n\
          \x20   // Nought, one, and more than the old ladder could take.\n\
@@ -1917,6 +1929,14 @@ fn one_println_prints_whatever_it_was_handed() {
          \x20   print(\"nolinebreak \", &[])\n\
          \x20   println(\"after\", &[])\n\
          \x20   eprintln(\"to the error stream {}\", &[&n])\n\
+         \x20   // A value written in more than one piece, which is what a\n\
+         \x20   // struct is and what an `Arg` could never have said.\n\
+         \x20   let p = Point { x: 3, y: 4 }\n\
+         \x20   println(\"{}\", &[&p])\n\
+         \x20   // The room around it is the room around the whole of it.\n\
+         \x20   println(\"[{:>24}]\", &[&p])\n\
+         \x20   // And it goes in a line beside anything else.\n\
+         \x20   println(\"{} and {}\", &[&p, &n])\n\
          \x20   0\n\
          }\n",
     )
@@ -1934,6 +1954,14 @@ fn one_println_prints_whatever_it_was_handed() {
     // `print` ended no line, so the next one runs on from it.
     assert!(said.contains("nolinebreak after\n"), "{}", said);
     assert!(said.contains("to the error stream 5\n"), "{}", said);
+    // A value written in more than one piece, which is the thing an `Arg`
+    // could not say: it held one number or one piece of text, and a struct is
+    // a name and its fields and the punctuation between them.
+    assert!(said.contains("Point { x: 3, y: 4 }\n"), "{}", said);
+    // The room around it is the room around the whole of it and not around
+    // each piece.
+    assert!(said.contains("[    Point { x: 3, y: 4 }]\n"), "{}", said);
+    assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
 // ---- A view's own length ---------------------------------------------------------
@@ -1953,7 +1981,7 @@ fn a_view_answers_how_many_it_names() {
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
-         import fmt::int;\n\
+         \n\
          \n\
          fn counted(xs: &i64[]): i64 { xs.len }\n\
          // And summed by its own length rather than by a number handed beside\n\

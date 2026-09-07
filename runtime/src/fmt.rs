@@ -44,28 +44,67 @@ pub struct Str {
     pub(crate) len: i64,
 }
 
-// One thing to print, with a tag saying which of the fields means anything.
+// A `&dyn Show`: where the value is, and where the routines that answer for it
+// are, in that order. That is `mir::layout`'s `fat` for a reference to a
+// `Ty::Dyn`, and it is what `mir::lower` reads a call through one out of.
 //
-// Four fields and not a union: a union would be a byte or two smaller and
-// would have to agree with the compiler about how it laid one out, and this is
-// a value that lives for the length of one call.
+// It used to be an `Arg` here -- a struct with a tag saying which of four
+// fields meant anything, which every caller built at the call by writing
+// `int(x)` or `text(s)`. The tag was the dispatch, because there was no other
+// kind: `std/fmt.ft` said so and said what it was waiting for, and what it was
+// waiting for arrived. A value is now asked what it looks like, and this is
+// what asking looks like from here.
+#[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Arg {
-    pub(crate) tag:  i64,
-    pub(crate) word: i64,
-    pub(crate) real: f64,
-    pub(crate) held: Str,
+pub struct Object {
+    data:  *const u8,
+    table: *const Shows,
 }
 
-// The tags, which `std/fmt.ft` writes and this reads. They are spelled out in
-// both files and nowhere else.
-const INT: i64 = 1;
-const UINT: i64 = 2;
-const REAL: i64 = 3;
-const TRUTH: i64 = 4;
-const TEXT: i64 = 5;
+// The one member `Show` declares, at place 0 of the table -- "a table is a run
+// of addresses and nothing says which is which, so the two ends agree by
+// counting" (`mir::lower`). The receiver goes in front of what the signature
+// says, so this is `fn show(&self, into: &Sink)`.
+type Shows = unsafe extern "C" fn(*const u8, *mut Sink);
 
-// What an `Arg` turned out to be.
+// What `std/fmt.ft` hands over: a `&(&dyn Show)[]`, which is a view -- an
+// address and a length -- and crosses as the address of those two words, this
+// compiler handing every aggregate over as the address of a copy.
+//
+// A view and not a pointer and a count, which is what the `Arg` version took.
+// The reason that one took two was that it had a `Vec` to read them off; there
+// is no `Vec` any more, the arguments arriving as a view already.
+#[repr(C)]
+pub struct Objects {
+    at:  *const Object,
+    len: i64,
+}
+
+// Where a value writes itself.
+//
+// The runtime's, and opaque to the program: what crosses is the address of one
+// and the five `__rt_show_*` below are the only things that may be handed it.
+// So a value that has no idea how a float is spelled still writes one, and
+// nothing in the language had to learn to render a number.
+pub struct Sink {
+    out:     String,
+    // Taken by the first write and default for every one after it. A spec
+    // belongs to a value written as one thing -- `{:x}` of a number says what
+    // that number looks like -- and a value made of several parts has no one
+    // number for it to be about. So the first part gets what was asked for,
+    // the rest get what nobody asked about, and `one` says something where the
+    // spec was particular and the value was not.
+    spec:    Option<Spec>,
+    // How many pieces were written, and whether the first was a number: `pad`
+    // leans a number right and everything else left where nothing says.
+    writes:  usize,
+    numeric: bool,
+    // What went wrong inside a write, there being no way to hand an error back
+    // through a C call the program made.
+    wrong:   Option<String>,
+}
+
+// What a value writes itself as, one piece at a time.
 enum Value<'a> {
     Int(i64),
     Uint(u64),
@@ -74,23 +113,58 @@ enum Value<'a> {
     Text(&'a str),
 }
 
-impl Arg {
-    // What it says it is. `None` where the tag is not one of the five, which is
-    // a caller that was compiled against a different version of this file.
-    //
-    // The text is checked rather than assumed: a `str` in Forte is bytes with a
-    // length and nothing has ever looked at them, so one that is not UTF-8
-    // reaches here and must not become a `&str` by assertion.
-    fn value(&self) -> Option<Value<'_>> {
-        Some(match self.tag {
-            INT => Value::Int(self.word),
-            UINT => Value::Uint(self.word as u64),
-            REAL => Value::Real(self.real),
-            TRUTH => Value::Truth(self.word != 0),
-            TEXT => Value::Text(self.held.read()?),
-            _ => return None,
-        })
+impl Sink {
+    fn new(spec: Spec) -> Sink {
+        Sink { out: String::new(), spec: Some(spec), writes: 0, numeric: false, wrong: None }
     }
+
+    // One piece of a value. The first takes the spec and says whether the
+    // whole is to be treated as a number.
+    fn wrote(&mut self, v: Value<'_>) {
+        let numeric = matches!(v, Value::Int(_) | Value::Uint(_) | Value::Real(_));
+        if self.writes == 0 {
+            self.numeric = numeric;
+        }
+        self.writes += 1;
+        let spec = self.spec.take().unwrap_or_default();
+        match body(&v, &spec) {
+            Ok(text) => self.out.push_str(&text),
+            // The first mistake and not the last: what a reader wants is the
+            // thing that went wrong, and a second complaint about the same
+            // value is the same complaint.
+            Err(why) => {
+                if self.wrong.is_none() {
+                    self.wrong = Some(why);
+                }
+            }
+        }
+    }
+}
+
+// Whether a spec asked anything about the value itself, as against the room
+// around it. Width, fill and alignment are the room and apply to whatever came
+// out; the rest are about a number or a piece of text and mean nothing said of
+// a value written in several parts.
+fn particular(s: &Spec) -> bool {
+    s.plus || s.alt || s.precision.is_some() || s.kind != Kind::Display
+}
+
+// One value, written out by whatever answers for it, with the spec applied.
+//
+// Every call here is a call into the program: the table is the one `mir::mono`
+// built, the entry is a plain C function, and the receiver goes first. Nothing
+// is done about a table that is not one -- a null is checked and anything else
+// is the program having handed over something that is not a `&dyn Show`, which
+// no check here could tell from one that is.
+fn asked(obj: &Object, spec: Spec) -> Sink {
+    let mut sink = Sink::new(spec);
+    if obj.table.is_null() || obj.data.is_null() {
+        sink.wrong = Some("this is not a value that can be written".to_string());
+        return sink;
+    }
+    let show = unsafe { *obj.table };
+    unsafe { show(obj.data, &mut sink) };
+    sink
 }
 
 impl Str {
@@ -135,6 +209,7 @@ enum Kind {
 }
 
 // Everything one `{...}` asked for, in the order `format_spec` writes it.
+#[derive(Clone, Copy)]
 struct Spec {
     fill:      char,
     align:     Option<Align>,
@@ -166,7 +241,7 @@ impl Default for Spec {
 //
 // `args` is there for the `N$` counts, which name an argument rather than
 // carrying a number: `{:1$}` is as wide as argument one says.
-fn spec_of(text: &str, args: &[&Arg]) -> Result<Spec, String> {
+fn spec_of(text: &str, args: &[Object]) -> Result<Spec, String> {
     let mut out = Spec::default();
     let held: Vec<char> = text.chars().collect();
     let mut at = 0usize;
@@ -247,7 +322,7 @@ fn spec_of(text: &str, args: &[&Arg]) -> Result<Spec, String> {
 }
 
 // A width or a precision: digits, or `N$` naming the argument that carries it.
-fn count(held: &[char], at: &mut usize, args: &[&Arg]) -> Result<Option<usize>, String> {
+fn count(held: &[char], at: &mut usize, args: &[Object]) -> Result<Option<usize>, String> {
     let from = *at;
     while held.get(*at).is_some_and(|c| c.is_ascii_digit()) {
         *at += 1;
@@ -266,13 +341,18 @@ fn count(held: &[char], at: &mut usize, args: &[&Arg]) -> Result<Option<usize>, 
     *at += 1;
     // `{:1$}` is as wide as argument one, which has to be there and has to be
     // a number that a width can be.
+    //
+    // Asked the way every other argument is asked -- written out and read back
+    // -- because writing itself is the only thing a value here does. So what
+    // counts as a whole number is what writes itself as the digits of one,
+    // which is exactly the values a width was ever going to be taken from.
     let Some(arg) = args.get(n) else {
         return Err(format!("`{}$` names argument {}, and there is no such argument", n, n));
     };
-    match arg.value() {
-        Some(Value::Int(v)) if v >= 0 => Ok(Some(v as usize)),
-        Some(Value::Uint(v)) => Ok(Some(v as usize)),
-        _ => Err(format!("`{}$` names argument {}, which is not a whole number", n, n)),
+    let held = asked(arg, Spec::default());
+    match held.out.parse::<usize>() {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => Err(format!("`{}$` names argument {}, which is not a whole number", n, n)),
     }
 }
 
@@ -436,31 +516,30 @@ fn prefix_of(held: &str) -> usize {
 // `test` reports the two sides of a failed assertion with it, so that a value
 // reads there exactly the way it reads in the `println` beside it rather than
 // in a second spelling written for assertions.
-pub(crate) fn shown(arg: &Arg) -> String {
-    match arg.value() {
-        Some(v) => match body(&v, &Spec::default()) {
-            Ok(text) => text,
-            Err(why) => format!("<{}>", why),
-        },
-        None => "<not a kind of thing this can print>".to_string(),
+pub(crate) fn shown(obj: &Object) -> String {
+    let held = asked(obj, Spec::default());
+    match held.wrong {
+        Some(why) => format!("<{}>", why),
+        None => held.out,
     }
 }
 
 // Whether two arguments are the same value.
 //
-// Two of different kinds never are, `int(1)` and `uint(1)` having been written
-// by somebody who meant two different things. Floats compare as floats, so two
-// NaNs are not equal and an assertion that they are fails -- which is Rust's
-// answer, and the one the reader gets everywhere else.
-pub(crate) fn same(a: &Arg, b: &Arg) -> bool {
-    match (a.value(), b.value()) {
-        (Some(Value::Int(x)), Some(Value::Int(y))) => x == y,
-        (Some(Value::Uint(x)), Some(Value::Uint(y))) => x == y,
-        (Some(Value::Real(x)), Some(Value::Real(y))) => x == y,
-        (Some(Value::Truth(x)), Some(Value::Truth(y))) => x == y,
-        (Some(Value::Text(x)), Some(Value::Text(y))) => x == y,
-        _ => false,
-    }
+// What each of them looks like, compared -- and that is a change of meaning
+// worth saying out loud. It used to compare the tag and the payload, so
+// `int(1)` and `uint(1)` were two different things written by somebody who
+// meant two different things. There is no tag now: what a value is, is what it
+// answers with, so what an assertion compares is what it is about to print.
+//
+// Within one type -- and `assert_eq` takes a bound, so both sides are one type
+// -- this is the same answer for every primitive the language has. Where it
+// differs it differs the useful way: `0.1 + 0.2` and `0.3` are two lines of
+// digits and not one, and a reader told they are equal has been told something
+// untrue about the program.
+pub(crate) fn same(a: &Object, b: &Object) -> bool {
+    let (a, b) = (asked(a, Spec::default()), asked(b, Spec::default()));
+    a.wrong.is_none() && b.wrong.is_none() && a.out == b.out
 }
 
 // ---- The format string -----------------------------------------------------
@@ -471,7 +550,7 @@ pub(crate) fn same(a: &Arg, b: &Arg) -> bool {
 // mistake in one placeholder says nothing about the rest of the line: a format
 // string with a bad `{:q}` in the middle still has a beginning and an end that
 // the reader wrote and wants to see.
-fn render(fmt: &str, args: &[&Arg]) -> (String, Vec<String>) {
+fn render(fmt: &str, args: &[Object]) -> (String, Vec<String>) {
     let mut out = String::new();
     let mut wrong = Vec::new();
     // Which argument an empty `{}` takes, which is the next one nobody named.
@@ -529,7 +608,7 @@ fn render(fmt: &str, args: &[&Arg]) -> (String, Vec<String>) {
 }
 
 // One placeholder: which argument, and what to do with it.
-fn one(inner: &str, args: &[&Arg], next: &mut usize) -> Result<String, String> {
+fn one(inner: &str, args: &[Object], next: &mut usize) -> Result<String, String> {
     let (which, rest) = match inner.split_once(':') {
         Some((which, rest)) => (which.trim_end(), Some(rest)),
         None => (inner.trim_end(), None),
@@ -563,11 +642,21 @@ fn one(inner: &str, args: &[&Arg], next: &mut usize) -> Result<String, String> {
     };
 
     let spec = spec_of(rest.unwrap_or(""), args)?;
-    let Some(value) = arg.value() else {
-        return Err(format!("argument {} is not a kind of thing this can print", at));
-    };
-    let numeric = matches!(value, Value::Int(_) | Value::Uint(_) | Value::Real(_));
-    Ok(pad(body(&value, &spec)?, &spec, numeric))
+    let held = asked(arg, spec);
+    // A spec about the value, said of a value written in more than one piece.
+    // Asked before what went wrong inside, because this is *why* it went
+    // wrong: the first piece took the spec, and a `{:x}` that reached the
+    // "Point { x: " of a struct is a complaint about text that would tell the
+    // reader nothing about the mistake they made.
+    if particular(&spec) && held.writes > 1 {
+        return Err("this writes itself in several pieces, and the spec is about \
+                    one thing"
+            .to_string());
+    }
+    if let Some(why) = held.wrong {
+        return Err(why);
+    }
+    Ok(pad(held.out, &spec, held.numeric))
 }
 
 // ---- What the program calls ------------------------------------------------
@@ -590,7 +679,7 @@ const TO_ERROR: i64 = 2;
 // The line goes out in one write. Two would let another thread's line land
 // between the text and its newline, and the lock a single `print!` takes is not
 // held across two of them.
-fn emit(how: i64, fmt: *const Str, args: &[&Arg]) {
+fn emit(how: i64, fmt: *const Str, args: &[Object]) {
     let Some(fmt) = (unsafe { fmt.as_ref() }).and_then(Str::read) else {
         eprintln!("fortec: print: the format string is not text");
         return;
@@ -627,32 +716,159 @@ fn emit(how: i64, fmt: *const Str, args: &[&Arg]) {
 //
 // It used to be five, `__rt_print0` through `__rt_print4`, because a Forte
 // macro cannot take "a format string and whatever follows it" and a fn has no
-// variadic form -- so the number was in the symbol. It is in a parameter now:
-// `std/fmt.ft` walks what it was handed, asks each value for its `Arg` through
-// the `Show` trait, and hands over a run of them.
-//
-// A pointer and a count rather than a view, deliberately. A view is two words
-// and this compiler hands every aggregate over as the address of a copy, so a
-// view would be one more indirection to agree about for nothing -- where two
-// plain parameters are two registers and no agreement at all.
+// variadic form -- so the number was in the symbol. It is in the view now:
+// `std/fmt.ft` hands over the `&(&dyn Show)[]` it was given, and this asks
+// each of them what it looks like.
 ///
 /// # Safety
-/// `fmt` is one `Str` and `args` is `n` `Arg`s, all the caller's, and all of
-/// them live for the length of this call.
+/// `fmt` is one `Str` and `args` one `Objects`, both the caller's, and the
+/// objects it names live for the length of this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __rt_print(how: i64, fmt: *const Str, args: *const Arg, n: i64) {
-    let held: Vec<&Arg> = match (args.is_null(), n) {
+pub unsafe extern "C" fn __rt_print(how: i64, fmt: *const Str, args: *const Objects) {
+    let held: &[Object] = match unsafe { args.as_ref() } {
         // Nothing to say about the arguments is not nothing to print: a
         // format string with no `{}` in it is the commonest call there is.
-        (true, _) | (_, 0) => Vec::new(),
-        (false, n) if n > 0 => {
-            unsafe { std::slice::from_raw_parts(args, n as usize) }.iter().collect()
-        }
-        // A negative count is a caller that has lost track of what it holds,
-        // and reading nothing is the only safe answer.
-        _ => Vec::new(),
+        // And a negative length is a caller that has lost track of what it
+        // holds, for which reading nothing is the only safe answer.
+        None => &[],
+        Some(held) if held.at.is_null() || held.len <= 0 => &[],
+        Some(held) => unsafe { std::slice::from_raw_parts(held.at, held.len as usize) },
     };
-    emit(how, fmt, &held);
+    emit(how, fmt, held);
+}
+
+// ---- What a value writes itself with ---------------------------------------
+
+// The five, and the whole of what a `Show` body may do to a sink.
+//
+// There is no `__rt_show_str` taking bytes and a length as two words: a `str`
+// is one aggregate and crosses as the address of a copy, exactly as the format
+// string does.
+//
+// Each of them takes the sink by address and writes one piece. What that piece
+// looks like is the spec's business and the spec is the sink's, so a body in
+// the language says *what* it is writing and never how.
+
+/// # Safety
+/// `into` is a sink this runtime made and handed to the caller, live for the
+/// length of the call that handed it over.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt_show_int(into: *mut Sink, n: i64) {
+    if let Some(sink) = unsafe { into.as_mut() } {
+        sink.wrote(Value::Int(n));
+    }
+}
+
+/// # Safety
+/// As `__rt_show_int`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt_show_uint(into: *mut Sink, n: u64) {
+    if let Some(sink) = unsafe { into.as_mut() } {
+        sink.wrote(Value::Uint(n));
+    }
+}
+
+/// # Safety
+/// As `__rt_show_int`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt_show_real(into: *mut Sink, x: f64) {
+    if let Some(sink) = unsafe { into.as_mut() } {
+        sink.wrote(Value::Real(x));
+    }
+}
+
+/// # Safety
+/// As `__rt_show_int`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt_show_truth(into: *mut Sink, v: i64) {
+    if let Some(sink) = unsafe { into.as_mut() } {
+        sink.wrote(Value::Truth(v != 0));
+    }
+}
+
+/// # Safety
+/// As `__rt_show_int`, and `text` is one `Str` of the caller's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt_show_text(into: *mut Sink, text: *const Str) {
+    let Some(sink) = (unsafe { into.as_mut() }) else { return };
+    match (unsafe { text.as_ref() }).and_then(Str::read) {
+        Some(held) => sink.wrote(Value::Text(held)),
+        None => {
+            if sink.wrong.is_none() {
+                sink.wrong = Some("this is not text".to_string());
+            }
+        }
+    }
+}
+
+// ---- A `&dyn Show` made without a program to make one ----------------------
+
+// The tests in this crate ask what the formatter does, and what it does now
+// begins with a call into a compiled Forte body. There is none here, so this is
+// one: a table of one entry, and a value behind the data pointer that the entry
+// knows how to write.
+//
+// It is the shape and not a simulation of it -- the same two words in the same
+// order, the same C signature, the same receiver-first call -- so a test that
+// passes here is a test about the path a program takes.
+#[cfg(test)]
+pub(crate) mod fake {
+    use super::{Object, Shows, Sink, Value};
+
+    // What one of these stands for. `Pieces` is the shape a derived `Show` has
+    // and a primitive does not: a value written in more than one go.
+    pub(crate) enum Held {
+        Int(i64),
+        Uint(u64),
+        Real(f64),
+        Truth(bool),
+        Text(String),
+        Pieces(Vec<String>),
+        // Bytes that are not text, handed over the way a Forte `str` is: the
+        // language has no operation that would have looked at them before now,
+        // so `__rt_show_text` is where it is found out.
+        Raw(Vec<u8>),
+    }
+
+    unsafe extern "C" fn shows(data: *const u8, into: *mut Sink) {
+        let held = unsafe { &*(data as *const Held) };
+        let sink = unsafe { &mut *into };
+        match held {
+            Held::Int(n) => sink.wrote(Value::Int(*n)),
+            Held::Uint(n) => sink.wrote(Value::Uint(*n)),
+            Held::Real(x) => sink.wrote(Value::Real(*x)),
+            Held::Truth(v) => sink.wrote(Value::Truth(*v)),
+            Held::Text(s) => sink.wrote(Value::Text(s)),
+            Held::Pieces(held) => {
+                for piece in held {
+                    sink.wrote(Value::Text(piece));
+                }
+            }
+            // Through the entry itself and not through `wrote`, that being the
+            // whole of what this case is about.
+            Held::Raw(bytes) => {
+                let held = super::Str { at: bytes.as_ptr(), len: bytes.len() as i64 };
+                unsafe { super::__rt_show_text(into, &held) };
+            }
+        }
+    }
+
+    static TABLE: Shows = shows;
+
+    // Leaked, so that an `Object` may be written inline in a list of them the
+    // way an `Arg` used to be. A test process is the one place where never
+    // giving a few words back is the right trade for a readable assertion.
+    pub(crate) fn made(held: Held) -> Object {
+        let held: &'static Held = Box::leak(Box::new(held));
+        Object { data: (held as *const Held).cast(), table: &TABLE }
+    }
+
+    // Not one at all: what a caller compiled against a different version of
+    // this file would hand over, and what the tag that was not one of five
+    // used to be.
+    pub(crate) fn nothing() -> Object {
+        Object { data: std::ptr::null(), table: std::ptr::null() }
+    }
 }
 
 #[cfg(test)]

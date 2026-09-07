@@ -19,7 +19,6 @@
 // container is handed live and why they are values rather than methods.
 
 import test::{assert, assert_eq};
-import fmt::{int, text, truth};
 import vec::Vec;
 import option::Option;
 import panic::panic;

@@ -216,6 +216,23 @@ where it was twenty and what took the tag out of "std/test.ft" as well: a value
 is asked what it looks like rather than told at the call, whether it is being
 printed or being asserted about.
 
+What a value answers with is *writing*, and that is worth a line of its own.
+It answered with a value at first — an "Arg", a struct with a tag saying which
+of four fields meant anything — because the runtime does the formatting and a
+value was the thing that could cross to it. But what a value looks like is not
+one number and not one piece of text: a struct is a name, its fields and the
+punctuation between them, and there is nothing to hand back that says all of
+that. So "Show" writes instead, into a "Sink" the runtime owns, as many pieces
+as the value is made of, and the runtime calls into the program through the
+object's own table to ask. The tag is gone and so is the wrapping at the call.
+
+Which leaves the "{}" spec, which is about one thing and may meet a value that
+is several. The first piece takes what was asked for and the rest take what
+nobody asked about; where the spec said something about the value itself — a
+kind, a precision, a sign — and the value wrote more than once, that is said
+out loud rather than half-applied. Width and alignment are the room around the
+value rather than the value, and apply to the whole of what came out.
+
 "assert_eq" takes a bound and not a trait object, which is the one decision in
 that pair worth writing down. Both sides being one "T" is what an equality
 assert means: a number is never equal to a piece of text, so

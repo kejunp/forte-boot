@@ -1,9 +1,9 @@
 // `print` and `println`, and `eprint` and `eprintln` beside them, whose format
 // strings are Rust's.
 //
-//     println1("x is {}", int(x))
-//     println2("{:>8.3} {:#x}", float(ratio), int(mask))
-//     eprintln1("cannot read {}", text(name))
+//     println("x is {}", &[&x])
+//     println("{:>8.3} {:#x}", &[&ratio, &mask])
+//     eprintln("cannot read {}", &[&name])
 //
 // The `e` ones write to the error stream and are otherwise the same fn: what a
 // line says and where it goes are two questions, and the second is answered by
@@ -16,229 +16,165 @@
 // `LowerHex` and the rest that Rust already has. `runtime/src/fmt.rs` is the
 // other half of this file and says how, and what a bad format string does.
 //
-// **Why the arity is in the name.** `println!` takes a format string and
-// however many arguments follow it. Nothing here can: a Forte macro takes a
-// fixed list of `$name:fragment` and has no repetition (section 2), a fn has no
-// variadic form, and two fns may not share a name, so there is no one `println`
-// that takes both one argument and three. The number is therefore written on
-// the end of the name, and the ladder stops at four because a line with five
-// things in it is a line to break in two. Four ladders of five is what that
-// comes to, and every rung of them is one call to the runtime.
+// **The arity is not in the name and the kind is not at the call.** Both of
+// those were the same missing thing, and §8 named it: "traits with code behind
+// them". There are traits with code behind them now. So `print` through
+// `print4` are one `print` taking a view -- one argument however many things
+// are in it -- and `int(x)` and `text(s)` are gone, a value being asked what it
+// looks like rather than told at the call.
+
+// ---- Where a value writes itself --------------------------------------------
+
+// The runtime's, and opaque here.
 //
-// **Why an argument is wrapped.** `int(x)`, `text(s)` and the three beside them
-// make an `Arg`, which is a value with a tag saying what it is. A trait would
-// be how this is done in a language that ran the code behind one, and section 8
-// says that is what a trait here is still waiting for. Until then the tag is
-// the dispatch, and it is written at the call because there is nowhere else to
-// write it.
-
-import vec::{Vec, empty, push};
-
-// One thing to print. The tag says which field means anything; the others are
-// there because a struct has all of its fields whatever it holds.
+// What crosses is the address of one, and the five routines below are the only
+// things that may be handed it: a `Show` body says *what* it is writing and
+// never how, so nothing in this language had to learn how a float is spelled.
 //
-// It agrees field for field with the `Arg` in `runtime/src/fmt.rs`, which reads
-// this through a pointer. Nothing checks that agreement -- it is two programs
-// compiled separately, as `shape.rs` says of the descriptors -- so the tags
-// below are the numbers that file names and neither set may move alone.
-pub struct Arg {
-    // Which of the five it is. `pub` for the reason `Vec`'s fields are: there
-    // is no visibility that reaches the runtime and not the reader.
-    pub tag:  i64,
-    // A whole number, an unsigned one read back through its bits, or a bool.
-    pub word: i64,
-    pub real: f64,
-    pub held: str,
+// The field is never read. A struct with no fields is not a type this language
+// has, and this one stands for the whole of what the runtime keeps behind the
+// address -- a buffer, what the `{}` asked for, and what has gone wrong.
+pub struct Sink {
+    held: ptr u8,
 }
 
-// ---- Making one -------------------------------------------------------------
+%symbol("__rt_show_int")
+fn put_int(into: &Sink, n: i64): null;
 
-pub fn int(n: i64): Arg {
-    Arg { tag: 1, word: n, real: 0.0, held: "" }
-}
+%symbol("__rt_show_uint")
+fn put_uint(into: &Sink, n: u64): null;
 
-// The bits and not the number: an unsigned value above what an i64 holds comes
-// back out of the same bits on the other side, where the tag says to read them
-// unsigned. `{}` of one is therefore never a negative number.
-pub fn uint(n: u64): Arg {
-    Arg { tag: 2, word: n as i64, real: 0.0, held: "" }
-}
+%symbol("__rt_show_real")
+fn put_real(into: &Sink, x: f64): null;
 
-pub fn float(x: f64): Arg {
-    Arg { tag: 3, word: 0, real: x, held: "" }
-}
+%symbol("__rt_show_truth")
+fn put_truth(into: &Sink, v: bool): null;
 
-pub fn truth(v: bool): Arg {
-    Arg { tag: 4, word: v as i64, real: 0.0, held: "" }
-}
+%symbol("__rt_show_text")
+pub fn put(into: &Sink, s: str): null;
 
-pub fn text(s: str): Arg {
-    Arg { tag: 5, word: 0, real: 0.0, held: s }
-}
+// ---- What a value looks like when it is written down ------------------------
 
-// ---- What the runtime does --------------------------------------------------
-
-// One symbol per arity, and one word rather than a flag each for the two
-// questions. `how` is 1 for a newline on the end and 2 for the error stream, so
-// the four names below are the four numbers 0 to 3.
+// One member, and it writes rather than gives back.
 //
-// One word and not two, because six is how many arguments this machine hands
-// over in registers: the word, the format string and four `Arg`s is six exactly,
-// and a seventh is a call the back end declines to write. Two flags made the
-// four-argument rung one of those, and what it left was a `print4` that printed
-// nothing at all.
+// **Why it writes.** What a value looks like is not one number and not one
+// piece of text: a struct is a name, its fields, and the punctuation between
+// them, and there is no single thing to hand back that says all of that. This
+// used to give back an `Arg` -- a struct with a tag saying which of four fields
+// meant anything -- which could say "the number 42" and could not say
+// "Point { x: 3, y: 4 }" at all. So the value is handed somewhere to write and
+// writes as many pieces as it is made of.
+//
+// **The spec goes to the first piece.** `{:x}` of a number says what that
+// number looks like; said of a value made of several parts there is no one
+// number for it to be about. The first piece takes what was asked for, the rest
+// take what nobody asked about, and the runtime says something where the spec
+// was particular and the value was not. Width and alignment are the room around
+// the value rather than the value, and apply to the whole of what came out.
+//
+// **One impl per kind the runtime can write.** There are five, and more than
+// five types, because every whole number narrower than an `i64` widens into one
+// exactly: an `i32` is an int, a `u8` a uint, an `f32` a real. A widening loses
+// nothing and needs no rule; it is a *narrowing* that would want one, which is
+// why `i128` and `u128` are not here.
+//
+// Every body reads its receiver, which is a `&i64` standing where an `i64` is
+// wanted (§3). That was the last of the four things a reference is said to
+// stand for and the one that was not implemented, and it is why none of this
+// could have been written before.
+pub trait Show {
+    fn show(&self, into: &Sink)
+}
+
+impl Show for i8 {
+    fn show(&self, into: &Sink) { put_int(into, self as i64) }
+}
+
+impl Show for i16 {
+    fn show(&self, into: &Sink) { put_int(into, self as i64) }
+}
+
+impl Show for i32 {
+    fn show(&self, into: &Sink) { put_int(into, self as i64) }
+}
+
+impl Show for i64 {
+    fn show(&self, into: &Sink) { put_int(into, self) }
+}
+
+impl Show for u8 {
+    fn show(&self, into: &Sink) { put_uint(into, self as u64) }
+}
+
+impl Show for u16 {
+    fn show(&self, into: &Sink) { put_uint(into, self as u64) }
+}
+
+impl Show for u32 {
+    fn show(&self, into: &Sink) { put_uint(into, self as u64) }
+}
+
+impl Show for u64 {
+    fn show(&self, into: &Sink) { put_uint(into, self) }
+}
+
+impl Show for f32 {
+    fn show(&self, into: &Sink) { put_real(into, self as f64) }
+}
+
+impl Show for f64 {
+    fn show(&self, into: &Sink) { put_real(into, self) }
+}
+
+impl Show for bool {
+    fn show(&self, into: &Sink) { put_truth(into, self) }
+}
+
+impl Show for str {
+    fn show(&self, into: &Sink) { put(into, self) }
+}
+
 // ---- What crosses to the runtime --------------------------------------------
 
-// One routine, and the number of arguments is a count rather than part of the
-// name. `how` is the two flags: 1 for the newline, 2 for the error stream.
+// One routine, and the number of arguments is the view's length rather than
+// part of the name. `how` is the two flags: 1 for the newline, 2 for the error
+// stream, so the four names below are the four numbers 0 to 3.
 //
-// A `ptr Arg` and a length rather than a `&Arg[]`, which is what the runtime
-// asks for and why is written there: a view is two words and every aggregate
-// crosses as an address, so a view would be one more indirection to agree
-// about for nothing.
+// The view is handed straight over. It is two words -- an address and a length
+// -- and every aggregate crosses as the address of a copy, so what the runtime
+// is given is the address of those two words. The `Arg` version took a pointer
+// and a count instead, because it had a `Vec` of its own making to read them
+// off; there is no `Vec` any more, the arguments arriving as a view already.
 %symbol("__rt_print")
-fn out(how: i64, f: str, args: ptr Arg, n: i64): null;
+fn out(how: i64, f: str, args: &(&dyn Show)[]): null;
 
 // ---- Printing ---------------------------------------------------------------
 
 // Four routines where there were twenty.
 //
-// The ladder is gone. It was there because a Forte macro has no repetition and
-// a fn has no variadic form, so `print` through `print4` were five spellings of
-// one idea and the arity was in the name -- and every argument had to be
-// wrapped at the call, `int(x)` and `text(s)`, because there was no way to ask
-// a value what it was. Both of those were the same missing thing, and §8 named
-// it: "traits with code behind them". There are traits with code behind them
-// now.
-//
-// So what a caller writes is what it means:
-//
 //     println("x is {}", &[&x])
 //     println("{} and {}", &[&name, &count])
 //     println("no arguments here", &[])
 //
-// The `&[..]` is an array of trait objects, borrowed as a view -- which is one
-// argument however many things are in it, and is the whole reason the arity
-// left the name.
+// The `&[..]` is an array of trait objects, borrowed as a view -- one argument
+// however many things are in it, and the whole reason the arity left the name.
 //
 // The format string is read even where nothing follows it, so that `{{` is a
 // brace here as it is everywhere else and a stray `{}` is reported rather than
 // printed.
 
-// What every one of the four does: ask each value for its `Arg`, then hand the
-// run of them over. The walk is here and not in the runtime because the runtime
-// cannot call into a Forte body -- it is handed values, it does not go and ask
-// for them.
-//
-// `args.len` is what makes this one parameter rather than two. A view has
-// carried its length since a reference to an array became a view of it (§3);
-// until now nothing could read it, and a caller would have had to count its own
-// arguments and be believed.
-fn said(how: i64, f: str, args: &(&dyn Show)[]) {
-    var held: Vec<Arg> = empty()
-    var i = 0
-    while i < args.len {
-        push(*held, args[i].show())
-        i = i + 1
-    }
-    out(how, f, held.at, held.len)
-}
-
 pub fn print(f: str, args: &(&dyn Show)[]) {
-    said(0, f, args)
+    out(0, f, args)
 }
 
 pub fn println(f: str, args: &(&dyn Show)[]) {
-    said(1, f, args)
+    out(1, f, args)
 }
 
 pub fn eprint(f: str, args: &(&dyn Show)[]) {
-    said(2, f, args)
+    out(2, f, args)
 }
 
 pub fn eprintln(f: str, args: &(&dyn Show)[]) {
-    said(3, f, args)
-}
-
-// ---- What a value looks like when it is written down ------------------------
-
-// Section 8 said what this was waiting for and the head of this file said it
-// too: "a trait would be how this is done in a language that ran the code
-// behind one, and section 8 says that is what a trait here is still waiting
-// for". It is not waiting any more, so the tag a caller used to write is a body
-// the value answers with.
-//
-// **Why it gives back an `Arg` rather than doing the writing.** What formats a
-// value is the runtime, in Rust, and the runtime cannot call into a Forte body.
-// So the dispatch happens on this side and what crosses the boundary is what
-// always crossed it: `Arg` stays the wire format and stops being something a
-// caller writes.
-//
-// **Here and not in a file of its own**, because every impl needs `Arg` and the
-// wrappers, and a file of its own would have to import this one while this one
-// imported it back.
-//
-// **One impl per type a tag can hold.** There are five tags
-// (`runtime/src/fmt.rs`) and more than five types, because every whole number
-// narrower than an `i64` widens into one exactly: an `i32` is an `int`, a `u8`
-// is a `uint`, an `f32` is a `float`. A widening loses nothing and needs no
-// rule; it is a *narrowing* that would want one, which is why `i128` and `u128`
-// are not here -- `int` takes an `i64` and what an `i128` too big for one
-// should print as is a question the language has not answered.
-//
-// Every body here reads its receiver, which is a `&i64` standing where an `i64`
-// is wanted (§3). That was the last of the four things a reference is said to
-// stand for and the one that was not implemented, and it is why this could not
-// have been written before.
-
-pub trait Show {
-    fn show(&self): Arg
-}
-
-impl Show for i8 {
-    fn show(&self): Arg { int(self as i64) }
-}
-
-impl Show for i16 {
-    fn show(&self): Arg { int(self as i64) }
-}
-
-impl Show for i32 {
-    fn show(&self): Arg { int(self as i64) }
-}
-
-impl Show for i64 {
-    fn show(&self): Arg { int(self) }
-}
-
-impl Show for u8 {
-    fn show(&self): Arg { uint(self as u64) }
-}
-
-impl Show for u16 {
-    fn show(&self): Arg { uint(self as u64) }
-}
-
-impl Show for u32 {
-    fn show(&self): Arg { uint(self as u64) }
-}
-
-impl Show for u64 {
-    fn show(&self): Arg { uint(self) }
-}
-
-impl Show for f32 {
-    fn show(&self): Arg { float(self as f64) }
-}
-
-impl Show for f64 {
-    fn show(&self): Arg { float(self) }
-}
-
-impl Show for bool {
-    fn show(&self): Arg { truth(self) }
-}
-
-impl Show for str {
-    fn show(&self): Arg { text(self) }
+    out(3, f, args)
 }

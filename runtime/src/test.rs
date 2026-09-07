@@ -25,7 +25,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use super::fmt::{shown, same, Arg, Str};
+use super::fmt::{shown, same, Object, Str};
 
 // How many assertions have failed in the test now running.
 //
@@ -71,8 +71,8 @@ pub extern "C" fn __rt_assert(ok: i64, why: *const Str) {
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt_assert_cmp(
     want_same: i64,
-    a: *const Arg,
-    b: *const Arg,
+    a: *const Object,
+    b: *const Object,
     why: *const Str,
 ) {
     let (Some(a), Some(b)) = (unsafe { a.as_ref() }, unsafe { b.as_ref() }) else {

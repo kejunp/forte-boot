@@ -2,7 +2,7 @@
 //
 //     %test
 //     fn doubling_a_number_gives_twice_it() {
-//         assert_eq(int(double(21)), int(42), "double(21)")
+//         assert_eq(&double(21), &42, "double(21)")
 //         assert(double(0) == 0, "double(0) is nothing")
 //     }
 //
@@ -33,7 +33,7 @@
 //         assert_eq(&at(&v, 0), &7, "and it is the thing")
 //     }
 
-import fmt::{Arg, Show};
+import fmt::Show;
 
 %symbol("__rt_assert")
 fn said(ok: i64, why: str): null;
@@ -41,7 +41,7 @@ fn said(ok: i64, why: str): null;
 // One symbol for both sides of the question, `same` being which way round it
 // was asked -- the same shape `print` uses for its two flags.
 %symbol("__rt_assert_cmp")
-fn said_cmp(same: i64, a: Arg, b: Arg, why: str): null;
+fn said_cmp(same: i64, a: &dyn Show, b: &dyn Show, why: str): null;
 
 // ---- Asserting ---------------------------------------------------------------
 
@@ -61,23 +61,28 @@ pub fn assert(ok: bool, why: str) {
 // an `Arg` apiece and be handed `int(a)` and `text(b)`, which is the wrapping
 // `fmt` explains and no longer needs.
 //
-// What crosses to the runtime is still an `Arg`, because that is what the
-// runtime can read; what a caller writes is a reference to the value.
-//
 // **A bound and not a `&dyn Show`**, which is the one decision here worth
 // writing down. Both sides being one `T` says what an equality assert means --
 // a number is never equal to a piece of text, and `assert_eq(&5, &"5")` is a
-// question nobody meant to ask, so it is refused rather than answered.
+// question nobody meant to ask, so it is refused rather than answered. It also
+// settles a bare literal against the other side rather than against a guess:
+// `assert_eq(&count, &10, ..)` is the commonest shape there is, and the `10` is
+// whatever `count` is.
 //
-// It also settles what a bare literal is. `assert_eq(&count, &10, ..)` is the
-// commonest shape there is, and a `10` with no suffix is a hole: as a
-// `&dyn Show` there is nothing anywhere to fill it from and it is refused, and
-// as a `&T` beside `&count` it is whatever `count` is. So the bound buys the
-// spelling the callers want as well as the rule.
+// The bound is what the two objects below are made from, which is a thing a
+// bound could not do until it could (§8): `T: Show` has already said that
+// whatever `T` turns out to be answers `Show`, and which table is built is the
+// instance's question.
+//
+// What the two sides are compared by is what each of them *looks like*. There
+// is no tag any more and no `==` a trait could offer, so what an assertion
+// compares is what it is about to print -- which within one type is the same
+// answer for every primitive the language has, and where it differs it differs
+// the useful way: `0.1 + 0.2` and `0.3` are two lines of digits and not one.
 pub fn assert_eq<T: Show>(a: &T, b: &T, why: str) {
-    said_cmp(1, a.show(), b.show(), why)
+    said_cmp(1, a, b, why)
 }
 
 pub fn assert_ne<T: Show>(a: &T, b: &T, why: str) {
-    said_cmp(0, a.show(), b.show(), why)
+    said_cmp(0, a, b, why)
 }
