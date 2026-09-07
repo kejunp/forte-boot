@@ -191,6 +191,7 @@ pub(super) fn known(ttir: &TTIRProgram, kind: &SIRInstKind) -> bool {
             | SIRInstKind::ItemAddr(_)
             | SIRInstKind::SelfAddr
             | SIRInstKind::FieldAddr { .. }
+            | SIRInstKind::PayloadAddr { .. }
             | SIRInstKind::TupleAddr { .. }
             // Two of these make the one value whether or not either traps: if
             // the first one did, there is no second one to have shared with.

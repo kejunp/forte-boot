@@ -100,7 +100,11 @@ impl<'a> Lowerer<'a> {
             // ---- And the two that read it back -----------------------------
 
             SIRInstKind::Discriminant(of) => {
-                let held = self.ty_of(*of);
+                // Through a reference, because a `match` on a `&E` asks the
+                // same question of the same bytes: the value is at the address
+                // either way, and only the type says which of the two the
+                // reader wrote.
+                let held = self.through(self.ty_of(*of));
                 let bytes = self.tag_of(held);
                 let from = self.of(*of);
                 self.making(def, MIRInstKind::Load { from, bytes }, line, col);
@@ -111,13 +115,14 @@ impl<'a> Lowerer<'a> {
             // there, which is why the SIR keeps the two apart and why this can
             // be a plain offset.
             SIRInstKind::Payload { of, variant, index } => {
-                let held = self.ty_of(*of);
+                let held = self.through(self.ty_of(*of));
                 let bytes = self.payload_at(held, *variant, *index);
                 let base = self.of(*of);
                 let ty = self.ty_of(value);
                 let at = self.push(MIRInstKind::Offset { base, bytes }, line, col);
                 self.take(def, at, ty, line, col);
             }
+
 
             _ => self.making(def, MIRInstKind::Undef, line, col),
         }

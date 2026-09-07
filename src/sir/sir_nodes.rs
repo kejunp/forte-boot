@@ -272,6 +272,16 @@ pub enum SIRInstKind {
         variant: usize,
         index:   usize,
     },
+    // Where that field *is*, which is what a pattern matched through a
+    // reference binds. `Payload` is to this what `Field` is to `FieldAddr`:
+    // the one makes a copy of what is there and the other says where it is,
+    // and a `match` on a `&E` binds references into the value it was handed
+    // rather than moving its parts out of a borrow.
+    PayloadAddr {
+        of:      SIRValueId,
+        variant: usize,
+        index:   usize,
+    },
 
     // ---- What a for walks --------------------------------------------------
     // The closed set of iterables -- an array, a run, a `Range`, a `Set`, a
@@ -477,7 +487,7 @@ impl SIRBody {
             | SIRInstKind::TupleIndex { base, .. }
             | SIRInstKind::FieldAddr { base, .. }
             | SIRInstKind::TupleAddr { base, .. } => vec![*base],
-            SIRInstKind::Payload { of, .. } => vec![*of],
+            SIRInstKind::Payload { of, .. } | SIRInstKind::PayloadAddr { of, .. } => vec![*of],
             SIRInstKind::Lane { of, .. } | SIRInstKind::Lanes { of, .. } => vec![*of],
 
             SIRInstKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
@@ -542,7 +552,7 @@ impl SIRBody {
             | SIRInstKind::TupleIndex { base, .. }
             | SIRInstKind::FieldAddr { base, .. }
             | SIRInstKind::TupleAddr { base, .. } => vec![base],
-            SIRInstKind::Payload { of, .. } => vec![of],
+            SIRInstKind::Payload { of, .. } | SIRInstKind::PayloadAddr { of, .. } => vec![of],
             SIRInstKind::Lane { of, .. } | SIRInstKind::Lanes { of, .. } => vec![of],
 
             SIRInstKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],

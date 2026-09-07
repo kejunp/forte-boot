@@ -266,3 +266,56 @@ fn a_variant_carrying_several_things_wants_one_arm_that_takes_them_all() {
     ));
     assert!(out.contains("`E::P` is not taken"), "{}", out);
 }
+
+// ---- A match on a reference -------------------------------------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3) -- and matched, which is the
+// reach this is. It was not: `match r { E::One => .. }` on a `&E` was "this
+// tests `E` against `&E`", so nothing could look at an enum it had been lent.
+//
+// What changes is not the tests, which ask the same questions of the same
+// bytes, but what a binding takes: a reference to the part. Without that a
+// match on a `&E` would be moving the payload out of a borrow, which is refused
+// for everything that does not copy.
+#[test]
+fn a_reference_is_matched_as_the_place_it_refers_to() {
+    let with = "struct Sq {\n    pub s: i32,\n}\n\
+                enum E {\n    One,\n    Two(i32),\n    Held(Sq),\n}\n";
+    clean(&format!(
+        "{}fn f(e: &E): i32 {{\n\
+         \x20   match e {{\n        E::One => 0,\n        E::Two(n) => n,\n\
+         \x20       E::Held(q) => q.s,\n    }}\n}}\n",
+        with));
+    // A `gc` is reached through exactly as a reference is (§2), so it is the
+    // same rule and the same arms.
+    clean(&format!(
+        "{}fn f(e: gc E): i32 {{\n\
+         \x20   match e {{\n        E::One => 0,\n        E::Two(n) => n,\n\
+         \x20       E::Held(q) => q.s,\n    }}\n}}\n",
+        with));
+}
+
+// What a binding takes is a reference, which is the whole of what makes the
+// payload readable without being moved. Asserted on the *slot*, the binding's
+// type being the thing that says it.
+#[test]
+fn a_binding_under_a_reference_is_a_reference() {
+    let ttir = clean(
+        "enum E {\n    Two(i32),\n}\n\
+         fn f(e: &E): i32 {\n    match e {\n        E::Two(n) => n,\n    }\n}\n",
+    );
+    let held = ttir.bodies.iter().flat_map(|b| &b.locals).any(|l| {
+        matches!(ttir.types.get(l.ty), Some(Ty::Ref { .. }))
+    });
+    assert!(held, "the binding was meant to be a reference\n{:#?}", ttir.bodies);
+    // And on a value scrutinee it is the value, which is what it always was.
+    let ttir = clean(
+        "enum E {\n    Two(i32),\n}\n\
+         fn f(e: E): i32 {\n    match e {\n        E::Two(n) => n,\n    }\n}\n",
+    );
+    let held = ttir.bodies.iter().flat_map(|b| &b.locals).any(|l| {
+        matches!(ttir.types.get(l.ty), Some(Ty::Ref { .. }))
+    });
+    assert!(!held, "a value scrutinee binds values\n{:#?}", ttir.bodies);
+}

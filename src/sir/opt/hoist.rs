@@ -175,6 +175,7 @@ fn liftable(
             | SIRInstKind::ItemAddr(_)
             | SIRInstKind::SelfAddr
             | SIRInstKind::FieldAddr { .. }
+            | SIRInstKind::PayloadAddr { .. }
             | SIRInstKind::TupleAddr { .. }
             | SIRInstKind::IndexAddr { .. }
     );

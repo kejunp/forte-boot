@@ -28,7 +28,22 @@ impl<'a> Lowerer<'a> {
         at: TIRExprId,
     ) -> TTIRExprId {
         let s = self.expr(scrutinee);
-        let want = self.out.exprs[s].ty;
+        // A reference is matched as the place it refers to. The patterns are
+        // written about that place, so they are held to *its* type, and what
+        // every binding under them takes is a reference into the scrutinee --
+        // see `Lowerer::matching`.
+        let held = self.out.exprs[s].ty;
+        let (want, matching) = match self.types.get(self.types.shallow(held)).clone() {
+            Ty::Ref { op, inner, .. } => (inner, Some(op)),
+            // A `gc` value "is reached through exactly as a reference is"
+            // (§2), and this is one of those reaches. What binds out of one is
+            // a reference and not a `gc` of the part: the collector holds the
+            // whole value, and a handle to half of it is not something it
+            // handed out.
+            Ty::GC(inner) => (inner, Some(crate::tir::tir_nodes::TIRRefOp::Imm)),
+            _ => (held, None),
+        };
+        let outer = std::mem::replace(&mut self.matching, matching);
 
         let mut made = Vec::new();
         let mut ty: Option<TyId> = None;
@@ -68,6 +83,7 @@ impl<'a> Lowerer<'a> {
             made.push(crate::tir::ttir_nodes::TTIRArm { pats, body });
         }
 
+        self.matching = outer;
         self.exhaustive(want, arms, at);
 
         // "a match with no arms" is a match on `never`, which is worth nothing

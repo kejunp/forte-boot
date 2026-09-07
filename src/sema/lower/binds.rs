@@ -30,9 +30,19 @@ impl<'a> Lowerer<'a> {
             );
             return self.errored_pat(id, want);
         }
+        // A reference into the scrutinee where the match runs through one:
+        // "a reference stands for the place it refers to and is ... matched
+        // exactly as that place is", and what is bound out of a place that is
+        // borrowed is a borrow of the part. The *pattern* keeps the type it
+        // tests, which is what the tests are written about and what says, one
+        // pass down, that this match is running through a reference at all.
+        let held = match self.matching {
+            Some(op) => self.types.intern(Ty::Ref { op, life: 0, inner: want }),
+            None => want,
+        };
         let slot = self.bind(
             TIRBinding::Name(path[0].clone()),
-            want,
+            held,
             crate::tir::tir_nodes::TIRIntro::Let,
             self.pat_at(id),
         );

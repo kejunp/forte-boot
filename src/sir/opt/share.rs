@@ -128,6 +128,7 @@ pub(super) fn share(body: &mut SIRBody, ttir: &TTIRProgram, stats: &mut Stats) -
                     | SIRInstKind::ItemAddr(_)
                     | SIRInstKind::SelfAddr
                     | SIRInstKind::FieldAddr { .. }
+                    | SIRInstKind::PayloadAddr { .. }
                     | SIRInstKind::TupleAddr { .. }
             );
             if !place && !shareable(ttir, ty) {

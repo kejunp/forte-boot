@@ -389,12 +389,20 @@ impl<'a> Lowerer<'a> {
         col: usize,
     ) {
         let on = self.value(scrutinee);
+        // Whether the patterns are written about what the scrutinee *refers*
+        // to. `sema` types them against the referent where the match runs
+        // through a reference and against the scrutinee's own type where it
+        // does not, so what says which of the two this is, is the two types.
+        let through = arms
+            .first()
+            .and_then(|arm| arm.pats.first())
+            .is_some_and(|&pat| self.ttir.pats[pat].ty != self.b.values[on].ty);
         for arm in arms {
             let block = self.edge_to(arm.block);
             for &pat in &arm.pats {
                 let fail = self.new_block(line, col);
                 let mut binds = Vec::new();
-                self.test(pat, on, fail, &mut binds);
+                self.test(pat, on, fail, &mut binds, through);
                 for (slot, value) in binds {
                     let to = self.address_of_slot(slot, line, col);
                     self.effect(SIRInstKind::Store { to, value }, line, col);
@@ -419,12 +427,18 @@ impl<'a> Lowerer<'a> {
     // each success falls into a fresh block, which is where the caller carries
     // on. Nothing here branches on a pattern that cannot fail, so a wildcard
     // and a bare binding cost no blocks at all.
+    // `through` is whether the value being tested is a *reference* to what the
+    // patterns are written about. A `match` on a `&E` tests the same bytes and
+    // binds different things: what a binding takes is a reference to the part
+    // and not a copy of it, so the projections are the address-giving half of
+    // each pair and the tests are the same tests.
     fn test(
         &mut self,
         pat: TTIRPatId,
         on: SIRValueId,
         fail: SIRBlockId,
         binds: &mut Vec<(SIRSlotId, SIRValueId)>,
+        through: bool,
     ) {
         let held = self.ttir.pats[pat].clone();
         let (line, col) = (held.line, held.col);
@@ -466,21 +480,23 @@ impl<'a> Lowerer<'a> {
                 self.check(TIRBinOp::Eq, tag, lit, fail, line, col);
                 for (index, &elem) in elems.iter().enumerate() {
                     let ty = self.ttir.pats[elem].ty;
-                    let of = self.push(SIRInstKind::Payload { of: on, variant, index }, ty, line,
-                                       col);
-                    self.test(elem, of, fail, binds);
+                    let kind = match through {
+                        true => SIRInstKind::PayloadAddr { of: on, variant, index },
+                        false => SIRInstKind::Payload { of: on, variant, index },
+                    };
+                    let of = self.push(kind, ty, line, col);
+                    self.test(elem, of, fail, binds, through);
                 }
             }
             TTIRPatKind::Tuple(elems) => {
                 for (index, &elem) in elems.iter().enumerate() {
                     let ty = self.ttir.pats[elem].ty;
-                    let base = self.push(
-                        SIRInstKind::TupleIndex { base: on, index: index as u64 },
-                        ty,
-                        line,
-                        col,
-                    );
-                    self.test(elem, base, fail, binds);
+                    let kind = match through {
+                        true => SIRInstKind::TupleAddr { base: on, index: index as u64 },
+                        false => SIRInstKind::TupleIndex { base: on, index: index as u64 },
+                    };
+                    let base = self.push(kind, ty, line, col);
+                    self.test(elem, base, fail, binds, through);
                 }
             }
             // Fields in declaration order, and the ones the pattern did not
@@ -489,9 +505,12 @@ impl<'a> Lowerer<'a> {
                 for (index, elem) in fields.iter().enumerate() {
                     let Some(elem) = elem else { continue };
                     let ty = self.ttir.pats[*elem].ty;
-                    let base =
-                        self.push(SIRInstKind::Field { base: on, index }, ty, line, col);
-                    self.test(*elem, base, fail, binds);
+                    let kind = match through {
+                        true => SIRInstKind::FieldAddr { base: on, index },
+                        false => SIRInstKind::Field { base: on, index },
+                    };
+                    let base = self.push(kind, ty, line, col);
+                    self.test(*elem, base, fail, binds, through);
                 }
             }
         }

@@ -74,6 +74,24 @@ impl<'a> Lowerer<'a> {
                 self.making(def, MIRInstKind::Offset { base, bytes }, line, col);
             }
 
+            // The same, into a variant's payload, and the reason it is here
+            // rather than beside `Payload` in `aggregates`: `Payload` makes a
+            // copy of what is there and this says where it is. What binds one
+            // is a pattern matched through a reference -- a `match` on a `&E`
+            // takes references into the value it was handed rather than moving
+            // its parts out of a borrow.
+            //
+            // The discriminant has already said it is that variant, exactly as
+            // for `Payload`: reading before the test reads a field that is not
+            // there, and the SIR keeps the two apart so that this can be a
+            // plain offset.
+            SIRInstKind::PayloadAddr { of, variant, index } => {
+                let held = self.through(self.ty_of(*of));
+                let bytes = self.payload_at(held, *variant, *index);
+                let base = self.of(*of);
+                self.making(def, MIRInstKind::Offset { base, bytes }, line, col);
+            }
+
             // And a number of bytes along that is not known until it runs. The
             // scale is the element's stride and not its size: three bytes with
             // a four-byte alignment sit four apart, and multiplying by three
@@ -266,7 +284,7 @@ impl<'a> Lowerer<'a> {
     // What a reference or a pointer is to. One layer and not all of them: `&&T`
     // is a reference to a reference, and reaching into it reaches into the
     // reference.
-    fn through(&self, ty: crate::tir::ttir_nodes::TyId) -> crate::tir::ttir_nodes::TyId {
+    pub(super) fn through(&self, ty: crate::tir::ttir_nodes::TyId) -> crate::tir::ttir_nodes::TyId {
         use crate::tir::ttir_nodes::Ty;
         match self.made.ttir.types.get(ty) {
             // A `gc` value is one word holding an address, so reaching into

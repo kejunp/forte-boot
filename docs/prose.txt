@@ -2308,6 +2308,33 @@ answer is not obvious from the rules alone.
     came of it before it was refused was a type the checker never settled and
     a program that would not link. It is a message now, and a member has to
     call its own something else.
+  - A "match" on a reference matches the place it refers to, and its bindings
+    bind references into it. "A reference stands for the place it refers to
+    and is read, called, indexed and reached into exactly as that place is"
+    (section 3) -- and matched, which is the reach this is. It was not:
+    "match r { E::One => .. }" on a "&E" was "this tests `E` against `&E`", so
+    nothing could look at an enum it had been lent, and every routine that
+    wanted to had to be handed the value instead.
+
+    What changes is not the tests, which ask the same questions of the same
+    bytes -- the value is at the address either way and only the type says
+    which of the two was written. What changes is what a binding takes: a
+    reference to the part rather than a copy of it. Without that, matching a
+    "&E" would be moving the payload out of a borrow, which is refused for
+    everything that does not copy, and an enum carrying a struct could be lent
+    and never read.
+
+    A "gc" is matched the same way, being "reached through exactly as a
+    reference is" (section 2), and what binds out of one is a reference: the
+    collector holds the whole value, and a handle to half of it is not
+    something it handed out. A scrutinee that is a value is what it always
+    was, and binds values.
+
+    In the instructions this is one new projection beside the ones that were
+    there. "Payload" makes a copy of what is at a variant's field and
+    "PayloadAddr" says where it is, which is the pair "Field" and "FieldAddr"
+    already were -- so a match through a reference is the address-giving half
+    of each pair and the same tests around it.
   - A method call on a place is a call on that place's *address*, where the
     method declares one. "A place is reached through one `*` or through any
     number of `&`" (section 3) and this is one of those reaches, and nothing

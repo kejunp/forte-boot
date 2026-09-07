@@ -599,6 +599,7 @@ impl<'a> Lowerer<'a> {
                 self.value(inst, at, i)
             }
             Addr(_) | ItemAddr(_) | SelfAddr | FieldAddr { .. } | TupleAddr { .. }
+            | PayloadAddr { .. }
             | IndexAddr { .. } | Load { .. } | Store { .. } | Field { .. }
             | TupleIndex { .. } | Index { .. } | Undef => self.place(inst, at, i),
             StructLit { .. } | VariantLit { .. } | ArrayLit(_) | TupleLit(_) | Range { .. }
@@ -1074,6 +1075,7 @@ fn addresses(source: &SIRBody) -> HashSet<SIRValueId> {
                     | SIRInstKind::ItemAddr(_)
                     | SIRInstKind::SelfAddr
                     | SIRInstKind::FieldAddr { .. }
+                    | SIRInstKind::PayloadAddr { .. }
                     | SIRInstKind::TupleAddr { .. }
                     | SIRInstKind::IndexAddr { .. }
             ) {

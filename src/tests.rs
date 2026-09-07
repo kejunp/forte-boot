@@ -1964,6 +1964,99 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A match on a reference --------------------------------------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3) -- and matched. It was not:
+// `match r { .. }` on a `&E` was "this tests `E` against `&E`", so nothing could
+// look at an enum it had been lent, and every routine that wanted to had to be
+// handed the value instead.
+//
+// What only running can say is the half this is about: a binding takes a
+// *reference* to the part. So the scrutinee is still there afterwards -- it was
+// borrowed and not taken apart -- and a payload that does not copy is readable
+// without being moved out of a borrow, which is what a derived `Show` of an
+// enum needs and could not have had.
+#[test]
+fn a_match_on_a_reference_borrows_what_it_looks_at() {
+    let dir = std::env::temp_dir().join(format!("fortec-matchref-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("matchref.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         struct Sq { pub s: i64 }\n\
+         enum E {\n\
+         \x20   One,\n\
+         \x20   Two(i64, str),\n\
+         \x20   Held(Sq),\n\
+         }\n\
+         \n\
+         fn tag(e: &E): i64 {\n\
+         \x20   match e {\n\
+         \x20       E::One => 1,\n\
+         \x20       E::Two(n, _) => n,\n\
+         \x20       E::Held(q) => q.s,\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn held(e: gc E): i64 {\n\
+         \x20   match e {\n\
+         \x20       E::One => 1,\n\
+         \x20       E::Two(n, _) => n,\n\
+         \x20       E::Held(q) => q.s,\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_reference_is_matched_as_what_it_refers_to() {\n\
+         \x20   let a = E::One\n\
+         \x20   assert_eq(&tag(&a), &1, \"a variant carrying nothing\")\n\
+         \x20   let b = E::Two(7, \"x\")\n\
+         \x20   assert_eq(&tag(&b), &7, \"one carrying two things\")\n\
+         \x20   let c = E::Held(Sq { s: 9 })\n\
+         \x20   assert_eq(&tag(&c), &9, \"and one carrying what does not copy\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_was_matched_is_still_there() {\n\
+         \x20   // Twice, which is the whole of what borrowing rather than\n\
+         \x20   // taking apart buys: the payload was read and not moved.\n\
+         \x20   let c = E::Held(Sq { s: 9 })\n\
+         \x20   assert_eq(&(tag(&c) + tag(&c)), &18, \"read twice\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_collected_value_is_matched_the_same_way() {\n\
+         \x20   let gc g = E::Two(4, \"y\")\n\
+         \x20   assert_eq(&held(g), &4, \"a `gc` is reached through as a reference is\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_value_scrutinee_is_what_it_always_was() {\n\
+         \x20   // Bound by value, which is the reading that did work and has\n\
+         \x20   // to keep working.\n\
+         \x20   let n = match E::Two(3, \"z\") {\n\
+         \x20       E::One => 0,\n\
+         \x20       E::Two(n, _) => n,\n\
+         \x20       E::Held(q) => q.s,\n\
+         \x20   }\n\
+         \x20   assert_eq(&n, &3, \"a value taken apart\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "matchref");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a match on a reference was meant to work:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}
+
 // ---- The impl a reader would have written -----------------------------------------
 
 // `%derive(Show)`, which is the first thing the attribute list said was waiting

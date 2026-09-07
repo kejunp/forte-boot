@@ -228,6 +228,18 @@ pub struct Lowerer<'a> {
     // spent it. That is what keeps `f(if c { 1 } else { 2 })` from offering
     // the argument's type to the two numbers inside the `if`.
     want: Option<TyId>,
+    // Whether the `match` being walked runs through a reference, and with
+    // which `<ref_op>` if it does.
+    //
+    // "A reference stands for the place it refers to and is read, called,
+    // indexed and reached into exactly as that place is" (§3) -- and matched,
+    // which is the reach this is. What it changes is not the tests, which ask
+    // the same questions of the same bytes, but what a *binding* takes: a
+    // reference to the part rather than a copy of it. Without that a `match`
+    // on a `&E` would be moving the enum's payload out of a borrow, which is
+    // refused for everything that does not copy -- so the derived `Show` of an
+    // enum holding a struct could not have been written.
+    matching: Option<crate::tir::tir_nodes::TIRRefOp>,
     // Whether the type being resolved stands directly behind a reference or a
     // pointer, which are the only two places a type of no known size may
     // stand: "nothing can hold one: no local, no field, no parameter and no
@@ -372,6 +384,7 @@ impl<'a> Lowerer<'a> {
             bounds: Vec::new(),
             starts: Vec::new(),
             want: None,
+            matching: None,
             behind: false,
             guarded: 0,
             consts: HashMap::new(),
