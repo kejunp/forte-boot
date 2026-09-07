@@ -126,6 +126,13 @@ impl<'a> Lowerer<'a> {
                 }
                 let (from, to) = (self.scalar_of(from), self.scalar_of(to));
                 let of = self.of(*of);
+                // Two types the machine cannot tell apart is a change of
+                // name and not of value -- a `&i64` where a `ptr i64` stood is
+                // the same word, and `sir::lower` writes one of these to say
+                // so without renaming a value something else is holding. It
+                // still costs the move: giving the two one register instead
+                // would be two values with one definition, which is a thing
+                // every pass below here counts on not being so.
                 self.making(def, MIRInstKind::Convert { of, from, to }, line, col);
             }
 

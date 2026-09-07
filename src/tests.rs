@@ -1970,6 +1970,89 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A reference to what a pointer points at -----------------------------------------
+
+// `&(deref p)` is `p`, and it has to be a value of its own all the same.
+//
+// `sir::lower` gives an address the type the source wrote over it rather than
+// wrapping it in an instruction that does nothing, and every place it reaches
+// for one is an instruction it makes on the spot -- except `deref`, which gives
+// back the operand itself, there being nothing between an address and the place
+// it addresses. So the type went onto a `Load` that `promote` was entitled to
+// take out, and what every later use named was the `ptr i64` that had been
+// stored.
+//
+// Nothing minds two names for one word until `mir::mono` recovers a call's type
+// arguments from what the values say they are: `assert_eq(&(deref p), ..)` came
+// out instantiated with a `ptr i64` for its `T`, for which there is no
+// `impl Show`, so the table beside the value held an address nothing made and
+// the runtime followed it.
+//
+// Which is why the test is written through a generic and run: the tree is right
+// at every level above the SIR, and the wrong type is one only the symbol in
+// the table shows.
+#[test]
+fn a_reference_to_what_a_pointer_points_at_keeps_its_own_type() {
+    let dir = std::env::temp_dir().join(format!("fortec-deref-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("deref.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::println;\n\
+         \n\
+         struct P { pub x: i64 }\n\
+         \n\
+         fn same(r: &i64): i64 { r }\n\
+         \n\
+         %test\n\
+         fn it_reaches_a_generic_as_what_the_source_wrote() {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[0]\n\
+         \x20       // Through `assert_eq<T: Show>`, which is where the type\n\
+         \x20       // the value says it is becomes the instance that is made.\n\
+         \x20       assert_eq(&(deref p), &1, \"the first\")\n\
+         \x20       // And bound to a name of its own first, which did not help.\n\
+         \x20       let h: &i64 = &(deref p)\n\
+         \x20       assert_eq(h, &1, \"and through a name\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn it_is_a_reference_everywhere_else_too() {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[2]\n\
+         \x20       // Handed to something that takes a reference, and read.\n\
+         \x20       assert_eq(&same(&(deref p)), &3, \"handed on\")\n\
+         \x20       // And the word it holds is still the address it was.\n\
+         \x20       let q = addr (deref p)\n\
+         \x20       assert_eq(&(deref q), &3, \"and back again\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_struct_through_one_is_reached_into() {\n\
+         \x20   let a: P[2] = [P { x: 1 }, P { x: 9 }]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[1]\n\
+         \x20       assert_eq(&(deref p).x, &9, \"a field of what it points at\")\n\
+         \x20   }\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "deref");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a reference to a deref was meant to keep its type:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- The address n elements along ----------------------------------------------------
 
 // `p + n` and `p - n`, which section 2 has been calling the general pointer
@@ -1999,16 +2082,11 @@ fn a_pointer_steps_by_the_element_it_points_at() {
          \x20   let a: i64[4] = [1, 2, 3, 4]\n\
          \x20   unsafe {\n\
          \x20       let p = addr a[0]\n\
-         \x20       // Bound before it is asserted about, `&(deref x)` being\n\
-         \x20       // a shape of its own that does not work yet (§8).\n\
-         \x20       let three = deref (p + 3)\n\
-         \x20       assert_eq(&three, &4, \"three along\")\n\
+         \x20       assert_eq(&(deref (p + 3)), &4, \"three along\")\n\
          \x20       let q = addr a[3]\n\
-         \x20       let back = deref (q - 2)\n\
-         \x20       assert_eq(&back, &2, \"and two back\")\n\
+         \x20       assert_eq(&(deref (q - 2)), &2, \"and two back\")\n\
          \x20       // Nought is where it was.\n\
-         \x20       let same = deref (p + 0)\n\
-         \x20       assert_eq(&same, &1, \"and nowhere at all\")\n\
+         \x20       assert_eq(&(deref (p + 0)), &1, \"and nowhere at all\")\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2019,15 +2097,13 @@ fn a_pointer_steps_by_the_element_it_points_at() {
          \x20   let b: u8[4] = [1, 2, 3, 4]\n\
          \x20   unsafe {\n\
          \x20       let p = addr b[0]\n\
-         \x20       let held = (deref (p + 2)) as i64\n\
-         \x20       assert_eq(&held, &3, \"a byte apiece\")\n\
+         \x20       assert_eq(&((deref (p + 2)) as i64), &3, \"a byte apiece\")\n\
          \x20   }\n\
          \x20   // And something wider than a word.\n\
          \x20   let a: P[2] = [P { x: 1, y: 2 }, P { x: 9, y: 8 }]\n\
          \x20   unsafe {\n\
          \x20       let p = addr a[0]\n\
-         \x20       let far = (deref (p + 1)).x\n\
-         \x20       assert_eq(&far, &9, \"sixteen apiece\")\n\
+         \x20       assert_eq(&(deref (p + 1)).x, &9, \"sixteen apiece\")\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2038,8 +2114,7 @@ fn a_pointer_steps_by_the_element_it_points_at() {
          \x20       let p = addr a[0]\n\
          \x20       // Stepped again, and indexed, and compared.\n\
          \x20       let q = (p + 1) + 1\n\
-         \x20       let twice = deref q\n\
-         \x20       assert_eq(&twice, &3, \"stepped twice\")\n\
+         \x20       assert_eq(&(deref q), &3, \"stepped twice\")\n\
          \x20       assert_eq(&q[1], &4, \"and indexed from there\")\n\
          \x20       let r = p + 2\n\
          \x20       assert_eq(&(q == r), &true, \"two of one address\")\n\

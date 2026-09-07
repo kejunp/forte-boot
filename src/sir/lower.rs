@@ -656,6 +656,32 @@ impl<'a> Lowerer<'a> {
             // call has just made, so nothing else is holding it to the type it
             // had a moment ago.
             GIRExprKind::Unary { op: TIRUnaryOp::Ref(_) | TIRUnaryOp::Addr, operand } => {
+                // `&(deref p)` is `p`. Every other place `address` reaches is
+                // an instruction it makes on the spot, and that one gives back
+                // the operand *itself* -- there being no instruction between
+                // an address and the place it addresses.
+                //
+                // Which makes it the one answer here that something else is
+                // already holding, and the retype below would rename that: a
+                // `Load` of `p` written over as a `&i64` is a load `promote`
+                // is entitled to take out, and what every later use then names
+                // is the `ptr i64` that was stored. `mir::mono` recovers a
+                // call's type arguments from what the values say they are, so
+                // `assert_eq(&(deref p), ..)` came out instantiated with a
+                // `ptr i64` for its `T` -- for which there is no `impl Show`,
+                // so the table beside the value held an address nothing made
+                // and the runtime followed it.
+                //
+                // So it gets a value of its own: the same word under the type
+                // the source gave it, which is what a cast between two
+                // addresses comes to.
+                if matches!(
+                    self.gir.exprs[operand].kind,
+                    GIRExprKind::Unary { op: TIRUnaryOp::Deref, .. }
+                ) {
+                    let at = self.address(operand);
+                    return self.push(SIRInstKind::Cast(at), ty, line, col);
+                }
                 let at = self.address(operand);
                 self.b.values[at].ty = ty;
                 return at;
