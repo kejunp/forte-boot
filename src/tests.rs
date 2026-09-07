@@ -1992,6 +1992,7 @@ fn a_match_on_a_reference_borrows_what_it_looks_at() {
          \x20   One,\n\
          \x20   Two(i64, str),\n\
          \x20   Held(Sq),\n\
+         \x20   Named { a: i64, b: Sq },\n\
          }\n\
          \n\
          fn tag(e: &E): i64 {\n\
@@ -1999,6 +2000,7 @@ fn a_match_on_a_reference_borrows_what_it_looks_at() {
          \x20       E::One => 1,\n\
          \x20       E::Two(n, _) => n,\n\
          \x20       E::Held(q) => q.s,\n\
+         \x20       E::Named { a, b } => a + b.s,\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2007,6 +2009,7 @@ fn a_match_on_a_reference_borrows_what_it_looks_at() {
          \x20       E::One => 1,\n\
          \x20       E::Two(n, _) => n,\n\
          \x20       E::Held(q) => q.s,\n\
+         \x20       E::Named { a, b } => a + b.s,\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2018,6 +2021,11 @@ fn a_match_on_a_reference_borrows_what_it_looks_at() {
          \x20   assert_eq(&tag(&b), &7, \"one carrying two things\")\n\
          \x20   let c = E::Held(Sq { s: 9 })\n\
          \x20   assert_eq(&tag(&c), &9, \"and one carrying what does not copy\")\n\
+         \x20   // The shorthand `{ a, b }` binds as `{ a: a }` does, which\n\
+         \x20   // is what it was not: it took the value while the\n\
+         \x20   // projection above it gave an address.\n\
+         \x20   let d = E::Named { a: 4, b: Sq { s: 6 } }\n\
+         \x20   assert_eq(&tag(&d), &10, \"one that names what it carries\")\n\
          }\n\
          \n\
          %test\n\
@@ -2042,6 +2050,7 @@ fn a_match_on_a_reference_borrows_what_it_looks_at() {
          \x20       E::One => 0,\n\
          \x20       E::Two(n, _) => n,\n\
          \x20       E::Held(q) => q.s,\n\
+         \x20       E::Named { a, b } => a + b.s,\n\
          \x20   }\n\
          \x20   assert_eq(&n, &3, \"a value taken apart\")\n\
          }\n",

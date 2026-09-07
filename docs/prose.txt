@@ -2308,6 +2308,17 @@ answer is not obvious from the rules alone.
     came of it before it was refused was a type the checker never settled and
     a program that would not link. It is a message now, and a member has to
     call its own something else.
+  - A brace after a "::" builds what the path names, which it did not. The
+    name in front of a "{ .. }" is a name like any other and only the one-word
+    spelling was taken, so a struct declared in a namespace could be reached,
+    called and named in a signature and could not be *built* -- "held::Point
+    { x: 1 }" was "a struct literal whose head is not a name". And a variant
+    that names what it carries is the same brace over a different declaration:
+    "E::Three { x: 5 }" builds the variant exactly as "E::Two(5)" builds the
+    one that names nothing, and it could be declared and matched and not
+    built. Both are held to what a struct literal is held to -- every field
+    given, none twice, and none that is not there -- and both come out in
+    declaration order whatever order they were written in.
   - A "match" on a reference matches the place it refers to, and its bindings
     bind references into it. "A reference stands for the place it refers to
     and is read, called, indexed and reached into exactly as that place is"

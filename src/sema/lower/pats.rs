@@ -258,17 +258,16 @@ impl<'a> Lowerer<'a> {
                             continue;
                         };
                         let want = named[index].1;
+                        // Through `binding` and not straight to a `bind`:
+                        // the shorthand `{ x }` binds exactly as `{ x: x }`
+                        // does, and what a binding takes depends on whether
+                        // the match is running through a reference. Built by
+                        // hand here, it took the value while the projection
+                        // above it gave an address, and what came out was the
+                        // address read as the field.
                         placed[index] = Some(match field.pat {
                             Some(pat) => self.pat(pat, want),
-                            None => {
-                                let slot = self.bind(
-                                    TIRBinding::Name(field.name.clone()),
-                                    want,
-                                    crate::tir::tir_nodes::TIRIntro::Let,
-                                    self.pat_at(id),
-                                );
-                                self.make_pat(TTIRPatKind::Bind(slot), want, id)
-                            }
+                            None => self.binding(&[field.name.clone()], want, id),
                         });
                     }
                     // A variant's fields are held by place, so one the pattern

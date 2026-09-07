@@ -31,9 +31,22 @@ impl<'a> Lowerer<'a> {
     ) -> TTIRExprId {
         // The name in front of the brace is a declaration and not a value, so
         // it is looked up rather than typed.
-        let TIRExprKind::Name(path) = self.tir.exprs[base].kind.clone() else {
+        //
+        // Flattened and not matched: a `::` chain is a name spelled in more
+        // than one word, and this took only the one-word spelling. So
+        // `held::Point { x: 1 }` was "a struct literal whose head is not a
+        // name" -- a struct declared in a namespace could be reached, called
+        // and named in a signature, and could not be *built*.
+        let Some(path) = self.flatten(base) else {
             return self.not_yet("a struct literal whose head is not a name", at);
         };
+        // Or a variant that names what it carries, which is the same brace
+        // over a different declaration: `E::Three { x: 5 }` builds the variant
+        // exactly as `E::Two(5)` builds the one that names nothing. It could
+        // be declared and matched and not built.
+        if let Some((of, index)) = self.variant_path(&path) {
+            return self.named_variant(of, index, written, at);
+        }
         let Some(item) = self.look(&path.join("::")) else {
             let name = path.join("::");
             self.errors.push(
@@ -134,4 +147,82 @@ impl<'a> Lowerer<'a> {
         let ty = self.types.error();
         self.make(TTIRExprKind::Literal(TIRLit::Null), ty, at)
     }
+
+    // `E::Three { x: 5, y: true }`: the fields put in declaration order and
+    // handed to the same routine that builds every other variant.
+    //
+    // "In declaration order, whatever order they were written in" is the rule
+    // a struct literal keeps and this keeps it too, which is why the two can
+    // share everything below them: by the time `variant_lit` sees these they
+    // are the positional list a tuple variant would have been written as.
+    fn named_variant(
+        &mut self,
+        of: TTIRItemId,
+        index: usize,
+        written: &[crate::tir::tir_nodes::TIRFieldInit],
+        at: TIRExprId,
+    ) -> TTIRExprId {
+        let declared = self.payload_names(of, index);
+        let held = match &self.out.items[of].kind {
+            TTIRItemKind::Enum { variants, .. } => variants[index].name.clone(),
+            _ => String::new(),
+        };
+        if declared.is_empty() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` does not name what it carries", held),
+                    self.at(at),
+                )
+                .with_label("this builds it by name")
+                .with_help("a variant written `E::V(..)` is built the same way"),
+            );
+            return self.errored(at);
+        }
+
+        let mut placed: Vec<Option<TIRExprId>> = vec![None; declared.len()];
+        for field in written {
+            let Some(index) = declared.iter().position(|(n, _)| *n == field.name) else {
+                self.errors.push(
+                    Diagnostic::error(
+                        format!("`{}` has no field `{}`", held, field.name),
+                        self.at(field.value),
+                    )
+                    .with_label("no such field"),
+                );
+                self.expr(field.value);
+                continue;
+            };
+            if placed[index].is_some() {
+                self.errors.push(
+                    Diagnostic::error(
+                        format!("`{}` is given twice", field.name),
+                        self.at(field.value),
+                    )
+                    .with_label("written again"),
+                );
+            }
+            placed[index] = Some(field.value);
+        }
+
+        let missing: Vec<String> = placed
+            .iter()
+            .zip(declared.iter())
+            .filter(|(held, _)| held.is_none())
+            .map(|(_, (name, _))| name.clone())
+            .collect();
+        if !missing.is_empty() {
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` is missing {}", held, missing.join(", ")),
+                    self.at(at),
+                )
+                .with_label("every field it carries has to be given one"),
+            );
+            return self.errored(at);
+        }
+
+        let args: Vec<TIRExprId> = placed.into_iter().map(|held| held.expect("a field")).collect();
+        self.variant_lit(of, index, &args, at)
+    }
+
 }
