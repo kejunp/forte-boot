@@ -178,10 +178,13 @@ pub fn eprintln(f: str, args: &(&dyn Show)[]) {
 // wrappers, and a file of its own would have to import this one while this one
 // imported it back.
 //
-// **Five impls, and exactly five.** They are the five tags the runtime reads
-// (`runtime/src/fmt.rs`), and a sixth would have nothing to make an `Arg` out
-// of. Not `i32` or `f32`: `int` takes an `i64` and `float` an `f64`, and what a
-// narrowing at the call would mean is a question the language has not answered.
+// **One impl per type a tag can hold.** There are five tags
+// (`runtime/src/fmt.rs`) and more than five types, because every whole number
+// narrower than an `i64` widens into one exactly: an `i32` is an `int`, a `u8`
+// is a `uint`, an `f32` is a `float`. A widening loses nothing and needs no
+// rule; it is a *narrowing* that would want one, which is why `i128` and `u128`
+// are not here -- `int` takes an `i64` and what an `i128` too big for one
+// should print as is a question the language has not answered.
 //
 // Every body here reads its receiver, which is a `&i64` standing where an `i64`
 // is wanted (§3). That was the last of the four things a reference is said to
@@ -192,12 +195,96 @@ pub trait Show {
     fn show(&self): Arg
 }
 
+impl Show for i8 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as i64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `i8` wants one.
+        let held: i8 = self
+        int(held as i64)
+    }
+}
+
+impl Show for i16 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as i64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `i16` wants one.
+        let held: i16 = self
+        int(held as i64)
+    }
+}
+
+impl Show for i32 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as i64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `i32` wants one.
+        let held: i32 = self
+        int(held as i64)
+    }
+}
+
 impl Show for i64 {
     fn show(&self): Arg { int(self) }
 }
 
+impl Show for u8 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as u64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `u8` wants one.
+        let held: u8 = self
+        uint(held as u64)
+    }
+}
+
+impl Show for u16 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as u64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `u16` wants one.
+        let held: u16 = self
+        uint(held as u64)
+    }
+}
+
+impl Show for u32 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as u64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `u32` wants one.
+        let held: u32 = self
+        uint(held as u64)
+    }
+}
+
 impl Show for u64 {
     fn show(&self): Arg { uint(self) }
+}
+
+impl Show for f32 {
+    fn show(&self): Arg {
+        // Read before it is cast. A cast takes what it is given, and
+        // what `self` is given is a reference -- so `self as f64` is
+        // the *address* widened, which prints as one. The `let` is
+        // where the read happens (§3): a reference stands where the
+        // value is wanted, and a name declared `f32` wants one.
+        let held: f32 = self
+        float(held as f64)
+    }
 }
 
 impl Show for f64 {

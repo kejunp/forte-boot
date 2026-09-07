@@ -212,8 +212,17 @@ the six:
 is reserved: each needs something the language has not got — a layout story,
 and a configuration to ask about. Traits with code behind them was the third
 and is no longer missing, which is what let "std/fmt.ft" become four routines
-where it was twenty: a value is asked what it looks like rather than told at
-the call.
+where it was twenty and what took the tag out of "std/test.ft" as well: a value
+is asked what it looks like rather than told at the call, whether it is being
+printed or being asserted about.
+
+"assert_eq" takes a bound and not a trait object, which is the one decision in
+that pair worth writing down. Both sides being one "T" is what an equality
+assert means — a number is never equal to a piece of text, so
+"assert_eq(&5, &\"5\")" is refused rather than answered — and it is also what
+settles a bare literal: "assert_eq(&count, &10, ..)" is the commonest shape
+there is, and a "10" with no suffix is a hole that a trait object gives nothing
+to fill from and a "&T" beside a "&count" fills exactly.
 
 Where a program begins. A suite is compiled from the one file named on the
 command line, that file's module is the root, and the program starts at a fn

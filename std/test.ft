@@ -28,12 +28,12 @@
 //     fn a_vector_holds_what_was_put_in_it() {
 //         var v: Vec<i64> = empty()
 //         push(*v, 7)
-//         assert_eq(int(len(&v)), int(1), "one thing was pushed")
+//         assert_eq(&len(&v), &1, "one thing was pushed")
 //         if len(&v) != 1 { return }
-//         assert_eq(int(at(&v, 0)), int(7), "and it is the thing")
+//         assert_eq(&at(&v, 0), &7, "and it is the thing")
 //     }
 
-import fmt::Arg;
+import fmt::{Arg, Show};
 
 %symbol("__rt_assert")
 fn said(ok: i64, why: str): null;
@@ -55,13 +55,29 @@ pub fn assert(ok: bool, why: str) {
 // The two-sided ones, which are worth having because they can say what the two
 // sides *were*: `assert(a == b, ...)` can only ever report that they differed.
 //
-// Each side is an `Arg`, built with `int`, `text` and the three beside them in
-// `fmt` -- so a value reads in a failure exactly the way it reads in a
-// `println`, and the reason it is wrapped at all is the reason given there.
-pub fn assert_eq(a: Arg, b: Arg, why: str) {
-    said_cmp(1, a, b, why)
+// Each side is asked what it looks like, exactly as `println` asks -- so a
+// value reads in a failure the way it reads in a line of output, and neither
+// place needs a word from the caller about which kind it is. They used to take
+// an `Arg` apiece and be handed `int(a)` and `text(b)`, which is the wrapping
+// `fmt` explains and no longer needs.
+//
+// What crosses to the runtime is still an `Arg`, because that is what the
+// runtime can read; what a caller writes is a reference to the value.
+//
+// **A bound and not a `&dyn Show`**, which is the one decision here worth
+// writing down. Both sides being one `T` says what an equality assert means --
+// a number is never equal to a piece of text, and `assert_eq(&5, &"5")` is a
+// question nobody meant to ask, so it is refused rather than answered.
+//
+// It also settles what a bare literal is. `assert_eq(&count, &10, ..)` is the
+// commonest shape there is, and a `10` with no suffix is a hole: as a
+// `&dyn Show` there is nothing anywhere to fill it from and it is refused, and
+// as a `&T` beside `&count` it is whatever `count` is. So the bound buys the
+// spelling the callers want as well as the rule.
+pub fn assert_eq<T: Show>(a: &T, b: &T, why: str) {
+    said_cmp(1, a.show(), b.show(), why)
 }
 
-pub fn assert_ne(a: Arg, b: Arg, why: str) {
-    said_cmp(0, a, b, why)
+pub fn assert_ne<T: Show>(a: &T, b: &T, why: str) {
+    said_cmp(0, a.show(), b.show(), why)
 }

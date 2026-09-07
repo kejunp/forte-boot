@@ -191,15 +191,15 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
          \n\
          %test\n\
          fn every_one_of_them_arrives_where_it_was_put() {\n\
-         \x20   assert_eq(int(nine(1,1,1,1,1,1,1,1,1)), int(45), \"all nine\")\n\
-         \x20   assert_eq(int(nine(0,0,0,0,0,1,0,0,0)), int(6), \"the last in a register\")\n\
-         \x20   assert_eq(int(nine(0,0,0,0,0,0,1,0,0)), int(7), \"the first on the stack\")\n\
-         \x20   assert_eq(int(nine(0,0,0,0,0,0,0,0,1)), int(9), \"the last on the stack\")\n\
+         \x20   assert_eq(&nine(1,1,1,1,1,1,1,1,1), &45, \"all nine\")\n\
+         \x20   assert_eq(&nine(0,0,0,0,0,1,0,0,0), &6, \"the last in a register\")\n\
+         \x20   assert_eq(&nine(0,0,0,0,0,0,1,0,0), &7, \"the first on the stack\")\n\
+         \x20   assert_eq(&nine(0,0,0,0,0,0,0,0,1), &9, \"the last on the stack\")\n\
          }\n\
          \n\
          %test\n\
          fn the_two_files_run_out_of_registers_apart() {\n\
-         \x20   assert_eq(float(ten(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1.0)), float(10.0),\n\
+         \x20   assert_eq(&ten(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1.0), &10.0,\n\
          \x20             \"the tenth float\")\n\
          }\n\
          \n\
@@ -208,8 +208,8 @@ fn every_argument_past_the_registers_arrives_where_it_was_put() {
          %test\n\
          fn a_struct_handed_back_takes_a_register_too() {\n\
          \x20   let p = six(1, 2, 3, 4, 5, 6)\n\
-         \x20   assert_eq(int(p.x), int(6), \"the first three\")\n\
-         \x20   assert_eq(int(p.y), int(15), \"and the last three\")\n\
+         \x20   assert_eq(&p.x, &6, \"the first three\")\n\
+         \x20   assert_eq(&p.y, &15, \"and the last three\")\n\
          }\n",
     )
     .expect("a file");
@@ -264,19 +264,19 @@ fn a_slice_is_a_view_of_the_elements_it_names() {
          %test\n\
          fn a_slice_reads_the_elements_it_names_and_no_others() {\n\
          \x20   let a: i64[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
-         \x20   assert_eq(int(sum(&a[1..4], 3)), int(9), \"2 and 3 and 4\")\n\
-         \x20   assert_eq(int(sum(&a[0..8], 8)), int(36), \"the whole of it\")\n\
-         \x20   assert_eq(int(sum(&a[7..8], 1)), int(8), \"the last one alone\")\n\
+         \x20   assert_eq(&sum(&a[1..4], 3), &9, \"2 and 3 and 4\")\n\
+         \x20   assert_eq(&sum(&a[0..8], 8), &36, \"the whole of it\")\n\
+         \x20   assert_eq(&sum(&a[7..8], 1), &8, \"the last one alone\")\n\
          }\n\
          \n\
          %test\n\
          fn a_slice_that_writes_leaves_the_rest_alone() {\n\
          \x20   var a: i64[8] = [1, 2, 3, 4, 5, 6, 7, 8]\n\
          \x20   bump(*a[2..4], 2)\n\
-         \x20   assert_eq(int(a[2]), int(103), \"the first it names\")\n\
-         \x20   assert_eq(int(a[3]), int(104), \"and the last\")\n\
-         \x20   assert_eq(int(a[1]), int(2), \"the one before is untouched\")\n\
-         \x20   assert_eq(int(a[4]), int(5), \"and the one after\")\n\
+         \x20   assert_eq(&a[2], &103, \"the first it names\")\n\
+         \x20   assert_eq(&a[3], &104, \"and the last\")\n\
+         \x20   assert_eq(&a[1], &2, \"the one before is untouched\")\n\
+         \x20   assert_eq(&a[4], &5, \"and the one after\")\n\
          }\n",
     )
     .expect("a file");
@@ -329,16 +329,16 @@ fn a_reference_to_an_array_carries_the_length_it_left_behind() {
          fn an_array_stands_where_a_view_is_wanted() {\n\
          \x20   let a: i64[4] = [10, 20, 30, 40]\n\
          \x20   let s: &i64[] = &a\n\
-         \x20   assert_eq(int(sum(s, 4)), int(100), \"through a name that says so\")\n\
-         \x20   assert_eq(int(sum(&a, 4)), int(100), \"and at a parameter that does\")\n\
+         \x20   assert_eq(&sum(s, 4), &100, \"through a name that says so\")\n\
+         \x20   assert_eq(&sum(&a, 4), &100, \"and at a parameter that does\")\n\
          }\n\
          \n\
          %test\n\
          fn a_writing_reference_to_an_array_writes_through_the_view() {\n\
          \x20   var a: i64[4] = [10, 20, 30, 40]\n\
          \x20   bump(*a, 4)\n\
-         \x20   assert_eq(int(a[0]), int(11), \"the first\")\n\
-         \x20   assert_eq(int(a[3]), int(41), \"and the last\")\n\
+         \x20   assert_eq(&a[0], &11, \"the first\")\n\
+         \x20   assert_eq(&a[3], &41, \"and the last\")\n\
          }\n",
     )
     .expect("a file");
@@ -447,16 +447,16 @@ fn a_method_reached_through_a_bound_runs_the_impl_of_the_type_it_was_given() {
          fn a_bound_dispatches_to_the_impl_of_the_receiver() {\n\
          \x20   let p = P { x: 21 }\n\
          \x20   let q = Q { y: 5 }\n\
-         \x20   assert_eq(int(twice(&p)), int(42), \"P answers Show\")\n\
-         \x20   assert_eq(int(twice(&q)), int(105), \"and so does Q, differently\")\n\
+         \x20   assert_eq(&twice(&p), &42, \"P answers Show\")\n\
+         \x20   assert_eq(&twice(&q), &105, \"and so does Q, differently\")\n\
          }\n\
          \n\
          %test\n\
          fn a_generic_may_hand_its_own_parameter_on() {\n\
          \x20   let p = P { x: 21 }\n\
          \x20   let q = Q { y: 5 }\n\
-         \x20   assert_eq(int(through(&p)), int(252), \"42 and 21 by ten\")\n\
-         \x20   assert_eq(int(through(&q)), int(120), \"105 and 5 and ten\")\n\
+         \x20   assert_eq(&through(&p), &252, \"42 and 21 by ten\")\n\
+         \x20   assert_eq(&through(&q), &120, \"105 and 5 and ten\")\n\
          }\n",
     )
     .expect("a file");
@@ -495,7 +495,7 @@ fn a_test_that_fails_is_reported_and_leaves_a_status_behind() {
          \n\
          %test\n\
          fn this_one_does_not() {\n\
-         \x20   assert_eq(int(1), int(2), \"one is two\")\n\
+         \x20   assert_eq(&1, &2, \"one is two\")\n\
          }\n",
     )
     .expect("a file");
@@ -580,18 +580,18 @@ fn a_closure_runs_as_what_it_was_written_as() {
          %test\n\
          fn the_arguments_arrive_in_the_order_they_were_written() {\n\
          \x20   let less = |a: i64, b: i64| a - b\n\
-         \x20   assert_eq(int(less(9, 4)), int(5), \"the first less the second\")\n\
+         \x20   assert_eq(&less(9, 4), &5, \"the first less the second\")\n\
          \x20   let seven = |p1: i64, p2: i64, p3: i64, p4: i64, p5: i64, p6: i64, p7: i64| \
          p7 - p1\n\
-         \x20   assert_eq(int(seven(1, 0, 0, 0, 0, 0, 8)), int(7), \"past the registers\")\n\
+         \x20   assert_eq(&seven(1, 0, 0, 0, 0, 0, 8), &7, \"past the registers\")\n\
          }\n\
          \n\
          %test\n\
          fn a_capture_is_read_through_the_environment() {\n\
          \x20   let n = 5\n\
          \x20   let add = |x: i64| x + &n\n\
-         \x20   assert_eq(int(add(1)), int(6), \"what the frame outside holds\")\n\
-         \x20   assert_eq(int(add(2)), int(7), \"and it is still there\")\n\
+         \x20   assert_eq(&add(1), &6, \"what the frame outside holds\")\n\
+         \x20   assert_eq(&add(2), &7, \"and it is still there\")\n\
          }\n\
          \n\
          %test\n\
@@ -600,21 +600,21 @@ fn a_closure_runs_as_what_it_was_written_as() {
          \x20   let bump = |d: i64| n = n + d\n\
          \x20   bump(3)\n\
          \x20   bump(4)\n\
-         \x20   assert_eq(int(n), int(7), \"the name outside, not a copy of it\")\n\
+         \x20   assert_eq(&n, &7, \"the name outside, not a copy of it\")\n\
          }\n\
          \n\
          %test\n\
          fn a_move_closure_outlives_the_frame_it_took_from() {\n\
          \x20   let f = made()\n\
-         \x20   assert_eq(int(churn(1, 2, 3)), int(55550), \"something else uses the stack\")\n\
-         \x20   assert_eq(int(f(1)), int(101), \"and what it took is still what it took\")\n\
+         \x20   assert_eq(&churn(1, 2, 3), &55550, \"something else uses the stack\")\n\
+         \x20   assert_eq(&f(1), &101, \"and what it took is still what it took\")\n\
          }\n\
          \n\
          %test\n\
          fn a_declared_fn_and_a_closure_are_called_the_same_way() {\n\
-         \x20   assert_eq(int(twice(ten, 1)), int(21), \"a fn with no environment\")\n\
+         \x20   assert_eq(&twice(ten, 1), &21, \"a fn with no environment\")\n\
          \x20   let k = 10\n\
-         \x20   assert_eq(int(twice(|x: i64| x + &k, 1)), int(21), \"and one with\")\n\
+         \x20   assert_eq(&twice(|x: i64| x + &k, 1), &21, \"and one with\")\n\
          }\n\
          \n\
          %test\n\
@@ -622,12 +622,12 @@ fn a_closure_runs_as_what_it_was_written_as() {
          \x20   var n = 1\n\
          \x20   let step = |d: i64| { n = n * d }\n\
          \x20   step(6)\n\
-         \x20   assert_eq(int(n), int(6), \"one statement, and it ran\")\n\
+         \x20   assert_eq(&n, &6, \"one statement, and it ran\")\n\
          \x20   let twice_over = |x: i64| {\n\
          \x20       let a = x * 2\n\
          \x20       a + 1\n\
          \x20   }\n\
-         \x20   assert_eq(int(twice_over(5)), int(11), \"and its value is the tail\")\n\
+         \x20   assert_eq(&twice_over(5), &11, \"and its value is the tail\")\n\
          }\n",
     )
     .expect("a file");
@@ -704,21 +704,21 @@ fn a_generic_impl_is_made_once_for_each_receiver() {
          fn one_impl_answers_two_receivers() {\n\
          \x20   let n: Box<i64> = Box { v: 7 }\n\
          \x20   let t: Box<bool> = Box { v: true }\n\
-         \x20   assert_eq(int(n.get()), int(7), \"the i64 instance\")\n\
-         \x20   assert_eq(truth(t.get()), truth(true), \"and the bool one\")\n\
-         \x20   assert_eq(int(n.again()), int(7), \"one member reaching another\")\n\
+         \x20   assert_eq(&n.get(), &7, \"the i64 instance\")\n\
+         \x20   assert_eq(&t.get(), &true, \"and the bool one\")\n\
+         \x20   assert_eq(&n.again(), &7, \"one member reaching another\")\n\
          }\n\
          \n\
          %test\n\
          fn a_parameter_only_the_receiver_names_is_still_found() {\n\
          \x20   let p: Pair<i64, bool> = Pair { a: 3, b: false }\n\
-         \x20   assert_eq(int(p.first()), int(3), \"and `B` came from the receiver\")\n\
+         \x20   assert_eq(&p.first(), &3, \"and `B` came from the receiver\")\n\
          }\n\
          \n\
          %test\n\
          fn an_impls_parameter_reaches_through_a_generic_fn() {\n\
          \x20   let n: Box<i64> = Box { v: 41 }\n\
-         \x20   assert_eq(int(through(&n)), int(41), \"a `T` handed on to a method\")\n\
+         \x20   assert_eq(&through(&n), &41, \"a `T` handed on to a method\")\n\
          }\n\
          \n\
          %test\n\
@@ -726,7 +726,7 @@ fn a_generic_impl_is_made_once_for_each_receiver() {
          \x20   var c = Counter { n: 0 }\n\
          \x20   c.bump(5)\n\
          \x20   c.bump(2)\n\
-         \x20   assert_eq(int(c.read()), int(7), \"a `*self` that wrote through\")\n\
+         \x20   assert_eq(&c.read(), &7, \"a `*self` that wrote through\")\n\
          }\n",
     )
     .expect("a file");
@@ -778,10 +778,10 @@ fn an_unsafe_tail_is_the_value_of_the_body_it_ends() {
          fn a_guarded_read_is_what_the_fn_answers() {\n\
          \x20   unsafe let p = room(16) as ptr i64\n\
          \x20   unsafe p[0] = 9\n\
-         \x20   assert_eq(int(indexed(p)), int(9), \"through an index\")\n\
-         \x20   assert_eq(int(dereffed(p)), int(9), \"through a `deref`\")\n\
-         \x20   assert_eq(int(blocked(p)), int(9), \"through a block\")\n\
-         \x20   assert_eq(int(twice(p)), int(9), \"and through the word twice\")\n\
+         \x20   assert_eq(&indexed(p), &9, \"through an index\")\n\
+         \x20   assert_eq(&dereffed(p), &9, \"through a `deref`\")\n\
+         \x20   assert_eq(&blocked(p), &9, \"through a block\")\n\
+         \x20   assert_eq(&twice(p), &9, \"and through the word twice\")\n\
          }\n\
          \n\
          %test\n\
@@ -789,7 +789,7 @@ fn an_unsafe_tail_is_the_value_of_the_body_it_ends() {
          \x20   unsafe let p = room(16) as ptr i64\n\
          \x20   unsafe p[0] = 1\n\
          \x20   unsafe p[0] = 2\n\
-         \x20   assert_eq(int(indexed(p)), int(2), \"the last write is what is there\")\n\
+         \x20   assert_eq(&indexed(p), &2, \"the last write is what is there\")\n\
          }\n",
     )
     .expect("a file");
@@ -846,8 +846,8 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
          \x20   let before = read(p)\n\
          \x20   poke(p)\n\
          \x20   let after = read(p)\n\
-         \x20   assert_eq(int(before), int(1), \"what was there\")\n\
-         \x20   assert_eq(int(after), int(6), \"and what the call put there\")\n\
+         \x20   assert_eq(&before, &1, \"what was there\")\n\
+         \x20   assert_eq(&after, &6, \"and what the call put there\")\n\
          }\n\
          \n\
          %test\n\
@@ -856,7 +856,7 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
          \x20   unsafe p[0] = 1\n\
          \x20   unsafe let v = p[0]\n\
          \x20   unsafe p[0] = 2\n\
-         \x20   assert_eq(int(v), int(1), \"the store under the read did happen\")\n\
+         \x20   assert_eq(&v, &1, \"the store under the read did happen\")\n\
          }\n\
          \n\
          %test\n\
@@ -871,7 +871,7 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
          \x20       unsafe p[0] = v + 1\n\
          \x20       i = i + 1\n\
          \x20   }\n\
-         \x20   assert_eq(int(total), int(18), \"5 and 6 and 7\")\n\
+         \x20   assert_eq(&total, &18, \"5 and 6 and 7\")\n\
          }\n\
          \n\
          %test\n\
@@ -880,9 +880,9 @@ fn a_read_of_a_place_is_not_the_read_before_the_write() {
          \x20   unsafe p[0] = 3\n\
          \x20   unsafe p[1] = 4\n\
          \x20   unsafe let apart = p[0] + p[1]\n\
-         \x20   assert_eq(int(apart), int(7), \"two places, two values\")\n\
+         \x20   assert_eq(&apart, &7, \"two places, two values\")\n\
          \x20   unsafe let same = p[0] + p[0] + p[0]\n\
-         \x20   assert_eq(int(same), int(9), \"and one place read three times\")\n\
+         \x20   assert_eq(&same, &9, \"and one place read three times\")\n\
          }\n",
     )
     .expect("a file");
@@ -943,14 +943,14 @@ fn a_field_and_a_method_of_one_name_are_both_reachable() {
          %test\n\
          fn a_field_that_is_not_a_fn_does_not_hide_the_method() {\n\
          \x20   let b = Buf { len: 4 }\n\
-         \x20   assert_eq(int(b.len), int(4), \"the field, read\")\n\
-         \x20   assert_eq(int(b.len()), int(40), \"and the method, called\")\n\
+         \x20   assert_eq(&b.len, &4, \"the field, read\")\n\
+         \x20   assert_eq(&b.len(), &40, \"and the method, called\")\n\
          }\n\
          \n\
          %test\n\
          fn a_field_that_is_a_fn_still_wins() {\n\
          \x20   let h = Held { run: |x: i64| x * 2 }\n\
-         \x20   assert_eq(int(h.run(21)), int(42), \"the field and not the method\")\n\
+         \x20   assert_eq(&h.run(21), &42, \"the field and not the method\")\n\
          }\n",
     )
     .expect("a file");
@@ -1030,15 +1030,15 @@ fn a_call_through_a_trait_object_reaches_the_type_it_was_made_from() {
          \x20   let a = Sq { s: 5 }\n\
          \x20   let b = Rect { w: 3, h: 7 }\n\
          \x20   let c = Tri { b: 6, h: 4 }\n\
-         \x20   assert_eq(int(described(&a)), int(2504), \"the square\")\n\
-         \x20   assert_eq(int(described(&b)), int(2104), \"the rectangle\")\n\
-         \x20   assert_eq(int(described(&c)), int(1203), \"and the triangle\")\n\
+         \x20   assert_eq(&described(&a), &2504, \"the square\")\n\
+         \x20   assert_eq(&described(&b), &2104, \"the rectangle\")\n\
+         \x20   assert_eq(&described(&c), &1203, \"and the triangle\")\n\
          }\n\
          \n\
          %test\n\
          fn a_generic_impl_answers_through_its_instance() {\n\
          \x20   let b: Box<i64> = Box { v: 1 }\n\
-         \x20   assert_eq(int(described(&b)), int(1101), \"a table of instance symbols\")\n\
+         \x20   assert_eq(&described(&b), &1101, \"a table of instance symbols\")\n\
          }\n\
          \n\
          %test\n\
@@ -1047,8 +1047,8 @@ fn a_call_through_a_trait_object_reaches_the_type_it_was_made_from() {
          \x20   // place answers with the area and this is what says so.\n\
          \x20   let c = Tri { b: 6, h: 4 }\n\
          \x20   let s: &dyn Shape = &c\n\
-         \x20   assert_eq(int(s.sides()), int(3), \"the second member, not the first\")\n\
-         \x20   assert_eq(int(s.area()), int(12), \"and the first, not the second\")\n\
+         \x20   assert_eq(&s.sides(), &3, \"the second member, not the first\")\n\
+         \x20   assert_eq(&s.area(), &12, \"and the first, not the second\")\n\
          }\n",
     )
     .expect("a file");
@@ -1112,16 +1112,16 @@ fn a_collected_value_outlives_the_frame_that_made_it() {
          %test\n\
          fn it_survives_the_frame_it_was_made_in() {\n\
          \x20   let one = made(11)\n\
-         \x20   assert_eq(int(churn(3)), int(49995), \"something else uses the stack\")\n\
-         \x20   assert_eq(int(one.n), int(11), \"and it is still what it was\")\n\
+         \x20   assert_eq(&churn(3), &49995, \"something else uses the stack\")\n\
+         \x20   assert_eq(&one.n, &11, \"and it is still what it was\")\n\
          }\n\
          \n\
          %test\n\
          fn a_handle_is_copied_and_not_moved() {\n\
          \x20   let one = made(5)\n\
-         \x20   assert_eq(int(held(one)), int(5), \"handed over\")\n\
-         \x20   assert_eq(int(held(one)), int(5), \"and handed over again\")\n\
-         \x20   assert_eq(int(one.n), int(5), \"and the name still holds it\")\n\
+         \x20   assert_eq(&held(one), &5, \"handed over\")\n\
+         \x20   assert_eq(&held(one), &5, \"and handed over again\")\n\
+         \x20   assert_eq(&one.n, &5, \"and the name still holds it\")\n\
          }\n\
          \n\
          %test\n\
@@ -1135,8 +1135,8 @@ fn a_collected_value_outlives_the_frame_that_made_it() {
          \x20       total = total + t.v\n\
          \x20       k = k + 1\n\
          \x20   }\n\
-         \x20   assert_eq(int(total), int(200000), \"every one of them was there\")\n\
-         \x20   assert_eq(int(o.inner.v), int(42), \"and what was reachable stayed\")\n\
+         \x20   assert_eq(&total, &200000, \"every one of them was there\")\n\
+         \x20   assert_eq(&o.inner.v, &42, \"and what was reachable stayed\")\n\
          }\n\
          \n\
          %test\n\
@@ -1148,8 +1148,8 @@ fn a_collected_value_outlives_the_frame_that_made_it() {
          \x20       push(*v, b)\n\
          \x20       i = i + 1\n\
          \x20   }\n\
-         \x20   assert_eq(int(len(&v)), int(5), \"five of them\")\n\
-         \x20   assert_eq(int(at(&v, 3).n), int(9), \"and the fourth is the fourth\")\n\
+         \x20   assert_eq(&len(&v), &5, \"five of them\")\n\
+         \x20   assert_eq(&at(&v, 3).n, &9, \"and the fourth is the fourth\")\n\
          }\n",
     )
     .expect("a file");
@@ -1238,21 +1238,21 @@ fn a_conversion_happens_wherever_a_type_is_expected() {
          %test\n\
          fn a_body_converts_to_what_its_signature_says() {\n\
          \x20   let q = Sq { s: 5 }\n\
-         \x20   assert_eq(int(as_object(&q).area()), int(25), \"a trait object\")\n\
-         \x20   assert_eq(int(as_collected(9).n), int(9), \"a collected value\")\n\
+         \x20   assert_eq(&as_object(&q).area(), &25, \"a trait object\")\n\
+         \x20   assert_eq(&as_collected(9).n, &9, \"a collected value\")\n\
          \x20   let a: i64[4] = [1, 2, 3, 4]\n\
-         \x20   assert_eq(int(summed(as_view(&a), 4)), int(10), \"and a view\")\n\
+         \x20   assert_eq(&summed(as_view(&a), 4), &10, \"and a view\")\n\
          }\n\
          \n\
          %test\n\
          fn each_way_out_of_a_branch_converts() {\n\
          \x20   let q = Sq { s: 5 }\n\
          \x20   let c = Ci { r: 4 }\n\
-         \x20   assert_eq(int(by_branch(true, &q, &c)), int(25), \"the way taken\")\n\
-         \x20   assert_eq(int(by_branch(false, &q, &c)), int(12), \"and the other one\")\n\
-         \x20   assert_eq(int(by_arm(0, &q, &c)), int(25), \"an arm\")\n\
-         \x20   assert_eq(int(by_arm(1, &q, &c)), int(12), \"and another arm\")\n\
-         \x20   assert_eq(int(by_tail(true, &q, &c)), int(25), \"and a block's tail\")\n\
+         \x20   assert_eq(&by_branch(true, &q, &c), &25, \"the way taken\")\n\
+         \x20   assert_eq(&by_branch(false, &q, &c), &12, \"and the other one\")\n\
+         \x20   assert_eq(&by_arm(0, &q, &c), &25, \"an arm\")\n\
+         \x20   assert_eq(&by_arm(1, &q, &c), &12, \"and another arm\")\n\
+         \x20   assert_eq(&by_tail(true, &q, &c), &25, \"and a block's tail\")\n\
          }\n\
          \n\
          %test\n\
@@ -1260,7 +1260,7 @@ fn a_conversion_happens_wherever_a_type_is_expected() {
          \x20   // The `if` is the argument, so what is expected of it is the\n\
          \x20   // parameter's type -- and the two numbers inside it are the\n\
          \x20   // `if`'s own business, not the call's.\n\
-         \x20   assert_eq(int(summed(&[1, 2, 3, 4], if true { 2 } else { 4 })), int(3),\n\
+         \x20   assert_eq(&summed(&[1, 2, 3, 4], if true { 2 } else { 4 }), &3,\n\
          \x20             \"the branches are numbers and stay numbers\")\n\
          }\n",
     )
@@ -1388,14 +1388,14 @@ fn a_program_asks_for_a_cycle_and_what_it_holds_survives_one() {
          \x20   collect()\n\
          \x20   collect()\n\
          \x20   collect()\n\
-         \x20   assert_eq(int(keep.n), int(42), \"what a name still holds\")\n\
-         \x20   assert_eq(int(deep.inner.n), int(42), \"and what one holds through another\")\n\
+         \x20   assert_eq(&keep.n, &42, \"what a name still holds\")\n\
+         \x20   assert_eq(&deep.inner.n, &42, \"and what one holds through another\")\n\
          }\n\
          \n\
          %test\n\
          fn a_cycle_may_be_asked_for_with_nothing_to_do() {\n\
          \x20   collect()\n\
-         \x20   assert_eq(int(1), int(1), \"and it comes back\")\n\
+         \x20   assert_eq(&1, &1, \"and it comes back\")\n\
          }\n",
     )
     .expect("a file");
@@ -1444,24 +1444,24 @@ fn a_str_global_holds_the_bytes_it_was_written_with() {
          \n\
          %test\n\
          fn a_global_starts_as_what_it_was_written_as() {\n\
-         \x20   assert_eq(text(name), text(\"forte\"), \"the bytes and not none\")\n\
-         \x20   assert_eq(text(same), text(\"forte\"), \"and the same ones again\")\n\
-         \x20   assert_eq(text(blank), text(\"\"), \"an empty one is still written\")\n\
-         \x20   assert_eq(text(unset), text(\"\"), \"and one nothing filled is empty\")\n\
+         \x20   assert_eq(&name, &\"forte\", \"the bytes and not none\")\n\
+         \x20   assert_eq(&same, &\"forte\", \"and the same ones again\")\n\
+         \x20   assert_eq(&blank, &\"\", \"an empty one is still written\")\n\
+         \x20   assert_eq(&unset, &\"\", \"and one nothing filled is empty\")\n\
          }\n\
          \n\
          %test\n\
          fn a_const_folds_into_the_use_that_names_it() {\n\
-         \x20   assert_eq(text(TAG), text(\"tag\"), \"a const of text\")\n\
+         \x20   assert_eq(&TAG, &\"tag\", \"a const of text\")\n\
          }\n\
          \n\
          %test\n\
          fn a_global_may_be_written_over() {\n\
          \x20   name = \"changed\"\n\
-         \x20   assert_eq(text(name), text(\"changed\"), \"a global is a place\")\n\
+         \x20   assert_eq(&name, &\"changed\", \"a global is a place\")\n\
          \x20   // And what was there is not what is there: the store went to\n\
          \x20   // the global and not to a copy of it.\n\
-         \x20   assert_eq(text(same), text(\"forte\"), \"and the other one is untouched\")\n\
+         \x20   assert_eq(&same, &\"forte\", \"and the other one is untouched\")\n\
          }\n",
     )
     .expect("a file");
@@ -1514,31 +1514,31 @@ fn a_global_holds_the_aggregate_it_was_written_with() {
          \n\
          %test\n\
          fn a_structure_holds_its_fields() {\n\
-         \x20   assert_eq(int(p.x), int(3), \"the first\")\n\
-         \x20   assert_eq(int(p.y), int(4), \"and the second, at its offset\")\n\
+         \x20   assert_eq(&p.x, &3, \"the first\")\n\
+         \x20   assert_eq(&p.y, &4, \"and the second, at its offset\")\n\
          }\n\
          \n\
          %test\n\
          fn an_array_holds_its_elements() {\n\
-         \x20   assert_eq(int(a[0]), int(7), \"the first\")\n\
-         \x20   assert_eq(int(a[3]), int(10), \"and the last, at its stride\")\n\
-         \x20   assert_eq(int(t.0), int(11), \"a tuple is a structure numbered\")\n\
-         \x20   assert_eq(int(t.1), int(12), \"and its second\")\n\
+         \x20   assert_eq(&a[0], &7, \"the first\")\n\
+         \x20   assert_eq(&a[3], &10, \"and the last, at its stride\")\n\
+         \x20   assert_eq(&t.0, &11, \"a tuple is a structure numbered\")\n\
+         \x20   assert_eq(&t.1, &12, \"and its second\")\n\
          }\n\
          \n\
          %test\n\
          fn one_inside_another_holds_too() {\n\
-         \x20   assert_eq(int(deep.tag), int(1), \"the field before it\")\n\
-         \x20   assert_eq(int(deep.at.y), int(6), \"a structure inside a structure\")\n\
-         \x20   assert_eq(text(deep.name), text(\"held\"), \"and a `str` after it\")\n\
-         \x20   assert_eq(int(folded), int(42), \"what the evaluator folded\")\n\
+         \x20   assert_eq(&deep.tag, &1, \"the field before it\")\n\
+         \x20   assert_eq(&deep.at.y, &6, \"a structure inside a structure\")\n\
+         \x20   assert_eq(&deep.name, &\"held\", \"and a `str` after it\")\n\
+         \x20   assert_eq(&folded, &42, \"what the evaluator folded\")\n\
          }\n\
          \n\
          %test\n\
          fn a_global_is_still_a_place() {\n\
          \x20   p = Point { x: 30, y: 40 }\n\
-         \x20   assert_eq(int(p.x), int(30), \"written over\")\n\
-         \x20   assert_eq(int(a[0]), int(7), \"and the one beside it is untouched\")\n\
+         \x20   assert_eq(&p.x, &30, \"written over\")\n\
+         \x20   assert_eq(&a[0], &7, \"and the one beside it is untouched\")\n\
          }\n",
     )
     .expect("a file");
@@ -1597,16 +1597,16 @@ fn a_gc_global_is_filled_in_before_the_program_starts() {
          \n\
          %test\n\
          fn a_gc_global_holds_what_it_was_written_with() {\n\
-         \x20   assert_eq(int(kept.n), int(4242), \"read before anything else runs\")\n\
-         \x20   assert_eq(int(also.n), int(7), \"and one a call gave back\")\n\
-         \x20   assert_eq(int(deep.inner.n), int(4242), \"and one holding another\")\n\
+         \x20   assert_eq(&kept.n, &4242, \"read before anything else runs\")\n\
+         \x20   assert_eq(&also.n, &7, \"and one a call gave back\")\n\
+         \x20   assert_eq(&deep.inner.n, &4242, \"and one holding another\")\n\
          }\n\
          \n\
          %test\n\
          fn a_gc_global_is_a_place_like_any_other() {\n\
          \x20   kept = made(9)\n\
-         \x20   assert_eq(int(kept.n), int(9), \"written over\")\n\
-         \x20   assert_eq(int(also.n), int(7), \"and the one beside it is untouched\")\n\
+         \x20   assert_eq(&kept.n, &9, \"written over\")\n\
+         \x20   assert_eq(&also.n, &7, \"and the one beside it is untouched\")\n\
          }\n\
          \n\
          %test\n\
@@ -1618,7 +1618,7 @@ fn a_gc_global_is_filled_in_before_the_program_starts() {
          \x20   }\n\
          \x20   collect()\n\
          \x20   collect()\n\
-         \x20   assert_eq(int(also.n), int(7), \"and reads as what it was\")\n\
+         \x20   assert_eq(&also.n, &7, \"and reads as what it was\")\n\
          }\n",
     )
     .expect("a file");
@@ -1681,9 +1681,9 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \x20   let n: i64 = 7\n\
          \x20   let b: bool = true\n\
          \x20   let s: str = \"hi\"\n\
-         \x20   assert_eq(int(n.tag()), int(1), \"an i64\")\n\
-         \x20   assert_eq(int(b.tag()), int(2), \"a bool\")\n\
-         \x20   assert_eq(int(s.tag()), int(3), \"and a str\")\n\
+         \x20   assert_eq(&n.tag(), &1, \"an i64\")\n\
+         \x20   assert_eq(&b.tag(), &2, \"a bool\")\n\
+         \x20   assert_eq(&s.tag(), &3, \"and a str\")\n\
          }\n\
          \n\
          %test\n\
@@ -1691,9 +1691,9 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \x20   let n: i64 = 7\n\
          \x20   let s: str = \"hi\"\n\
          \x20   let q = Sq { s: 1 }\n\
-         \x20   assert_eq(int(by_bound(&n)), int(1), \"the i64 instance\")\n\
-         \x20   assert_eq(int(by_bound(&s)), int(3), \"the str one\")\n\
-         \x20   assert_eq(int(by_bound(&q)), int(100), \"and a struct still works\")\n\
+         \x20   assert_eq(&by_bound(&n), &1, \"the i64 instance\")\n\
+         \x20   assert_eq(&by_bound(&s), &3, \"the str one\")\n\
+         \x20   assert_eq(&by_bound(&q), &100, \"and a struct still works\")\n\
          }\n\
          \n\
          %test\n\
@@ -1701,9 +1701,9 @@ fn a_primitive_answers_a_trait_like_anything_else() {
          \x20   let n: i64 = 7\n\
          \x20   let b: bool = true\n\
          \x20   let q = Sq { s: 1 }\n\
-         \x20   assert_eq(int(by_table(&n)), int(1), \"one body, three tables\")\n\
-         \x20   assert_eq(int(by_table(&b)), int(2), \"the second\")\n\
-         \x20   assert_eq(int(by_table(&q)), int(100), \"and the struct's\")\n\
+         \x20   assert_eq(&by_table(&n), &1, \"one body, three tables\")\n\
+         \x20   assert_eq(&by_table(&b), &2, \"the second\")\n\
+         \x20   assert_eq(&by_table(&q), &100, \"and the struct's\")\n\
          }\n",
     )
     .expect("a file");
@@ -1746,11 +1746,11 @@ fn a_reference_is_read_as_what_it_refers_to() {
          %test\n\
          fn a_reference_stands_where_the_value_was_wanted() {\n\
          \x20   let x: i64 = 21\n\
-         \x20   assert_eq(int(handed(&x)), int(42), \"handed to a call\")\n\
-         \x20   assert_eq(int(given(&x)), int(21), \"given back\")\n\
-         \x20   assert_eq(int(bound(&x)), int(22), \"and bound to a name\")\n\
+         \x20   assert_eq(&handed(&x), &42, \"handed to a call\")\n\
+         \x20   assert_eq(&given(&x), &21, \"given back\")\n\
+         \x20   assert_eq(&bound(&x), &22, \"and bound to a name\")\n\
          \x20   // The rule it always had: an operand of an operator.\n\
-         \x20   assert_eq(int(&x + 1), int(22), \"which is where it started\")\n\
+         \x20   assert_eq(&(&x + 1), &22, \"which is where it started\")\n\
          }\n",
     )
     .expect("a file");
@@ -1858,12 +1858,12 @@ fn a_view_answers_how_many_it_names() {
          %test\n\
          fn a_view_knows_how_many_it_names() {\n\
          \x20   let a: i64[4] = [1, 2, 3, 4]\n\
-         \x20   assert_eq(int(counted(&a)), int(4), \"the whole of it\")\n\
-         \x20   assert_eq(int(counted(&a[1..3])), int(2), \"and a slice of it\")\n\
-         \x20   assert_eq(int(summed(&a)), int(10), \"walked by its own length\")\n\
-         \x20   assert_eq(int(summed(&a[1..3])), int(5), \"and the slice too\")\n\
+         \x20   assert_eq(&counted(&a), &4, \"the whole of it\")\n\
+         \x20   assert_eq(&counted(&a[1..3]), &2, \"and a slice of it\")\n\
+         \x20   assert_eq(&summed(&a), &10, \"walked by its own length\")\n\
+         \x20   assert_eq(&summed(&a[1..3]), &5, \"and the slice too\")\n\
          \x20   let none: i64[4] = [9, 9, 9, 9]\n\
-         \x20   assert_eq(int(summed(&none[2..2])), int(0), \"an empty one names none\")\n\
+         \x20   assert_eq(&summed(&none[2..2]), &0, \"an empty one names none\")\n\
          }\n",
     )
     .expect("a file");
