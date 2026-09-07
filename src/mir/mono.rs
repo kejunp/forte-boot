@@ -328,11 +328,57 @@ impl<'a> Mono<'a> {
                 }
             }
         }
-        // No impl answers it. `sema` holds every argument to its bounds and
-        // every impl to the members its trait declares, so a program that
-        // reaches here is one those two checks did not cover -- naming the
-        // trait member is the honest answer, and the linker says the rest.
+        // No impl answers it, and a trait's member has no body of its own --
+        // so naming it is naming a symbol nothing defines. That used to be
+        // what happened, and the linker said the rest: `undefined reference to
+        // __F3fmt4Show4show3.26.240`, which names a mangling and not a
+        // mistake. It is said here instead, where the two halves of the
+        // question are both in hand.
+        //
+        // A backstop and not the first line of defence. `sema` catches every
+        // shape that could be got down to a small program -- a method with no
+        // impl at all, a bound the type does not answer, an argument that came
+        // out of a generic -- and this fires where those did not: the standard
+        // library's own tests, with one impl taken out, reached here and not
+        // there. What made that one different was not worked out, which is
+        // exactly why the answer is a message rather than a symbol nobody
+        // defines.
+        //
+        // Only where the receiver is settled. A type parameter still standing
+        // means this is a body nothing has said the types for yet, and
+        // `declaration` draws the same line for the same reason -- what an
+        // uninstantiated body names is not a program's last word about it.
+        // A trait object is the one receiver that *should* name the trait's
+        // member: which impl answers is what the table beside the value says,
+        // and `mir::lower` calls through it rather than through the name. So
+        // finding no impl here is the answer and not a mistake.
+        let dynamic = matches!(self.p.types.get(held), Some(Ty::Dyn(_)));
+        if !dynamic && !self.has_param(held) && self.body_of(member).is_none() {
+            let held = self.mangler.spell(held, &self.p);
+            let of = match &self.p.items[of].kind {
+                TTIRItemKind::Trait { name, .. } => name.clone(),
+                _ => "that trait".to_string(),
+            };
+            let said = format!(
+                "`{}` does not answer `{}`, so there is no `{}` for a call on one to \
+                 reach -- an `impl {} for {}` is how a type says it does",
+                held, of, name, of, held
+            );
+            if !self.refused.contains(&said) {
+                self.refused.push(said);
+            }
+        }
         member
+    }
+
+    // The body a member has of its own, where it has one. A trait declares
+    // signatures, so its members have none -- which is what makes naming one a
+    // symbol nothing defines.
+    fn body_of(&self, member: usize) -> Option<usize> {
+        match &self.p.items.get(member)?.kind {
+            TTIRItemKind::Fn(f) => f.body,
+            _ => None,
+        }
     }
 
     // The trait a member was declared in, where it was declared in one.
