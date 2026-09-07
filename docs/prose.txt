@@ -2624,9 +2624,23 @@ answer is not obvious from the rules alone.
     Indexing settles the second. "p[i]" is a place, under the same "unsafe"
     and stepping by the same stride an indexed run steps by (section 3), and
     it is the whole of the pointer arithmetic a container needs: a "Vec" is a
-    "ptr T" and a length, and "v.at[i]" reaches the i'th of them. The general
-    arithmetic — "p + n" as an address rather than a number — is still not
-    written, and now has one caller fewer asking for it.
+    "ptr T" and a length, and "v.at[i]" reaches the i'th of them.
+
+    The general arithmetic is written now, and was the last of the three open.
+    "p + n" is the address n elements along and "p - n" the one n back, and
+    each steps by the *element's stride* rather than by bytes — which is what
+    makes it arithmetic on a "ptr T" and not on a number: "p + 1" is the next
+    T however wide a T is, and a byte offset is written on a "ptr u8". It is
+    the same instruction "p[n]" already computed its place with, that being
+    the one place the stride is worked out.
+
+    It needs no "unsafe". "Where `ptr` is written is not itself the unsafe
+    thing — what needs the word is making one and reaching through one", and
+    this is neither: the address was in hand and nothing is read. The "deref"
+    or the "p[i]" that follows is where the word goes. The other side has to
+    be a whole number, so "p - q" is refused rather than answered — a
+    difference between two addresses is a number and not one of these, and
+    nothing has asked for one.
 
     The third was answered without being noticed. "p as i64", "n as ptr u8"
     and "p as ptr i32" all lower to a conversion of the width they are, which

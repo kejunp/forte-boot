@@ -1970,6 +1970,93 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- The address n elements along ----------------------------------------------------
+
+// `p + n` and `p - n`, which section 2 has been calling the general pointer
+// arithmetic and saying is not written. `p[i]` was "the whole of the pointer
+// arithmetic a container needs" and left this with no spelling at all -- so
+// code that wanted the address of the element after the one it held had to
+// index a place and take its address back, which is a read the program did not
+// want and a word it should not have needed.
+//
+// It steps by the *element's stride* and not by bytes, which is what makes it
+// arithmetic on a `ptr T` rather than on a number, and that is what only
+// running can say: an unscaled step compiles and reads the wrong bytes.
+#[test]
+fn a_pointer_steps_by_the_element_it_points_at() {
+    let dir = std::env::temp_dir().join(format!("fortec-step-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("step.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         struct P { pub x: i64, pub y: i64 }\n\
+         \n\
+         %test\n\
+         fn a_pointer_steps_forward_and_back() {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[0]\n\
+         \x20       // Bound before it is asserted about, `&(deref x)` being\n\
+         \x20       // a shape of its own that does not work yet (§8).\n\
+         \x20       let three = deref (p + 3)\n\
+         \x20       assert_eq(&three, &4, \"three along\")\n\
+         \x20       let q = addr a[3]\n\
+         \x20       let back = deref (q - 2)\n\
+         \x20       assert_eq(&back, &2, \"and two back\")\n\
+         \x20       // Nought is where it was.\n\
+         \x20       let same = deref (p + 0)\n\
+         \x20       assert_eq(&same, &1, \"and nowhere at all\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_step_is_the_elements_own_width() {\n\
+         \x20   // A byte, which is the one width an unscaled step would have\n\
+         \x20   // got right by accident.\n\
+         \x20   let b: u8[4] = [1, 2, 3, 4]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr b[0]\n\
+         \x20       let held = (deref (p + 2)) as i64\n\
+         \x20       assert_eq(&held, &3, \"a byte apiece\")\n\
+         \x20   }\n\
+         \x20   // And something wider than a word.\n\
+         \x20   let a: P[2] = [P { x: 1, y: 2 }, P { x: 9, y: 8 }]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[0]\n\
+         \x20       let far = (deref (p + 1)).x\n\
+         \x20       assert_eq(&far, &9, \"sixteen apiece\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_it_gives_back_is_a_pointer_like_any_other() {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   unsafe {\n\
+         \x20       let p = addr a[0]\n\
+         \x20       // Stepped again, and indexed, and compared.\n\
+         \x20       let q = (p + 1) + 1\n\
+         \x20       let twice = deref q\n\
+         \x20       assert_eq(&twice, &3, \"stepped twice\")\n\
+         \x20       assert_eq(&q[1], &4, \"and indexed from there\")\n\
+         \x20       let r = p + 2\n\
+         \x20       assert_eq(&(q == r), &true, \"two of one address\")\n\
+         \x20   }\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "step");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a pointer was meant to step by its element:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- A table built for a generic impl ------------------------------------------------
 
 // `impl<A: T> T for Box<A>`, made into a trait object.

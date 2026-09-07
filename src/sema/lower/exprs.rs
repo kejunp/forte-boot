@@ -119,6 +119,14 @@ impl<'a> Lowerer<'a> {
                 // and it answered whether two keys were in the same place.
                 let (l, r) = (self.read_through(l), self.read_through(r));
                 let (lt, rt) = (self.out.exprs[l].ty, self.out.exprs[r].ty);
+                // A pointer and a number, which is the one shape here whose
+                // two sides are not one type. `p + n` is the address `n`
+                // elements along and `p - n` the one `n` back: it steps by the
+                // element's stride, as `p[n]` does, being the same arithmetic
+                // written without the read on the end.
+                if let Some(made) = self.stepped(op, l, r, id) {
+                    return made;
+                }
                 if self.types.unify(lt, rt).is_err() {
                     let (lt, rt) = (self.spell(lt), self.spell(rt));
                     self.errors.push(
@@ -916,6 +924,56 @@ impl<'a> Lowerer<'a> {
         // guess about.
         let Some(prim) = self.types.standing(from) else { return false };
         self.answers(&head_of(&Ty::Prim(prim)), of)
+    }
+
+    // `p + n` and `p - n`: the address that many elements along.
+    //
+    // The one operator here whose two sides are not one type, and it has to
+    // be: "`p[i]` is a place, under the same `unsafe` and stepping by the same
+    // stride an indexed run steps by, and it is the whole of the pointer
+    // arithmetic a container needs" (§2) -- which left the *general*
+    // arithmetic, an address rather than a number, with no spelling at all.
+    // A `Vec` that wants the element after the one it holds had to index a
+    // place and take its address back, which is a read the program did not
+    // want and a word it should not have needed.
+    //
+    // It steps by the element's stride and not by bytes, which is what makes
+    // it arithmetic on a `ptr T` rather than on a number: `p + 1` is the next
+    // T however wide a T is, and a byte offset is written on a `ptr u8`.
+    //
+    // No `unsafe`. "Where `ptr` is written is not itself the unsafe thing --
+    // what needs the word is making one and reaching through one" (§2), and
+    // this is neither: the address was already in hand and nothing is read.
+    // The `deref` or the `p[i]` that follows is where the word goes.
+    fn stepped(
+        &mut self,
+        op: TIRBinOp,
+        lhs: TTIRExprId,
+        rhs: TTIRExprId,
+        at: TIRExprId,
+    ) -> Option<TTIRExprId> {
+        if !matches!(op, TIRBinOp::Add | TIRBinOp::Sub) {
+            return None;
+        }
+        let (lt, rt) = (self.out.exprs[lhs].ty, self.out.exprs[rhs].ty);
+        let Ty::Ptr(_) = self.types.get(self.types.shallow(lt)).clone() else { return None };
+        // The other side is a whole number, which is what an offset is. A hole
+        // that takes numbers is one too and takes an `i64` here, there being
+        // nothing else for it to be.
+        let whole = self.types.prim(TIRPrim::I64);
+        if self.types.unify(rt, whole).is_err() {
+            let (lt, rt) = (self.spell(lt), self.spell(rt));
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` steps by a whole number and this is `{}`", lt, rt),
+                    self.at(at),
+                )
+                .with_label("this is what it was given")
+                .with_note("`p + n` is the address n elements along, so n counts elements"),
+            );
+            return Some(self.errored(at));
+        }
+        Some(self.make(TTIRExprKind::Binary { op, lhs, rhs }, lt, at))
     }
 
     // Whether that type has an impl of that trait. What `dyn` is held to: a

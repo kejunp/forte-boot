@@ -679,7 +679,29 @@ impl<'a> Lowerer<'a> {
             }
             GIRExprKind::Binary { op, lhs, rhs } => {
                 let (lhs, rhs) = (self.value(lhs), self.value(rhs));
-                SIRInstKind::Binary { op, lhs, rhs }
+                // `p + n` is the address n elements along, so it steps by the
+                // element's stride and not by one -- which is the instruction
+                // an index's address already is, and the one place the stride
+                // is worked out. `p - n` is the same step the other way.
+                //
+                // Which of the two this is, is the *answer's* type: only an
+                // operator giving back a pointer is one, so a comparison
+                // between two of them is a `bool` and stays a comparison.
+                match matches!(self.ttir.types.get(ty), Some(Ty::Ptr(_))) {
+                    false => SIRInstKind::Binary { op, lhs, rhs },
+                    true => {
+                        let index = match op {
+                            TIRBinOp::Sub => self.push(
+                                SIRInstKind::Unary { op: TIRUnaryOp::Neg, operand: rhs },
+                                self.int,
+                                line,
+                                col,
+                            ),
+                            _ => rhs,
+                        };
+                        SIRInstKind::IndexAddr { base: lhs, index }
+                    }
+                }
             }
             GIRExprKind::Cast(of) => SIRInstKind::Cast(self.value(of)),
             GIRExprKind::Range { op, start, end } => SIRInstKind::Range {
