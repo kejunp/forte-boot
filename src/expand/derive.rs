@@ -153,22 +153,6 @@ fn written(
         );
         return None;
     }
-    if !subject.generics.is_empty() {
-        errors.push(
-            Diagnostic::error(
-                format!("`%derive({})` is written on a struct with no parameters", name),
-                at,
-            )
-            .with_label("this one has parameters")
-            .with_note(
-                "an impl over a parameter has to bound it -- every field of a `T` has \
-                 to answer the trait too -- and that is a signature this does not \
-                 write yet",
-            ),
-        );
-        return None;
-    }
-
     let source = match subject.variants.is_empty() {
         true => shows(parser, subject),
         false => chooses(parser, subject),
@@ -177,8 +161,38 @@ fn written(
 }
 
 // The head and foot every `Show` body is written between.
-fn opens(name: &str) -> String {
-    format!("impl fmt::Show for {} {{\n    fn show(&self, into: &fmt::Sink) {{\n", name)
+//
+// A declaration with parameters gets an impl with the same ones, each bounded
+// by the trait: every field of a `T` has to answer `Show` for the body to be
+// able to ask it, and there is nothing else the bound could be. So
+// `struct Box<T>` gets `impl<T: fmt::Show> fmt::Show for Box<T>`, which holds a
+// caller to exactly what the body needs and no more -- a `Box<i64>` shows and a
+// `Box<Nothing>` is refused where it is made into one.
+fn opens(name: &str, params: &[String]) -> String {
+    let (bounds, args) = match params.is_empty() {
+        true => (String::new(), String::new()),
+        false => {
+            let held: Vec<String> =
+                params.iter().map(|p| format!("{}: fmt::Show", p)).collect();
+            (format!("<{}>", held.join(", ")), format!("<{}>", params.join(", ")))
+        }
+    };
+    format!(
+        "impl{} fmt::Show for {}{} {{\n    fn show(&self, into: &fmt::Sink) {{\n",
+        bounds, name, args
+    )
+}
+
+// The names a declaration's `<T, U>` introduces, in order. A lifetime among
+// them is not a type and takes no bound, so it is not one of these.
+fn param_names(parser: &Parser, generics: &[ASTNodeId]) -> Vec<String> {
+    generics
+        .iter()
+        .filter_map(|&g| match &parser.get_node(g).kind {
+            ASTNodeKind::GenericParam { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 // `fmt::put(into, "..")`, indented. What a derived body is mostly made of: the
@@ -224,7 +238,12 @@ fn parts(depth: usize, head: &str, reach: &str, names: &[String]) -> String {
 // answers with its own body, and one that is an `i64` answers with `fmt`'s.
 fn shows(parser: &Parser, subject: &Subject) -> String {
     let names = field_names(parser, &subject.fields);
-    format!("{}{}    }}\n}}\n", opens(&subject.name), parts(8, &subject.name, "self.", &names))
+    let params = param_names(parser, &subject.generics);
+    format!(
+        "{}{}    }}\n}}\n",
+        opens(&subject.name, &params),
+        parts(8, &subject.name, "self.", &names)
+    )
 }
 
 // `impl fmt::Show for E { .. }`, whose body is a `match` over the variants.
@@ -240,7 +259,7 @@ fn shows(parser: &Parser, subject: &Subject) -> String {
 // the derive needed and did not have: an enum carrying a struct could be lent
 // and not read (§8).
 fn chooses(parser: &Parser, subject: &Subject) -> String {
-    let mut out = opens(&subject.name);
+    let mut out = opens(&subject.name, &param_names(parser, &subject.generics));
     out.push_str("        match self {\n");
     for &held in &subject.variants {
         let ASTNodeKind::EnumVariant { name, body, .. } = &parser.get_node(held).kind else {

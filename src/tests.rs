@@ -2491,6 +2491,14 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
          \n\
          // An enum is a choice among shapes, and each variant is written the\n\
          // way it was declared: a name, a parenthesis, or a brace.\n\
+         // With parameters, each bounded by the trait: every field of a\n\
+         // `T` has to answer `Show` for the body to be able to ask it.\n\
+         %derive(Show)\n\
+         struct Box<T> { pub held: T }\n\
+         \n\
+         %derive(Show)\n\
+         enum Maybe<T> { Nothing, Just(T) }\n\
+         \n\
          %derive(Show)\n\
          enum Held {\n\
          \x20   Nothing,\n\
@@ -2525,6 +2533,12 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
          \x20   println(\"{}\", &[&d])\n\
          \x20   let m = Held::Named { a: 7, b: Tick { n: 8 } }\n\
          \x20   println(\"{}\", &[&m])\n\
+         \x20   // A declaration with parameters, once per set of them.\n\
+         \x20   println(\"{}\", &[&Box { held: 7 }])\n\
+         \x20   println(\"{}\", &[&Box { held: Point { x: 1, y: 2 } }])\n\
+         \x20   let j: Maybe<str> = Maybe::Just(\"here\")\n\
+         \x20   let e: Maybe<i64> = Maybe::Nothing\n\
+         \x20   println(\"{} {}\", &[&j, &e])\n\
          \x20   0\n\
          }\n",
     )
@@ -2558,6 +2572,11 @@ fn a_derive_writes_the_impl_a_reader_would_have() {
     assert!(said.contains("Some(3, hi)\n"), "{}", said);
     assert!(said.contains("Deep(Point { x: 5, y: 6 })\n"), "{}", said);
     assert!(said.contains("Named { a: 7, b: tick(8) }\n"), "{}", said);
+    // With parameters: once per set of them, and the field's own `show` is
+    // whatever the parameter turned out to be.
+    assert!(said.contains("Box { held: 7 }\n"), "{}", said);
+    assert!(said.contains("Box { held: Point { x: 1, y: 2 } }\n"), "{}", said);
+    assert!(said.contains("Just(here) Nothing\n"), "{}", said);
 }
 
 // ---- A view's own length ---------------------------------------------------------

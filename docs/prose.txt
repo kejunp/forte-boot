@@ -2030,8 +2030,16 @@ answer is not obvious from the rules alone.
     where it lies and not moved out of the borrow. That is the entry above
     this one, and it is why the enum half could not have been written first.
 
-    What is not written yet is a declaration with parameters, whose impl has
-    to bound each of them -- every field of a "T" has to answer the trait too.
+    A declaration with parameters gets an impl with the same ones, each bounded
+    by the trait: every field of a "T" has to answer "Show" for the body to be
+    able to ask it, and there is nothing else the bound could be. So
+    "struct Box<T>" gets "impl<T: fmt::Show> fmt::Show for Box<T>", which holds
+    a caller to what the body needs and to no more -- a "Box<i64>" shows, and a
+    "Box" of something that answers nothing is refused where one is made.
+
+    That waited on the entry below about a table built for a generic impl:
+    "show" takes a sink beside its receiver, so the impl a derive writes is
+    exactly the shape that did not link.
 
     And one thing found while writing it, which was nothing to do with derives
     and is settled below.

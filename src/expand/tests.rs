@@ -283,16 +283,18 @@ fn a_derive_on_an_enum_writes_a_match_over_its_variants() {
     assert_eq!(impls_in(&p, &root).len(), 1);
 }
 
-// The one shape that is not written yet.
+// A declaration with parameters gets an impl with the same ones, each bounded
+// by the trait: every field of a `T` has to answer `Show` for the body to be
+// able to ask it, and there is nothing else the bound could be.
 #[test]
-fn a_derive_on_a_shape_that_is_not_written_yet_says_which() {
-    let said = errors_in("%derive(Show)\nstruct Box<T> {\n    pub held: T,\n}\n");
-    assert_eq!(said.len(), 1, "{:#?}", said);
-    assert!(said[0].contains("no parameters"), "{}", said[0]);
+fn a_derive_on_a_declaration_with_parameters_bounds_them() {
+    let (p, root, errors) = expanded("%derive(Show)\nstruct Box<T> {\n    pub held: T,\n}\n");
+    assert!(errors.is_empty(), "{:#?}", errors);
+    assert_eq!(impls_in(&p, &root).len(), 1);
     // And of an enum, which takes them the same way and for the same reason.
-    let said = errors_in("%derive(Show)\nenum Held<T> {\n    One(T),\n}\n");
-    assert_eq!(said.len(), 1, "{:#?}", said);
-    assert!(said[0].contains("no parameters"), "{}", said[0]);
+    let (p, root, errors) = expanded("%derive(Show)\nenum Held<T> {\n    One(T),\n}\n");
+    assert!(errors.is_empty(), "{:#?}", errors);
+    assert_eq!(impls_in(&p, &root).len(), 1);
 }
 
 // A derive inside a namespace is a derive like any other: a namespace holds
