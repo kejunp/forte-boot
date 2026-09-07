@@ -422,6 +422,34 @@ fn a_number_the_trait_has_no_impl_for_is_refused() {
     assert!(out.contains("dyn Show"), "{}", out);
 }
 
+// ---- A method on a place is a method on its address --------------------------------
+
+// A body that declares `&self` is handed the address of the receiver, and a
+// value receiver has its taken. What is asserted here is the shape of the tree,
+// the answer itself being a thing only running can tell (`src/tests.rs`): a
+// `Unary::Ref` stands over the receiver where the declaration takes a reference
+// and the receiver is not one.
+#[test]
+fn a_value_receiver_is_addressed() {
+    let with = "trait Held {\n    fn held(&self): i32\n}\n\
+                struct Sq {\n    pub s: i32,\n}\n\
+                impl Held for Sq {\n    fn held(&self): i32 { self.s }\n}\n";
+    let ttir = clean(&format!("{}fn f(q: Sq): i32 {{ q.held() }}\n", with));
+    let addressed = ttir.exprs.iter().any(|e| match &e.kind {
+        TTIRExprKind::Unary { op: crate::tir::tir_nodes::TIRUnaryOp::Ref(_), operand } => {
+            matches!(ttir.exprs[*operand].kind, TTIRExprKind::Local(_))
+        }
+        _ => false,
+    });
+    assert!(addressed, "the receiver was meant to be addressed\n{:#?}", ttir.exprs);
+    // And one that is an address already is left as it stands.
+    let ttir = clean(&format!("{}fn f(q: &Sq): i32 {{ q.held() }}\n", with));
+    let addressed = ttir.exprs.iter().any(|e| {
+        matches!(&e.kind, TTIRExprKind::Unary { op: crate::tir::tir_nodes::TIRUnaryOp::Ref(_), .. })
+    });
+    assert!(!addressed, "a reference was meant to be left alone\n{:#?}", ttir.exprs);
+}
+
 // ---- A bound is enough to make an object of --------------------------------------
 
 // `fn f<T: Show>(x: &T)` has already said that whatever `T` turns out to be

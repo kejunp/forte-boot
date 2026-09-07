@@ -1037,7 +1037,7 @@ impl<'a> Lowerer<'a> {
     // gets: no `unsafe` is asked for, because §4 wants the word for a read
     // through a pointer and this is a read through a reference, which is the
     // one kind of address the checker still answers for.
-    fn read_through(&mut self, expr: TTIRExprId) -> TTIRExprId {
+    pub(super) fn read_through(&mut self, expr: TTIRExprId) -> TTIRExprId {
         let mut held = expr;
         while let Ty::Ref { inner, .. } | Ty::GC(inner) =
             self.types.get(self.out.exprs[held].ty).clone()

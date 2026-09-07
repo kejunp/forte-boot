@@ -1750,6 +1750,86 @@ fn a_primitive_answers_a_trait_like_anything_else() {
     assert!(said.contains("running 5 tests"), "{}", said);
 }
 
+// ---- A method on a place is a method on its address --------------------------------
+
+// "A place is reached through one `*` or through any number of `&`" (§3), and a
+// method call on a place is one of those reaches: a body that declares `&self`
+// is handed the *address* of the receiver. Nothing was doing it -- what such a
+// body got was the receiver's own bits read as an address.
+//
+// It hid for as long as it did because no `&self` body in the tree read its
+// receiver. Every method here either ignored `self` or was called on something
+// that was an address already, so a wrong address was handed over and never
+// followed. The moment one was followed -- `n.show(into)` on an `i64` holding
+// seven -- it dereferenced the number seven.
+//
+// So the assertions are on *values read through the receiver*, which is the
+// only thing that can tell the two apart: a body that ignores `self` passes
+// either way, and only running says which address it was given.
+#[test]
+fn a_method_that_declares_a_reference_is_handed_the_receivers_address() {
+    let dir = std::env::temp_dir().join(format!("fortec-recv-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("recv.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         trait Held {\n\
+         \x20   fn held(&self): i64\n\
+         \x20   fn twice(&self): i64\n\
+         }\n\
+         \n\
+         struct Sq { pub s: i64 }\n\
+         impl Held for Sq {\n\
+         \x20   fn held(&self): i64 { self.s }\n\
+         \x20   fn twice(&self): i64 { self.s * 2 }\n\
+         }\n\
+         impl Held for i64 {\n\
+         \x20   fn held(&self): i64 { self }\n\
+         \x20   fn twice(&self): i64 { self * 2 }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_value_receiver_is_addressed() {\n\
+         \x20   // A local holding the value, which is the shape that crashed.\n\
+         \x20   let n: i64 = 7\n\
+         \x20   assert_eq(&n.held(), &7, \"the number it was called on\")\n\
+         \x20   assert_eq(&n.twice(), &14, \"and read more than once\")\n\
+         \x20   let q = Sq { s: 9 }\n\
+         \x20   assert_eq(&q.held(), &9, \"a struct receiver, same rule\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_receiver_that_is_already_an_address_is_left_alone() {\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let r: &i64 = &n\n\
+         \x20   assert_eq(&r.held(), &7, \"a reference is an address already\")\n\
+         \x20   let q = Sq { s: 9 }\n\
+         \x20   let p: &Sq = &q\n\
+         \x20   assert_eq(&p.twice(), &18, \"and so is one to a struct\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_field_and_an_element_are_places_too() {\n\
+         \x20   let q = Sq { s: 9 }\n\
+         \x20   assert_eq(&q.s.held(), &9, \"a field of one\")\n\
+         \x20   let a: i64[3] = [4, 5, 6]\n\
+         \x20   assert_eq(&a[1].held(), &5, \"and an element\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "recv");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a receiver was meant to be addressed:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- A reference read as what it refers to ---------------------------------------
 
 // "A reference stands for the place it refers to and is read, called, indexed

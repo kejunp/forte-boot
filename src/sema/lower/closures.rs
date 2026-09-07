@@ -212,7 +212,50 @@ impl<'a> Lowerer<'a> {
                 self.stands_as(found, want, at);
             }
         }
+        // The receiver, as the declaration takes it.
+        let recv = match (takes_self, params.first()) {
+            (true, Some(&want)) => self.received(recv, want),
+            _ => recv,
+        };
         Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+    }
+
+    // The receiver made into what the method declares it takes.
+    //
+    // "A place is reached through one `*` or through any number of `&`" (§3),
+    // and a method call on a place is one of those reaches: a body declaring
+    // `&self` is handed the *address* of the receiver and not the receiver.
+    // Nothing was doing it. What such a body got was the receiver's own bits
+    // read as an address, and it never showed while no `&self` body in the
+    // tree read its receiver -- the moment one did, `n.show(..)` on an `i64`
+    // holding 7 dereferenced the number 7.
+    //
+    // A reference, a pointer and a `gc` are an address already and are handed
+    // over as they stand. The other way round is the same sentence read
+    // backwards: a body declaring `self` is handed the value, so a receiver
+    // that is a reference is read through to get one.
+    fn received(&mut self, recv: TTIRExprId, want: TyId) -> TTIRExprId {
+        let held = self.out.exprs[recv].ty;
+        let wants = self.types.get(want).clone();
+        let has = self.types.get(held).clone();
+        match (wants, has) {
+            (Ty::Ref { .. }, Ty::Ref { .. } | Ty::Ptr(_) | Ty::GC(_)) => recv,
+            (Ty::Ref { op, .. }, _) => {
+                // Where the operand it takes the address of stands, nobody
+                // having written this `&`.
+                let (line, col) = (self.out.exprs[recv].line, self.out.exprs[recv].col);
+                let ty = self.types.intern(Ty::Ref { op, life: 0, inner: held });
+                self.out.exprs.push(TTIRExpr {
+                    kind: TTIRExprKind::Unary { op: TIRUnaryOp::Ref(op), operand: recv },
+                    ty,
+                    line,
+                    col,
+                });
+                self.out.exprs.len() - 1
+            }
+            (_, Ty::Ref { .. } | Ty::GC(_)) => self.read_through(recv),
+            _ => recv,
+        }
     }
 
     // Whether a value of this type is one a call could have meant. Yes for a
