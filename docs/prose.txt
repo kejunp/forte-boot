@@ -3002,9 +3002,34 @@ answer is not obvious from the rules alone.
     arguments". The way out is "panic", which stops a program from the middle
     of it; the way in is above.
 
-    Nor is it said what "%test" means for any of this. Section 1 says a
-    "%test" fn is "collected and run on its own rather than compiled into an
-    ordinary build", which is a second entry point described in one clause —
-    what collects them, what they are linked against, and whether a suite
-    being tested still wants a "main" are all unasked.
+    And "%test" is a second beginning, which section 1 describes in one clause
+    — "collected and run on its own rather than compiled into an ordinary
+    build" — and which is settled here.
+
+    *What collects them.* Every "%test" fn among the roots of every module in
+    the suite, gathered in the order the modules were read. They are the roots
+    of the compilation in a test build, exactly as "main" is the root of an
+    ordinary one, so what is compiled is what the tests reach; and a "%test" is
+    left out of an ordinary build altogether, so what is compiled there is what
+    "main" reaches and neither build carries the other's. A "%test" takes no
+    parameters and gives back "null", and one that does otherwise is refused by
+    name — there is nowhere for an argument to come from and nothing that
+    would read an answer.
+
+    *What they are linked against.* The runtime beside them, as anything is,
+    and a generated "main" that is the runner: "__rt_init", then each test
+    between a "__rt_test_start" that clears what has failed and a
+    "__rt_test_failed" that reads it back, and a verdict at the end. The exit
+    status is non-zero where any failed, so whatever ran it knows without
+    reading the words. The name goes out *before* the test runs and the stream
+    is flushed: an assertion cannot stop a test but a segmentation fault can,
+    and a test that takes the process down leaves its own name as the last
+    thing on the screen.
+
+    *Whether a suite being tested still wants a "main".* No. The runner is the
+    "main", so a file of nothing but tests builds and runs — "std/tests.ft"
+    has none — and a "main" that is there is not the entry of a test build.
+    An ordinary build of the same file is the one that asks for it, and says
+    so: "there is no `main` taking no arguments at the top of this file, and a
+    program needs one to start at".
 ==============================================================================
