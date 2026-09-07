@@ -138,6 +138,31 @@ pub enum TTIRSubject {
 // What a type *is*, not how it was written. `<grouped_type>` is gone, `_` is
 // gone, and a name has become the declaration it names.
 
+// What a type is, for asking whether an impl was written for it. A declaration
+// by the one it is, and anything else by itself: "`impl Copy for i32` is
+// written for the primitive and not for a name" -- so a primitive answers a
+// trait exactly as a struct does, and every lookup that asks "which impl is
+// this type's" has to ask it the same way.
+//
+// A *key* and not an identity. Two `Ty::Named` of one declaration with
+// different arguments are one head, which is what lets an `impl<T> Show for
+// Box<T>` answer a `Box<i64>`; and the reason the other cases go through
+// `Debug` rather than through `Ty`'s own `PartialEq` is that a `Ty::Ref`
+// carries a `RegionId` and a `Ty::Named` a run of them, so two impls written
+// for one type would compare unequal over a region nobody wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Head {
+    Named(TTIRItemId),
+    Exact(String),
+}
+
+pub fn head_of(ty: &Ty) -> Head {
+    match ty {
+        Ty::Named { item, .. } => Head::Named(*item),
+        other => Head::Exact(format!("{:?}", other)),
+    }
+}
+
 // `Eq` and `Hash` because the arena interns these: an equal type has to be an
 // equal handle, and that wants them as a key. Nothing here holds a float, so
 // `Eq` is honest.

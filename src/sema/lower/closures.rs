@@ -253,14 +253,18 @@ impl<'a> Lowerer<'a> {
     // its type and holds nothing else" (§8), so this is every impl whose
     // subject is the type, and the member of it with that name.
     fn method_of(&mut self, ty: TyId, name: &str) -> Option<TTIRItemId> {
+        // Through the hole first: what a generic gave back, or a number with
+        // no suffix, is a `Ty::Var` until something fills it, and the arms
+        // below read the entry as it stands.
+        let ty = self.types.shallow(ty);
         // A reference stands for the place it refers to, so a method of the
         // referent is a method of the reference.
         let held = match self.types.get(ty).clone() {
             Ty::Ref { inner, .. } | Ty::GC(inner) => inner,
             _ => ty,
         };
+        let held = self.types.shallow(held);
         let of = match self.types.get(held).clone() {
-            Ty::Named { item, .. } => item,
             // A parameter of the declaration being walked. There is no impl to
             // find -- what the parameter will turn out to be is the caller's to
             // say -- so what answers is the trait a bound named, and the member
@@ -282,14 +286,16 @@ impl<'a> Lowerer<'a> {
                              TTIRItemKind::Fn(f) if f.name == name)
                 });
             }
-            _ => return None,
+            // Everything else is a type an impl may have been written for,
+            // and which one is asked by head: a struct by the declaration it
+            // is, a primitive by itself. `impl Show for i64` is written for
+            // the primitive and not for a name, so `5.show()` finds it exactly
+            // as `q.area()` finds a struct's.
+            other => head_of(&other),
         };
         for item in &self.out.items {
             let TTIRItemKind::Impl { ty: subject, members, .. } = &item.kind else { continue };
-            let Ty::Named { item: written, .. } = self.types.get(*subject).clone() else {
-                continue;
-            };
-            if written != of {
+            if head_of(self.types.get(*subject)) != of {
                 continue;
             }
             for &member in members {

@@ -1629,3 +1629,135 @@ fn a_gc_global_is_filled_in_before_the_program_starts() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- A trait answered by a primitive ---------------------------------------------
+
+// `impl Show for i64`, reached three ways.
+//
+// The declaration always worked -- `sema::lower::bounds` has keyed impls by a
+// *head* since it was written, and says so: "`impl Copy for i32` is written for
+// the primitive and not for a name", so a `T: Show` bound with `T = i64` has
+// always passed. What did not work was reaching the body. Four lookups asked
+// which impl a type's is, and all four asked it by `Ty::Named`, so a primitive
+// fell out of every one of them:
+//
+//   - a method call found nothing and said "no field";
+//   - a generic resolved to the *trait's* member, which has no body, and the
+//     build failed at the link step;
+//   - a `dyn` built no table at all;
+//   - and `&5` was refused where a `&dyn Show` was wanted.
+//
+// So the three paths are all asserted here, and each answers differently per
+// type: a lookup that found the wrong impl runs and gives a wrong number, and
+// only the number tells them apart.
+#[test]
+fn a_primitive_answers_a_trait_like_anything_else() {
+    let dir = std::env::temp_dir().join(format!("fortec-prim-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("prim.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         trait Tagged {\n\
+         \x20   fn tag(&self): i64\n\
+         }\n\
+         \n\
+         struct Sq { pub s: i64 }\n\
+         impl Tagged for Sq   { fn tag(&self): i64 { 100 } }\n\
+         impl Tagged for i64  { fn tag(&self): i64 { 1 } }\n\
+         impl Tagged for bool { fn tag(&self): i64 { 2 } }\n\
+         impl Tagged for str  { fn tag(&self): i64 { 3 } }\n\
+         \n\
+         fn by_bound<T: Tagged>(x: &T): i64 { x.tag() }\n\
+         fn by_table(x: &dyn Tagged): i64 { x.tag() }\n\
+         \n\
+         %test\n\
+         fn a_method_is_called_on_a_primitive() {\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let b: bool = true\n\
+         \x20   let s: str = \"hi\"\n\
+         \x20   assert_eq(int(n.tag()), int(1), \"an i64\")\n\
+         \x20   assert_eq(int(b.tag()), int(2), \"a bool\")\n\
+         \x20   assert_eq(int(s.tag()), int(3), \"and a str\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_bound_reaches_the_primitives_own_body() {\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let s: str = \"hi\"\n\
+         \x20   let q = Sq { s: 1 }\n\
+         \x20   assert_eq(int(by_bound(&n)), int(1), \"the i64 instance\")\n\
+         \x20   assert_eq(int(by_bound(&s)), int(3), \"the str one\")\n\
+         \x20   assert_eq(int(by_bound(&q)), int(100), \"and a struct still works\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_table_is_built_for_a_primitive() {\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let b: bool = true\n\
+         \x20   let q = Sq { s: 1 }\n\
+         \x20   assert_eq(int(by_table(&n)), int(1), \"one body, three tables\")\n\
+         \x20   assert_eq(int(by_table(&b)), int(2), \"the second\")\n\
+         \x20   assert_eq(int(by_table(&q)), int(100), \"and the struct's\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "prim");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a primitive was meant to answer a trait:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
+// ---- A reference read as what it refers to ---------------------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3) -- and that was true of every
+// one of those but *read*. `read_through` is the rule and it was wired into one
+// place only, the operands of a binary operator: `a + &b` worked, `f(&b)` did
+// not, and neither did giving one back where the signature says the value.
+#[test]
+fn a_reference_is_read_as_what_it_refers_to() {
+    let dir = std::env::temp_dir().join(format!("fortec-reads-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("reads.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import fmt::int;\n\
+         \n\
+         fn takes(n: i64): i64 { n * 2 }\n\
+         fn handed(r: &i64): i64 { takes(r) }\n\
+         fn given(r: &i64): i64 { r }\n\
+         fn bound(r: &i64): i64 {\n\
+         \x20   let held: i64 = r\n\
+         \x20   held + 1\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_reference_stands_where_the_value_was_wanted() {\n\
+         \x20   let x: i64 = 21\n\
+         \x20   assert_eq(int(handed(&x)), int(42), \"handed to a call\")\n\
+         \x20   assert_eq(int(given(&x)), int(21), \"given back\")\n\
+         \x20   assert_eq(int(bound(&x)), int(22), \"and bound to a name\")\n\
+         \x20   // The rule it always had: an operand of an operator.\n\
+         \x20   assert_eq(int(&x + 1), int(22), \"which is where it started\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "reads");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a reference was meant to read as its value:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 1 test"), "{}", said);
+}

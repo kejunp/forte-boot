@@ -545,6 +545,7 @@ impl<'a> Lowerer<'a> {
                                 && !self.views(found, want)
                                 && !self.objects(found, want)
                                 && !self.collects(found, want)
+                                && !self.reads(found, want)
                             {
                                 let (found, want) = (self.spell(found), self.spell(want));
                                 self.errors.push(
@@ -685,6 +686,8 @@ impl<'a> Lowerer<'a> {
                 && !self.weakens(found, want)
                 && !self.views(found, want)
                 && !self.objects(found, want)
+                && !self.collects(found, want)
+                && !self.reads(found, want)
             {
                 let (found, want) = (self.spell(found), self.spell(want));
                 self.errors.push(
@@ -821,20 +824,22 @@ impl<'a> Lowerer<'a> {
         if !kept {
             return false;
         }
+        let (from, to) = (self.types.shallow(from), self.types.shallow(to));
         let Ty::Dyn(of) = self.types.get(to).clone() else { return false };
-        let Ty::Named { item, .. } = self.types.get(from).clone() else { return false };
-        self.answers(item, of)
+        // By head and not by name: a primitive answers a trait exactly as a
+        // struct does (`impl Show for i64`), so `&5` becomes a `&dyn Show`
+        // wherever a `&Sq` becomes one.
+        let head = head_of(self.types.get(from));
+        self.answers(&head, of)
     }
 
     // Whether that type has an impl of that trait. What `dyn` is held to: a
     // reference becomes an object only where there is something for the table
     // to be built out of.
-    pub(super) fn answers(&self, item: TTIRItemId, of: TTIRItemId) -> bool {
+    pub(super) fn answers(&self, head: &Head, of: TTIRItemId) -> bool {
         self.out.items.iter().any(|held| {
             let TTIRItemKind::Impl { ty, of: written, .. } = &held.kind else { return false };
-            *written == Some(of)
-                && matches!(self.types.get(*ty), Ty::Named { item: subject, .. }
-                            if *subject == item)
+            *written == Some(of) && head_of(self.types.get(*ty)) == *head
         })
     }
 
@@ -884,15 +889,29 @@ impl<'a> Lowerer<'a> {
     // moves out of the type and into the value.
     pub(super) fn viewed(&mut self, got: TTIRExprId, want: TyId) -> TTIRExprId {
         let found = self.out.exprs[got].ty;
+        // Where the operand stands, for the reason `read_through` gives: nobody
+        // wrote this conversion, so it has no place of its own in the source.
+        let (line, col) = (self.out.exprs[got].line, self.out.exprs[got].col);
+        // A read out of a reference is not a cast: it is the same `Deref`
+        // `read_through` makes, and `sir::lower` turns it into the `Load` that
+        // `alias` and the two memory passes already understand. A cast would be
+        // a lie about what happens -- the value moves, and this one goes and
+        // fetches it.
+        if self.reads(found, want) {
+            self.out.exprs.push(TTIRExpr {
+                kind: TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand: got },
+                ty: want,
+                line,
+                col,
+            });
+            return self.out.exprs.len() - 1;
+        }
         if !self.views(found, want)
             && !self.objects(found, want)
             && !self.collects(found, want)
         {
             return got;
         }
-        // Where the operand stands, for the reason `read_through` gives: nobody
-        // wrote this conversion, so it has no place of its own in the source.
-        let (line, col) = (self.out.exprs[got].line, self.out.exprs[got].col);
         self.out.exprs.push(TTIRExpr {
             kind: TTIRExprKind::Cast(got),
             ty: want,
@@ -900,6 +919,31 @@ impl<'a> Lowerer<'a> {
             col,
         });
         self.out.exprs.len() - 1
+    }
+
+    // Whether a reference stands where what it refers to was wanted.
+    //
+    // "A reference stands for the place it refers to and is read, called,
+    // indexed and reached into exactly as that place is" (§3) -- and that had
+    // been true of every one of those but *read*. `read_through` is the rule,
+    // and it was wired into one place only: the operands of a binary operator.
+    // So `a + &b` worked and `f(&b)` did not, and neither did giving one back
+    // where the signature says the value.
+    //
+    // A primitive and nothing else, for now. Every primitive copies, so there
+    // is no question here about moving out of a reference -- which is exactly
+    // the question a `&Buf` read as a `Buf` would be asking, and it is the
+    // borrow checker's to answer rather than this one's. Widening it is a
+    // separate change with a real argument attached.
+    pub(super) fn reads(&mut self, found: TyId, want: TyId) -> bool {
+        let inner = match self.types.get(found).clone() {
+            Ty::Ref { inner, .. } | Ty::GC(inner) => inner,
+            _ => return false,
+        };
+        if !matches!(self.types.get(inner), Ty::Prim(_)) {
+            return false;
+        }
+        self.types.unify(inner, want).is_ok()
     }
 
     // An expression with the references taken off it, which is one read out

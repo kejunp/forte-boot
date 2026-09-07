@@ -49,7 +49,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::sema::names::{part, Mangler};
 use crate::sir::sir_nodes::*;
-use crate::tir::ttir_nodes::{TTIRItemId, TTIRItemKind, TTIRProgram, Ty, TyId};
+use crate::tir::ttir_nodes::{head_of, Head, TTIRItemId, TTIRItemKind, TTIRProgram, Ty, TyId};
 
 // How deep a chain of instances may go before it is taken to be one that does
 // not end. Every instance in a chain is a use written inside the one before it,
@@ -302,9 +302,10 @@ impl<'a> Mono<'a> {
         while let Some(Ty::Ref { inner, .. }) = self.p.types.get(held) {
             held = *inner;
         }
-        let Some(Ty::Named { item: want, .. }) = self.p.types.get(held).cloned() else {
-            return member;
-        };
+        // By head, so that a primitive receiver picks its impl exactly as a
+        // struct does. Without it a call on an `i64` resolved to the *trait's*
+        // member, which has no body, and the program failed at the link step.
+        let Some(want) = self.p.types.get(held).map(head_of) else { return member };
 
         for at in 0..self.p.items.len() {
             let TTIRItemKind::Impl { ty, of: Some(answers), members, .. } =
@@ -315,9 +316,7 @@ impl<'a> Mono<'a> {
             if answers != of {
                 continue;
             }
-            let Some(Ty::Named { item: subject, .. }) = self.p.types.get(ty).cloned() else {
-                continue;
-            };
+            let Some(subject) = self.p.types.get(ty).map(head_of) else { continue };
             if subject != want {
                 continue;
             }
@@ -490,16 +489,16 @@ impl<'a> Mono<'a> {
         let members = members.clone();
         // What it was before the coercion, which is the type the impl is
         // written for.
+        // By head, so a table is built for `impl Show for i64` as readily as
+        // for one written over a struct.
         let concrete = self.referent(held);
-        let Some(Ty::Named { item: concrete, .. }) = self.p.types.get(concrete).cloned() else {
-            return None;
-        };
+        let concrete = self.p.types.get(concrete).map(head_of)?;
 
         let mut out = Vec::with_capacity(members.len());
         for member in members {
             let TTIRItemKind::Fn(f) = &self.p.items.get(member)?.kind else { return None };
             let name = f.name.clone();
-            let answered = self.answering_impl(of, concrete, &name)?;
+            let answered = self.answering_impl(of, &concrete, &name)?;
             // The receiver is what says what the impl's own parameters stand
             // for: `&Box<i64>` against a declared `&Box<T>` is the whole of
             // what makes this the `i64` instance. `declaration` both names it
@@ -537,7 +536,7 @@ impl<'a> Mono<'a> {
     fn answering_impl(
         &self,
         of: TTIRItemId,
-        concrete: TTIRItemId,
+        concrete: &Head,
         name: &str,
     ) -> Option<TTIRItemId> {
         for item in &self.p.items {
@@ -547,8 +546,8 @@ impl<'a> Mono<'a> {
             if *written != Some(of) {
                 continue;
             }
-            let Some(Ty::Named { item: subject, .. }) = self.p.types.get(*ty) else { continue };
-            if *subject != concrete {
+            let Some(subject) = self.p.types.get(*ty).map(head_of) else { continue };
+            if subject != *concrete {
                 continue;
             }
             for &member in members {

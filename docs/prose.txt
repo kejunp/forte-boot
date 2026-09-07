@@ -890,6 +890,13 @@ anything but repeating it. That is why the reference moved onto the receiver:
 with the type gone there was nowhere else left to put it. What is still not
 said here is which of the three a trait wants of the impls that answer it.
 
+A reference is *read* as what it refers to where the value is wanted, which is
+the last of the four things §3 says it stands for: "f(&b)" hands over the "b",
+"return &b" gives it back, and "let n: i64 = &b" binds it. A primitive only,
+for now — every primitive copies, so nothing here has to ask what moving out of
+a reference would mean, and that question is the borrow checker's rather than
+this rule's.
+
 A reference to a reference is written as one expects, "&&T", though those two
 characters are the logical operator as well. What tells them apart is what
 stands in front of them: an operand — a value, or a type — makes "&&" the
@@ -2556,6 +2563,16 @@ answer is not obvious from the rules alone.
     signature introduced, so "where i32: Show" is refused (section 2).
     Settled. What a bound *means* is still a question for whatever checks
     traits, and nothing here says it.
+
+    What a bound is asked *of* is settled: a type, by its head — a declaration
+    by the one it is, and anything else by itself. So "impl Show for i64" is
+    written for the primitive and not for a name, and a primitive answers a
+    trait exactly as a struct does. That had been half true: the declaration
+    resolved and the bound passed, and then every lookup that asks which impl
+    a type's is asked it by name, so a primitive fell out of all four —
+    a method call found no field, a generic reached the trait's member and
+    failed at the link step, a "dyn" built no table, and "&5" was refused where
+    a "&dyn Show" was wanted. One question asked one way answers all four.
   - A trait is answered dynamically as well as statically, and "&dyn Shape" is
     how the second is written (section 3). Settled, and it is what "%derive"
     and a "Display" were waiting for -- "traits with code behind them" is the

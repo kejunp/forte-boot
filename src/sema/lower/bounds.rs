@@ -75,18 +75,8 @@ impl<'a> Lowerer<'a> {
     }
 }
 
-// What a type is, for asking whether an impl was written for it. A declaration
-// by the one it is, and anything else by itself: `impl Copy for i32` is written
-// for the primitive and not for a name.
-#[derive(PartialEq, Eq)]
-enum Head {
-    Named(TTIRItemId),
-    Exact(String),
-}
-
-fn head_of(ty: &Ty) -> Head {
-    match ty {
-        Ty::Named { item, .. } => Head::Named(*item),
-        other => Head::Exact(format!("{:?}", other)),
-    }
-}
+// `Head` and `head_of` are `ttir_nodes`', because four other lookups came to
+// want the same question asked the same way -- a method call on a primitive
+// receiver, the coercion to a trait object, and the two in `mir::mono` that
+// choose an impl and build its table. This file is where the idea started and
+// no longer where it lives.
