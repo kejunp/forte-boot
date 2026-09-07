@@ -235,6 +235,23 @@ fn stored(out: &mut String, b: &Body, def: MIRRegId, held: &str, back: Option<us
     let _ = writeln!(out, "\t{}\t{}, {}", store_of(b.class(def), bytes), held, at);
 }
 
+// The same two for an instruction whose answer is an *address*, which is a
+// word however wide the thing it points at is. `x86_64.rs` says at greater
+// length why the definition's own width is not that number.
+fn addressing(b: &Body, def: MIRRegId, sc: Reg) -> (String, Option<usize>) {
+    match b.site(def) {
+        Site::In(held) => (named(held, b.m.word), None),
+        Site::At(off) => (named(sc, b.m.word), Some(off)),
+        Site::Nowhere => (named(sc, b.m.word), None),
+    }
+}
+
+fn kept(out: &mut String, b: &Body, held: &str, back: Option<usize>) {
+    let Some(off) = back else { return };
+    let at = frame_op(out, off, scratch(b, 2, Class::Int));
+    let _ = writeln!(out, "\t{}\t{}, {}", store_of(Class::Int, b.m.word), held, at);
+}
+
 // ---- One body --------------------------------------------------------------
 
 pub fn body(b: &Body) -> (String, Vec<String>) {
@@ -557,14 +574,14 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
         MIRInstKind::Frame(slot) => {
             let def = inst.def?;
             let off = b.offsets.get(*slot).copied().unwrap_or(b.m.word);
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             if off < 4096 {
                 let _ = writeln!(out, "\tsub\t{}, x29, #{}", one, off);
             } else {
                 immediate(out, &one, off as i64);
                 let _ = writeln!(out, "\tsub\t{}, x29, {}", one, one);
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         // A page, and then the rest of the address within it. This machine
@@ -572,17 +589,17 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
         // pretend to.
         MIRInstKind::Symbol(name) => {
             let def = inst.def?;
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             let held = symbol(name);
             let _ = writeln!(out, "\tadrp\t{}, {}", one, held);
             let _ = writeln!(out, "\tadd\t{}, {}, :lo12:{}", one, one, held);
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Offset { base, bytes } => {
             let def = inst.def?;
             let a = wide_name(&read(out, b, *base, scratch(b, 1, Class::Int)));
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             let one = wide_name(&one);
             let held = if *bytes < 0 { "sub" } else { "add" };
             let by = bytes.unsigned_abs();
@@ -593,7 +610,7 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
                 immediate(out, &step, by as i64);
                 let _ = writeln!(out, "\t{}\t{}, {}, {}", held, one, a, step);
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         // A shift where the stride is a power of two, which is what the
@@ -619,7 +636,7 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
                     let _ = writeln!(out, "\tmadd\t{}, {}, {}, {}", one, c, step, a);
                 }
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Load { from, bytes } => {

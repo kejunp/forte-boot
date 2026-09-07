@@ -172,6 +172,21 @@ fn stored(out: &mut String, b: &Body, def: MIRRegId, held: &str, back: Option<us
     let _ = writeln!(out, "\t{}\t{}, {}", store_of(b.class(def), b.bytes(def)), held, at);
 }
 
+// The same two for an instruction whose answer is an *address*, which is a
+// word however wide the thing it points at is. `x86_64.rs` says at greater
+// length why the definition's own width is not that number. A register here
+// has no width in its name, so only the store is a different instruction --
+// an `sb` would have kept one byte of the address.
+fn addressing(b: &Body, def: MIRRegId, sc: Reg) -> (String, Option<usize>) {
+    writing(b, def, sc)
+}
+
+fn kept(out: &mut String, b: &Body, held: &str, back: Option<usize>) {
+    let Some(off) = back else { return };
+    let at = frame_op(out, off, scratch(b, 2, Class::Int));
+    let _ = writeln!(out, "\t{}\t{}, {}", store_of(Class::Int, b.m.word), held, at);
+}
+
 // ---- One body --------------------------------------------------------------
 
 pub fn body(b: &Body) -> (String, Vec<String>) {
@@ -434,27 +449,27 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
         MIRInstKind::Frame(slot) => {
             let def = inst.def?;
             let off = b.offsets.get(*slot).copied().unwrap_or(b.m.word);
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             if off <= 2048 {
                 let _ = writeln!(out, "\taddi\t{}, s0, -{}", one, off);
             } else {
                 let _ = writeln!(out, "\tli\t{}, {}", one, off);
                 let _ = writeln!(out, "\tsub\t{}, s0, {}", one, one);
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Symbol(name) => {
             let def = inst.def?;
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             let _ = writeln!(out, "\tla\t{}, {}", one, symbol(name));
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Offset { base, bytes } => {
             let def = inst.def?;
             let a = read(out, b, *base, scratch(b, 1, Class::Int));
-            let (one, back) = writing(b, def, scratch(b, 0, Class::Int));
+            let (one, back) = addressing(b, def, scratch(b, 0, Class::Int));
             if *bytes >= -2048 && *bytes <= 2047 {
                 let _ = writeln!(out, "\taddi\t{}, {}, {}", one, a, bytes);
             } else {
@@ -462,7 +477,7 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
                 let _ = writeln!(out, "\tli\t{}, {}", sc, bytes);
                 let _ = writeln!(out, "\tadd\t{}, {}, {}", one, a, sc);
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Scaled { base, index, scale } => {
@@ -484,7 +499,7 @@ fn inst_of(out: &mut String, b: &Body, inst: &MIRInst) -> Option<String> {
                 let _ = writeln!(out, "\tmul\t{}, {}, {}", sc, c, sc);
                 let _ = writeln!(out, "\tadd\t{}, {}, {}", one, a, sc);
             }
-            stored(out, b, def, &one, back);
+            kept(out, b, &one, back);
         }
 
         MIRInstKind::Load { from, bytes } => {

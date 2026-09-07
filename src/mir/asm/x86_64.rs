@@ -174,6 +174,33 @@ fn stored(out: &mut String, b: &Body, def: MIRRegId, held: &str, back: Option<us
     }
 }
 
+// The same two for an instruction whose answer is an *address*.
+//
+// An address is a word however wide the thing it points at is, and the width
+// `writing` asks for is the definition's. Those are the same number for every
+// type held by its address anyway (`mir::lower`, `indirect`), so the two
+// coincided everywhere they were ever tried -- and a struct with no fields is
+// the one type they come apart on. It is held directly, so its register is a
+// byte, and what came out was `leaq -42(%rbp), %al`, which the assembler
+// refuses, followed by a `movb` that would have kept one byte of the address
+// if it had not.
+//
+// So the four instructions that compute an address say so, rather than each
+// type of value having to be one an address happens to be as wide as.
+fn addressing(b: &Body, def: MIRRegId, sc: Reg) -> (String, Option<usize>) {
+    match b.site(def) {
+        Site::In(held) => (named(held, b.m.word), None),
+        Site::At(off) => (named(sc, b.m.word), Some(off)),
+        Site::Nowhere => (named(sc, b.m.word), None),
+    }
+}
+
+fn kept(out: &mut String, b: &Body, held: &str, back: Option<usize>) {
+    if let Some(off) = back {
+        let _ = writeln!(out, "\tmov{}\t{}, {}", suffix(b.m.word), held, frame_at(off));
+    }
+}
+
 // ---- One body --------------------------------------------------------------
 
 pub fn body(b: &Body) -> (String, Vec<String>) {
@@ -492,24 +519,24 @@ fn inst_of(
         MIRInstKind::Frame(slot) => {
             let def = inst.def?;
             let off = b.offsets.get(*slot).copied().unwrap_or(b.m.word);
-            let (held, back) = writing(b, def, sc0(Class::Int));
+            let (held, back) = addressing(b, def, sc0(Class::Int));
             let _ = writeln!(out, "\tleaq\t{}, {}", frame_at(off), held);
-            stored(out, b, def, &held, back);
+            kept(out, b, &held, back);
         }
 
         MIRInstKind::Symbol(name) => {
             let def = inst.def?;
-            let (held, back) = writing(b, def, sc0(Class::Int));
+            let (held, back) = addressing(b, def, sc0(Class::Int));
             let _ = writeln!(out, "\tleaq\t{}(%rip), {}", symbol(name), held);
-            stored(out, b, def, &held, back);
+            kept(out, b, &held, back);
         }
 
         MIRInstKind::Offset { base, bytes } => {
             let def = inst.def?;
             let one = read_at(out, b, *base, sc1(Class::Int), 8);
-            let (held, back) = writing(b, def, sc0(Class::Int));
+            let (held, back) = addressing(b, def, sc0(Class::Int));
             let _ = writeln!(out, "\tleaq\t{}({}), {}", bytes, one, held);
-            stored(out, b, def, &held, back);
+            kept(out, b, &held, back);
         }
 
         // The machine's own addressing mode where the stride is one of the four
@@ -525,9 +552,9 @@ fn inst_of(
                 step = held;
                 by = 1;
             }
-            let (held, back) = writing(b, def, sc0(Class::Int));
+            let (held, back) = addressing(b, def, sc0(Class::Int));
             let _ = writeln!(out, "\tleaq\t({}, {}, {}), {}", one, step, by, held);
-            stored(out, b, def, &held, back);
+            kept(out, b, &held, back);
         }
 
         MIRInstKind::Load { from, bytes } => {

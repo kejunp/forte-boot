@@ -54,6 +54,12 @@ fn have_cc() -> bool {
 }
 
 // Somewhere to put an executable that two of these must not share.
+//
+// The name is the caller's word and the pid, so two of these running at once in
+// one test binary are told apart by the word alone -- and two tests that pick
+// the same word are one file written twice and one directory each deletes at
+// the end of itself. What that looks like is a test that fails once in four
+// runs saying the program it just built is not there, which is what it did.
 fn out_at(what: &str) -> PathBuf {
     std::env::temp_dir().join(format!("fortec-{}-{}", what, std::process::id()))
 }
@@ -1964,6 +1970,83 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A value of no bytes ------------------------------------------------------------
+
+// A struct with no fields, whose *address* is a word like any other.
+//
+// It did not assemble. An address is a word however wide the thing it points at
+// is, and the width the four address-computing instructions asked for was the
+// definition's -- which is the same number for every type held by its address
+// anyway (`mir::lower`, `indirect`), so the two coincided everywhere they were
+// ever tried. A value of no bytes is the one type they come apart on: it is
+// held directly, its register is a byte, and `leaq -42(%rbp), %al` is not an
+// instruction.
+//
+// So this is a test that has to *assemble and run*, which is the only kind that
+// could have caught it: every pass above the emitter was already right.
+#[test]
+fn a_value_of_no_bytes_has_an_address_like_anything_else() {
+    let dir = std::env::temp_dir().join(format!("fortec-empty-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("empty.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         struct Unit {}\n\
+         trait T {\n\
+         \x20   fn t(&self): i64\n\
+         }\n\
+         impl T for Unit { fn t(&self): i64 { 5 } }\n\
+         \n\
+         struct Held { pub u: Unit, pub n: i64 }\n\
+         \n\
+         fn by_table(x: &dyn T): i64 { x.t() }\n\
+         fn by_ref(u: &Unit): i64 { 7 }\n\
+         \n\
+         %test\n\
+         fn its_address_is_taken_and_handed_round() {\n\
+         \x20   let u = Unit {}\n\
+         \x20   // A name of reference type, which is where the address gets a\n\
+         \x20   // register of its own and where this used to stop.\n\
+         \x20   let p = &u\n\
+         \x20   assert_eq(&by_ref(p), &7, \"handed on\")\n\
+         \x20   assert_eq(&by_ref(&u), &7, \"and taken at the call\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_method_on_one_is_handed_its_address() {\n\
+         \x20   let u = Unit {}\n\
+         \x20   assert_eq(&u.t(), &5, \"a receiver of no bytes\")\n\
+         \x20   assert_eq(&T::t(&u), &5, \"named through what declared it\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_becomes_a_trait_object() {\n\
+         \x20   // Two words, the first of which is the address of nothing.\n\
+         \x20   let u = Unit {}\n\
+         \x20   assert_eq(&by_table(&u), &5, \"through a table\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_sits_in_a_struct_beside_something() {\n\
+         \x20   let h = Held { u: Unit {}, n: 4 }\n\
+         \x20   assert_eq(&h.n, &4, \"the field beside it is where it was\")\n\
+         \x20   assert_eq(&h.u.t(), &5, \"and it is reachable through the field\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "empty");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a value of no bytes was meant to have an address:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
+}
+
 // ---- A method named through what declared it ---------------------------------------
 
 // A method was reachable through a `.` and through nothing else, and a `.`
@@ -1973,10 +2056,10 @@ fn one_println_prints_whatever_it_was_handed() {
 // reached: every one of these answers a different number.
 #[test]
 fn a_method_is_named_through_the_declaration_it_belongs_to() {
-    let dir = std::env::temp_dir().join(format!("fortec-named-src-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fortec-through-src-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a directory");
-    let root = dir.join("named.ft");
+    let root = dir.join("through.ft");
     std::fs::write(
         &root,
         "import test::assert_eq;\n\
@@ -2035,7 +2118,7 @@ fn a_method_is_named_through_the_declaration_it_belongs_to() {
     )
     .expect("a file");
 
-    let held = ran(&root, "named");
+    let held = ran(&root, "through");
     let _ = std::fs::remove_dir_all(&dir);
     let Some((ok, said)) = held else { return };
 

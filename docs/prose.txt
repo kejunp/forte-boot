@@ -2033,13 +2033,8 @@ answer is not obvious from the rules alone.
     What is not written yet is a declaration with parameters, whose impl has
     to bound each of them -- every field of a "T" has to answer the trait too.
 
-    And one thing found while writing it, which is nothing to do with derives
-    and is left where it was found. A struct with no fields made into a trait
-    object does not assemble: an address is a word however wide the thing it
-    addresses is, and the width asked for is the definition's, which for a
-    value of no bytes is a byte -- so "leaq" is written into "%al" and the
-    assembler refuses it. It is a back end question and not this one's, and
-    "%derive(Show)" on such a struct runs into it like anything else would.
+    And one thing found while writing it, which was nothing to do with derives
+    and is settled below.
   - A name is mangled as "__F" and then each part written as its length and
     then its characters, and "%symbol" gives the exact name instead
     (section 1). Settled, and the parts are these: where the fn is declared,
@@ -2378,6 +2373,25 @@ answer is not obvious from the rules alone.
     "PayloadAddr" says where it is, which is the pair "Field" and "FieldAddr"
     already were -- so a match through a reference is the address-giving half
     of each pair and the same tests around it.
+  - An address is a word, and the four instructions that compute one now say
+    so. They did not: each named its answer's register at the *definition's*
+    width, and that is the same number for every type held by its address
+    anyway -- so the two coincided everywhere they were ever tried, and the
+    emitter was reading a coincidence as a rule.
+
+    A value of no bytes is the one type they come apart on. A struct with no
+    fields is held directly rather than by its address, so its register is a
+    byte, and what came out was "leaq -42(%rbp), %al" -- which is not an
+    instruction -- followed by a "movb" that would have kept one byte of the
+    address if the assembler had let it through. So "let p = &u" did not
+    build, nor a method on such a value, nor one made into a trait object.
+    Every pass above the emitter was already right about all three, which is
+    why only a test that assembles and runs could have found it.
+
+    All three machines had it, and the shape of the fix is the same on each:
+    the four say they are computing an address and take the word for it. On
+    the third a register has no width in its name, so only the store was ever
+    a different instruction.
   - A method call on a place is a call on that place's *address*, where the
     method declares one. "A place is reached through one `*` or through any
     number of `&`" (section 3) and this is one of those reaches, and nothing
