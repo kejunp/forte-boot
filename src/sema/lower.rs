@@ -497,16 +497,29 @@ impl<'a> Lowerer<'a> {
         self.out.modules = modules;
         let (arena, open) = self.types.finish();
         if !open.is_empty() {
-            // Nothing points at one of these any more -- `finish` turned each
-            // into an `Error` -- but a type nobody worked out is a fact worth
-            // one message.
+            // An error and not a warning, which it was.
+            //
+            // A type nobody worked out is a program that cannot be compiled,
+            // and this is the only place that knows. `finish` turns each into
+            // an `Error`; the mangler meets one further down and stops the
+            // compiler where it stands -- "a type that was never worked out
+            // reached the mangler" -- so what a reader got for `let a =
+            // M::Nothing`, where nothing anywhere says what the `T` is, was a
+            // warning and then a panic.
+            //
+            // What it does not yet do is say *where*. The holes are the
+            // checker's own numbers and nothing keeps the expression each
+            // stood over, so the count is what there is to report.
             self.errors.push(
-                Diagnostic::warning(
+                Diagnostic::error(
                     format!("{} types were never worked out", open.len()),
                     Span::at(1, 1),
                 )
                 .with_label("the checker did not settle everything")
-                .with_note("an expression whose type is `?` is one of these"),
+                .with_note("an expression whose type is `?` is one of these")
+                .with_help(
+                    "a value whose type nothing says is one to write the type of:                      `let a: M<i64> = M::Nothing`",
+                ),
             );
         }
         self.out.types = arena;

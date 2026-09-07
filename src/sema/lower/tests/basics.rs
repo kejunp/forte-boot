@@ -153,3 +153,26 @@ fn every_expression_form_is_typed() {
         with
     ));
 }
+
+// ---- A type nobody worked out ---------------------------------------------------
+
+// It is a refusal and was a warning. A type the checker never settled is a
+// program that cannot be compiled and this is the only pass that knows: `finish`
+// turns each standing hole into an `Error`, and the mangler meets one further
+// down and takes the compiler out where it stands -- "a type that was never
+// worked out reached the mangler". So `let a = M::Nothing`, where nothing
+// anywhere says what the `T` is, got a warning and then a panic.
+#[test]
+fn a_type_nobody_worked_out_is_refused() {
+    let out = refused(
+        "enum M<T> {\n    Nothing,\n    Just(T),\n}\n\
+         fn f(): i32 {\n    let a = M::Nothing\n    0\n}\n",
+    );
+    assert!(out.contains("types were never worked out"), "{}", out);
+    // And with the type written it is a program like any other, which is what
+    // the message says to do.
+    clean(
+        "enum M<T> {\n    Nothing,\n    Just(T),\n}\n\
+         fn f(): i32 {\n    let a: M<i32> = M::Nothing\n    0\n}\n",
+    );
+}

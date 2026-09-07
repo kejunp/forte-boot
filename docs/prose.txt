@@ -2373,6 +2373,17 @@ answer is not obvious from the rules alone.
     "PayloadAddr" says where it is, which is the pair "Field" and "FieldAddr"
     already were -- so a match through a reference is the address-giving half
     of each pair and the same tests around it.
+  - A type nobody worked out is a refusal and was a warning. The checker turns
+    every hole that is still standing at the end into an "Error" and said how
+    many there were; the mangler meets one further down and takes the compiler
+    out where it stands. So "let a = M::Nothing", where nothing anywhere says
+    what the "T" is, got a warning and then a panic, which is the one shape a
+    compiler must not have.
+
+    What it does not say is *where*. The holes are the checker's own numbers
+    and nothing keeps the expression each stood over, so the count is what
+    there is to report and the help says what to write instead. Keeping a span
+    per hole is the obvious answer and is not written.
   - A table built for a generic impl names the instance, which it did not. The
     entry a table holds is a symbol, and "mir::mono" works out what the impl's
     parameter stands for by matching the receiver it was handed against the
