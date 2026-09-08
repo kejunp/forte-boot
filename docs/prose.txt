@@ -2424,6 +2424,21 @@ answer is not obvious from the rules alone.
     What is left is the evaluator's own limits: how deep a recursion or how
     long a loop it will sit through before giving up, and what it says when
     it does.
+  - "Eq", "Ord" and "Hash" are traits in "std/order.ft", and a container asks
+    for them in the bound on its key. They were function values before,
+    handed over when the container was made — "empty(mix, eq_i64)" — because
+    the file that declared them said, truthfully at the time, that "there are
+    no traits reaching this far". What that cost was every caller knowing
+    which pair went with which key, and the container having no way to say
+    the pair was wrong. Two things had to arrive first and both have: a trait
+    with code behind it, and a "Self" to write a signature about, "fn
+    same(&self, other: &Self)" being the shape all three take.
+
+    Three and not one, because they are three questions. A set needs "Eq"; a
+    hashed one needs "Hash" as well; an ordered one needs "Ord" instead. The
+    impls are written for the primitives most keys are — "i64", "i32", "u64",
+    "bool" and "str" — and a suite writes its own for a type of its own.
+    What is left is the containers, which still take the pair of functions.
   - There are no associated constants, and "Color::MAX" names nothing: an
     impl makes methods for its type and holds nothing else (section 2). A
     constant that wants a name in front of it goes in a <namespace_decl> and

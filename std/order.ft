@@ -1,25 +1,130 @@
 // Comparing things the language will not compare for you.
 //
 // A container that orders its keys needs to be told how, and one that hashes
-// them needs to be told that too. Neither is something the compiler can do for
-// an arbitrary `T`: there are no traits reaching this far -- an `impl<T>` does
-// not yet scope its own parameter -- and the built-in `==` over a struct
-// compares where the two *are* rather than what they hold, which is a wrong
-// answer that looks like an answer.
+// them needs to be told that too. Neither is something the compiler does for
+// an arbitrary `T`: the built-in `==` over a struct compares where the two
+// *are* rather than what they hold, which is a wrong answer that looks like an
+// answer, and there is no built-in hash at all.
 //
-// So the operations are values, handed to a container once when it is made,
-// and this file holds the ones for the type most keys are.
+// So they are traits, and a container names them in the bound on its key. That
+// wanted two things the language did not have and now has: a trait with code
+// behind it, and a `Self` to write a signature about -- `fn same(&self, other:
+// &Self)` is the shape every one of these takes, and it is a shape nothing
+// could write while `Self` was not a type (§2).
+//
+// They were function values before, handed to a container when it was made:
+// `empty(mix, eq_i64)`. What that cost was every caller knowing which pair
+// went with which key, and the container having no way to say the pair was
+// wrong. A bound says it once, at the declaration, and the checker holds every
+// caller to it.
+//
+// The three are apart because they are three questions. A set needs `Eq`; a
+// hashed one needs `Hash` as well; an ordered one needs `Ord` instead. Nothing
+// here asks for more than it uses.
 
-// Strictly less. `a` and `b` are references and an operator over a reference
-// is an operator over what it refers to (§3), so this is the comparison of the
-// two i64 and not of the two addresses.
-pub fn less_i64(a: &i64, b: &i64): bool {
-    a < b
+// Whether two are the same thing. What `==` should mean for a type that is not
+// a number, and what a container asks of a key before it says it has one.
+pub trait Eq {
+    fn same(&self, other: &Self): bool
 }
 
-pub fn eq_i64(a: &i64, b: &i64): bool {
-    a == b
+// Strictly less, which is the one comparison the rest are built out of: `a > b`
+// is `b.less(a)`, and the two equal cases are `Eq`'s.
+pub trait Ord {
+    fn less(&self, other: &Self): bool
 }
+
+// A number that stands for the value, spread out. Two equal values must give
+// one number -- that is what a table is built on -- and two unequal ones need
+// not give two.
+pub trait Hash {
+    fn hash(&self): i64
+}
+
+// ---- The primitives ---------------------------------------------------------
+
+// `a` and `b` are references and an operator over a reference is an operator
+// over what it refers to (§3), so these compare the two values and not the two
+// addresses.
+
+impl Eq for i64 {
+    fn same(&self, other: &i64): bool { self == other }
+}
+
+impl Ord for i64 {
+    fn less(&self, other: &i64): bool { self < other }
+}
+
+impl Hash for i64 {
+    fn hash(&self): i64 { mix(self) }
+}
+
+impl Eq for i32 {
+    fn same(&self, other: &i32): bool { self == other }
+}
+
+impl Ord for i32 {
+    fn less(&self, other: &i32): bool { self < other }
+}
+
+impl Hash for i32 {
+    fn hash(&self): i64 { mix(&(self as i64)) }
+}
+
+impl Eq for u64 {
+    fn same(&self, other: &u64): bool { self == other }
+}
+
+impl Ord for u64 {
+    fn less(&self, other: &u64): bool { self < other }
+}
+
+impl Hash for u64 {
+    fn hash(&self): i64 { mix(&(self as i64)) }
+}
+
+impl Eq for bool {
+    fn same(&self, other: &bool): bool { self == other }
+}
+
+impl Ord for bool {
+    // False before true, which is the order the two numbers behind them are in.
+    fn less(&self, other: &bool): bool { !self && other }
+}
+
+impl Hash for bool {
+    fn hash(&self): i64 { if self == &true { 1 } else { 0 } }
+}
+
+// A string compares by what it says and not by where it is, which is what the
+// operators over one already do (§3).
+
+impl Eq for str {
+    fn same(&self, other: &str): bool { self == other }
+}
+
+impl Ord for str {
+    fn less(&self, other: &str): bool { self < other }
+}
+
+// FNV-1a over the bytes, which is the hash a string wants: it reads every byte
+// and it is three instructions a byte. `mix` is for a value that is already a
+// number and would only spread the length of this one.
+impl Hash for str {
+    fn hash(&self): i64 {
+        // A `str` is bytes with a length and the language gives no way to
+        // reach into one; a view of its bytes is a cast, and a view is run
+        // through like any other.
+        let v: &u8[] = self as &u8[]
+        var h = -3750763034362895579
+        for b in v {
+            h = (h ^ (b as i64)) * 1099511628211
+        }
+        h
+    }
+}
+
+// ---- What a hash is made of -------------------------------------------------
 
 // `splitmix64`'s finaliser: three shifts, two multiplies and no state.
 //
@@ -33,4 +138,15 @@ pub fn mix(k: &i64): i64 {
     var h = (k ^ (k >> 30)) * -4658895280553007687
     h = (h ^ (h >> 27)) * -7723592293110705685
     h ^ (h >> 31)
+}
+
+// The pair of free functions the containers took before the traits existed.
+// Kept because a caller may still want to hand one over, and because `mix` is
+// what `impl Hash for i64` calls.
+pub fn less_i64(a: &i64, b: &i64): bool {
+    a < b
+}
+
+pub fn eq_i64(a: &i64, b: &i64): bool {
+    a == b
 }

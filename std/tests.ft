@@ -245,6 +245,48 @@ fn the_hash_does_not_leave_neighbours_as_neighbours() {
     assert_eq(&order::mix(&one), &order::mix(&also_one), "and one key hashes one way")
 }
 
+// The three traits, reached through a bound -- which is how a container asks
+// for them. `Self` is what makes `Eq` and `Ord` writable at all: both take a
+// second value of the type, and there was no way to say so before (section 2).
+
+fn same_of<T: order::Eq>(a: &T, b: &T): bool { a.same(b) }
+fn less_of<T: order::Ord>(a: &T, b: &T): bool { a.less(b) }
+fn hash_of<T: order::Hash>(a: &T): i64 { a.hash() }
+
+%test
+fn a_bound_reaches_the_impl_written_for_the_key() {
+    let a: i64 = 1
+    let b: i64 = 2
+    let also_one: i64 = 1
+    assert(same_of(&a, &also_one), "two ones are equal")
+    assert(!same_of(&a, &b), "and one and two are not")
+    assert(less_of(&a, &b), "1 is less than 2")
+    assert(!less_of(&b, &a), "and 2 is not less than 1")
+    assert_eq(&hash_of(&a), &order::mix(&a), "an i64 hashes through `mix`")
+}
+
+// A string is the key the traits were wanted for as much as a number: it
+// compares by what it says, and it hashes by what it says too.
+%test
+fn a_string_answers_the_three_as_a_number_does() {
+    let a: str = "hello"
+    let b: str = "hell"
+    let c: str = "hello"
+    assert(same_of(&a, &c), "the same characters")
+    assert(!same_of(&a, &b), "and two that differ")
+    assert(less_of(&b, &a), "a prefix comes first")
+    assert_eq(&hash_of(&a), &hash_of(&c), "and one string hashes one way")
+    assert(hash_of(&a) != hash_of(&b), "two others do not")
+}
+
+%test
+fn a_bool_answers_them_too() {
+    assert(same_of(&true, &true), "two trues")
+    assert(!same_of(&true, &false), "and a true and a false")
+    assert(less_of(&false, &true), "false comes first")
+    assert(hash_of(&true) != hash_of(&false), "and they hash apart")
+}
+
 // ---- HashMap ----------------------------------------------------------------------
 
 fn map_of(): HashMap<i64, i64> {
