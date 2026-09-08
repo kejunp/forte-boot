@@ -259,8 +259,16 @@ impl<'a> Lowerer<'a> {
     // that is a reference is read through to get one.
     fn received(&mut self, recv: TTIRExprId, want: TyId) -> TTIRExprId {
         let held = self.out.exprs[recv].ty;
-        let wants = self.types.get(want).clone();
-        let has = self.types.get(held).clone();
+        // Through the hole on both sides. What a generic gave back is a
+        // `Ty::Var` until something fills it, and the arms below read the
+        // entry as it stands -- so `at(&v, 0).area()`, where `at` answers a
+        // `T` that inference had already filled with a `&dyn Shape`, saw
+        // something that was not a reference and took its address. What came
+        // of that was a `&&dyn Shape` receiver, which is not a trait object,
+        // so the call went to the trait's own member by name and the linker
+        // had nothing to point it at.
+        let wants = self.types.get(self.types.shallow(want)).clone();
+        let has = self.types.get(self.types.shallow(held)).clone();
         match (wants, has) {
             (Ty::Ref { .. }, Ty::Ref { .. } | Ty::Ptr(_) | Ty::GC(_)) => recv,
             (Ty::Ref { op, .. }, _) => {

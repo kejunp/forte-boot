@@ -1970,6 +1970,79 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A receiver that came out of a generic -------------------------------------------
+
+// A method call on what a generic gave back.
+//
+// "A place is reached through any number of `&`", so a method declaring `&self`
+// is handed the receiver's address and one that is already a reference is left
+// alone. Which of the two it is was read off the type as it stood -- and what a
+// generic gives back is a hole until something fills it, so a `T` that
+// inference had already filled with a `&dyn Shape` did not read as a reference
+// and had its address taken.
+//
+// What came of that was a `&&dyn Shape` receiver, which is not a trait object:
+// the call went to the trait's own member by *name*, and the trait's member has
+// no body, so the program did not link. `at(&v, 0).area()` on a
+// `Vec<&dyn Shape>` is the shape, and it is the ordinary way to hold a row of
+// objects.
+#[test]
+fn a_receiver_that_came_out_of_a_generic_is_what_it_was_filled_with() {
+    let dir = std::env::temp_dir().join(format!("fortec-recvgen-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("recvgen.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import vec::{Vec, empty, push, at, len};\n\
+         \n\
+         trait Shape {\n\
+         \x20   fn area(&self): i64\n\
+         }\n\
+         struct Sq { pub s: i64 }\n\
+         struct Ci { pub r: i64 }\n\
+         impl Shape for Sq { fn area(&self): i64 { self.s * self.s } }\n\
+         impl Shape for Ci { fn area(&self): i64 { self.r * 3 } }\n\
+         \n\
+         %test\n\
+         fn a_row_of_objects_is_walked_and_each_answers() {\n\
+         \x20   let a = Sq { s: 4 }\n\
+         \x20   let b = Ci { r: 5 }\n\
+         \x20   var held: Vec<&dyn Shape> = empty()\n\
+         \x20   push(*held, &a)\n\
+         \x20   push(*held, &b)\n\
+         \x20   var total = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < len(&held) {\n\
+         \x20       // The receiver here is what `at` gave back, which is a\n\
+         \x20       // hole the checker filled and not a written type.\n\
+         \x20       total = total + at(&held, i).area()\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(&total, &31, \"each answered its own\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_value_out_of_a_generic_still_has_its_address_taken() {\n\
+         \x20   // The other side of the rule, which has to keep working: a\n\
+         \x20   // `T` filled with a value is a place and is addressed.\n\
+         \x20   var held: Vec<Sq> = empty()\n\
+         \x20   push(*held, Sq { s: 6 })\n\
+         \x20   assert_eq(&at(&held, 0).area(), &36, \"a value receiver\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "recvgen");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a receiver out of a generic was meant to answer:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- A reference to what a pointer points at -----------------------------------------
 
 // `&(deref p)` is `p`, and it has to be a value of its own all the same.

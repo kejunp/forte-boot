@@ -2411,6 +2411,25 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - A conversion follows a hole before it asks anything, which it did not.
+    Whether a value may become a view, a trait object, a collected value or a
+    read of one is answered by reading the arena entry the type is — and what
+    a generic gives back is a "Ty::Var" until something fills it, so a "T" the
+    checker had already settled did not look like the type it was settled as.
+
+    Two things came of that, and they are the same omission at two removes.
+    "push(*v, &q)" on a "Vec<&dyn Shape>" was refused, the parameter being a
+    hole the vector had already filled: "argument 2 is `&Sq` and it takes
+    `&dyn Shape`". And a method call on what a generic gave back had its
+    receiver's address taken a second time — "a place is reached through any
+    number of `&`" is read off the type, a hole is not a reference, so
+    "at(&v, 0).area()" made a "&&dyn Shape", which is not a trait object: the
+    call went to the trait's own member by *name*, and that member has no
+    body, so the program did not link.
+
+    Which means a row of trait objects — the ordinary way to hold several
+    types at once, and the thing the language grew "dyn" for — did not work at
+    all, in either the borrowed form or the owned one.
   - "&(deref p)" is "p", and it is a value of its own all the same.
 
     "sir::lower" gives an address the type the source wrote over it rather than

@@ -848,6 +848,12 @@ impl<'a> Lowerer<'a> {
     // either, which is the weakening `weakens` already allows and is allowed
     // here for the same reason rather than a second time.
     pub(super) fn views(&mut self, found: TyId, want: TyId) -> bool {
+        // Through the holes first. What a generic gave back is a `Ty::Var`
+        // until something fills it and the arms below read the entry as it
+        // stands, so a `T` the checker had already settled did not look like
+        // the type it had been settled as -- see `objects`, where the same
+        // omission made `push(*v, &q)` on a `Vec<&dyn Shape>` a refusal.
+        let (found, want) = (self.types.shallow(found), self.types.shallow(want));
         let (
             Ty::Ref { op: from_op, inner: from, .. },
             Ty::Ref { op: want_op, inner: to, .. },
@@ -878,18 +884,40 @@ impl<'a> Lowerer<'a> {
     // What makes it sound is that nothing goes the other way: a `&dyn Shape`
     // is not a `&Sq`, having forgotten which type it was.
     pub(super) fn objects(&mut self, found: TyId, want: TyId) -> bool {
-        let (
-            Ty::Ref { op: from_op, inner: from, .. },
-            Ty::Ref { op: want_op, inner: to, .. },
-        ) = (self.types.get(found).clone(), self.types.get(want).clone())
-        else {
-            return false;
+        // Through the holes first, both sides. What a generic gave back is a
+        // `Ty::Var` until something fills it and the arms below read the entry
+        // as it stands -- so `push(*v, &q)` on a `Vec<&dyn Shape>`, where the
+        // parameter is a hole the vector had already filled with `&dyn Shape`,
+        // did not look like a reference to a trait object and was refused as
+        // "argument 2 is `&Sq` and it takes `&dyn Shape`".
+        let (found, want) = (self.types.shallow(found), self.types.shallow(want));
+        // The two shapes a trait object stands behind. A reference is the
+        // borrowed one and a `gc` the owned: "a trait object lives as long as
+        // what it was made from, so a container of them wants a `gc` of one",
+        // and the two are the same two words -- where the value is, and where
+        // the routines that answer for it are.
+        //
+        // A `gc` of one is made from a `gc` of what it was and from nothing
+        // else. Handing the *collector's* handle over is the whole of what
+        // makes it owned: a reference would be an address into a frame, and an
+        // object made from one would outlive what it was made from.
+        let (from, to) = match (self.types.get(found).clone(), self.types.get(want).clone()) {
+            (
+                Ty::Ref { op: from_op, inner: from, .. },
+                Ty::Ref { op: want_op, inner: to, .. },
+            ) => {
+                // A `*` stands where a `&` is asked for and not the other way
+                // round: a promise to read is no promise to write.
+                let kept = from_op == want_op
+                    || (from_op == TIRRefOp::Mut && want_op == TIRRefOp::Imm);
+                if !kept {
+                    return false;
+                }
+                (from, to)
+            }
+            (Ty::GC(from), Ty::GC(to)) => (from, to),
+            _ => return false,
         };
-        let kept = from_op == want_op
-            || (from_op == TIRRefOp::Mut && want_op == TIRRefOp::Imm);
-        if !kept {
-            return false;
-        }
         let (from, to) = (self.types.shallow(from), self.types.shallow(to));
         let Ty::Dyn(of) = self.types.get(to).clone() else { return false };
         // By head and not by name: a primitive answers a trait exactly as a
@@ -1015,6 +1043,7 @@ impl<'a> Lowerer<'a> {
     // is not one, because taking the value out of the collector's room is
     // giving away something the collector still holds.
     pub(super) fn collects(&mut self, found: TyId, want: TyId) -> bool {
+        let (found, want) = (self.types.shallow(found), self.types.shallow(want));
         let Ty::GC(inner) = self.types.get(want).clone() else { return false };
         if matches!(self.types.get(found), Ty::GC(_)) {
             return false;
@@ -1079,6 +1108,7 @@ impl<'a> Lowerer<'a> {
     // borrow checker's to answer rather than this one's. Widening it is a
     // separate change with a real argument attached.
     pub(super) fn reads(&mut self, found: TyId, want: TyId) -> bool {
+        let (found, want) = (self.types.shallow(found), self.types.shallow(want));
         let inner = match self.types.get(found).clone() {
             Ty::Ref { inner, .. } | Ty::GC(inner) => inner,
             _ => return false,
