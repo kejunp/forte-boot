@@ -239,3 +239,43 @@ fn a_slot_whose_address_an_inlined_call_holds_stays_in_the_frame() {
     let held: usize = program.bodies.iter().map(|b| b.slots.len()).sum();
     assert!(held > 0, "the slot was meant to stay in the frame\n{:#?}", program.bodies);
 }
+
+// ---- A loop with a second way out ---------------------------------------------
+
+// A loop with a `break` whose value is read past it is not unrolled.
+//
+// Every copy's `break` branches to the one block the original branched to, so a
+// phi below it has one edge where the turns have as many values as there are
+// copies. What came of unrolling one anyway was a phi carrying a value made in
+// a block the rewrite had left behind -- a graph that is not in SSA form, and
+// at `-O2` and above only, this being the level unrolling runs at.
+//
+// The rule was written down and the check did not keep it: a phi outside the
+// loop was exempt, and a phi outside the loop is exactly how a `break` carries
+// its value out.
+#[test]
+fn a_loop_a_break_carries_a_value_out_of_is_not_unrolled() {
+    let (_, stats) = compiled(
+        "fn f(): i64 {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   let held = for i in a { if i > 2 { break i } }\n\
+         \x20   held\n\
+         }\n",
+    );
+    assert_eq!(stats.unrolled, 0, "a break carries a value out of this one");
+}
+
+// And one with nothing to carry out is unrolled as it always was, which is
+// what keeps the rule a rule about breaks rather than about loops.
+#[test]
+fn a_loop_with_one_way_out_is_still_unrolled() {
+    let (_, stats) = compiled(
+        "fn f(): i64 {\n\
+         \x20   let a: i64[4] = [1, 2, 3, 4]\n\
+         \x20   var t = 0\n\
+         \x20   for i in a { t = t + i }\n\
+         \x20   t\n\
+         }\n",
+    );
+    assert!(stats.unrolled > 0, "this one has one way out");
+}

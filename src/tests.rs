@@ -2020,6 +2020,19 @@ fn a_break_carries_its_value_out_of_the_loop() {
          \x20       if i > 3 { break }\n\
          \x20   }\n\
          \x20   assert_eq(&i, &4, \"out on the fourth\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_for_carries_one_out_too() {\n\
+         \x20   // The same of the other loop, which took longer: a `for`\n\
+         \x20   // with a `break` is one `sir::opt::unroll` may not write out,\n\
+         \x20   // and it used to write one out anyway.\n\
+         \x20   let held = for i in 0..5 { if i > 2 { break i } }\n\
+         \x20   assert_eq(&held, &3, \"the third time round\")\n\
+         \x20   // And one nobody breaks, which is unrolled and is nought.\n\
+         \x20   var t = 0\n\
+         \x20   for i in 0..5 { t = t + i }\n\
+         \x20   assert_eq(&t, &10, \"all five went round\")\n\
          }\n",
     )
     .expect("a file");
@@ -2030,7 +2043,7 @@ fn a_break_carries_its_value_out_of_the_loop() {
 
     assert!(ok, "a break was meant to carry its value out:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
-    assert!(said.contains("running 3 tests"), "{}", said);
+    assert!(said.contains("running 4 tests"), "{}", said);
 }
 
 // ---- What a `%cfg` keeps -------------------------------------------------------------

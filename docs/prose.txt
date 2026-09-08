@@ -2458,16 +2458,23 @@ answer is not obvious from the rules alone.
     ordinary shape -- a slot written on two arms of a branch, which is what
     everything else here makes.
 
-    A "while" is right. A "for" is *not*, and what stops it is a bug of its
-    own, older than this and already refused rather than answered wrongly: a
-    "for" that contains a "break" and writes a slot inside itself builds a
-    graph that is not in SSA form, and "sir::verify" says so and stops. It is
-    reachability that disagrees -- the value the return reads is defined in a
-    block the liveness walk calls dead -- and where the two come apart is in
-    how a "for"'s pre-header and head are built, which is the one loop here
-    with two blocks at its top. So "for x in .. { break v }" is a message and
-    not an answer, where before this it was nought; a refusal is the better of
-    the two and neither is the right one.
+    A "for" wanted a second fix, and it was in the optimiser. "sir::opt::unroll"
+    writes a counted loop out as many times as it runs, and the rule it is
+    written under says a "break" is the one thing it must turn down: "a break
+    reaches the code after the loop without passing through the head, so there
+    is no one copy to take it from". The check did not keep the rule. It
+    exempted a phi -- reasonably, a phi at the head being answered by one edge
+    per copy -- and a phi *outside* the loop is exactly how a break carries its
+    value out. Every copy's break branches to the one block the original
+    branched to, so the phi below it had one edge where the turns had as many
+    values as copies, and what came out was a phi naming a value made in a
+    block the rewrite had left behind.
+
+    So it was wrong at "-O2" and above, which is where unrolling runs, and
+    right below it. "sir::verify" catches it now, which is how it was found:
+    the whole shape was a compiler that refused rather than a program that
+    answered wrongly. A phi outside the loop counts like anything else outside
+    it now, and a loop with one way out is unrolled as it always was.
   - A call carries what the checker made the callee's type parameters stand
     for, and "mir::mono" reads that rather than working the same answer out
     again.
@@ -2522,6 +2529,13 @@ answer is not obvious from the rules alone.
     parameter this language has no spelling for, and inventing one in the one
     place it is needed would be inventing it badly. So the grammar is wider
     than the language here, and the language says so.
+  - The tests that move the collector's phase all take one lock, which two
+    modules of them were still not doing. It is one flag for the whole process
+    -- the barrier reads it on every write and cannot afford a runtime to ask
+    -- so a test that starts a cycle raises it for every test running beside
+    it. Three modules were given the shared lock and two more were not, and
+    what that looked like was a test failing about one run in ten. All five
+    take it now.
   - "%cfg" is written, and the configuration it was waiting on was already
     there. The compiler knows two things about a build that a program might
     reasonably differ on and knew them before the attribute existed: which

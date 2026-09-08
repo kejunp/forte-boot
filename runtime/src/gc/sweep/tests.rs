@@ -12,6 +12,10 @@ use super::super::super::{alloc, Runtime};
 use super::super::{cycle_from, finish, start_from, step, SLICE};
 use super::*;
 
+// Taken by every test below that starts a cycle: the phase a barrier reads is
+// one flag for the whole process. See `crate::alone`.
+use crate::alone;
+
 fn pair() -> Made {
     Made::new(16, 8, Kind::Opaque).points_at(0)
 }
@@ -22,6 +26,7 @@ fn made(rt: &mut Runtime, shape: &Made) -> usize {
 
 #[test]
 fn nothing_is_freed_until_something_sweeps() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let at = made(&mut rt, &shape);
@@ -37,6 +42,7 @@ fn nothing_is_freed_until_something_sweeps() {
 
 #[test]
 fn what_a_sweep_freed_is_counted() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     for _ in 0..10 {
@@ -49,6 +55,7 @@ fn what_a_sweep_freed_is_counted() {
 
 #[test]
 fn a_sweep_with_nothing_to_do_frees_nothing() {
+    let _held = alone();
     let mut rt = Runtime::new();
     cycle_from(&mut rt, &[]);
     assert_eq!(all(&mut rt), 0, "everything is already up to date");
@@ -57,6 +64,7 @@ fn a_sweep_with_nothing_to_do_frees_nothing() {
 // A large object is on no class list, so only its own list can find it.
 #[test]
 fn a_large_object_is_swept_too() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let at = alloc::object(&mut rt, 100_000, None);
     assert_eq!(rt.large.all().len(), 1);
@@ -67,6 +75,7 @@ fn a_large_object_is_swept_too() {
 
 #[test]
 fn a_large_object_that_is_a_root_is_kept() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let at = alloc::object(&mut rt, 100_000, None);
     cycle_from(&mut rt, &[at]);
@@ -81,6 +90,7 @@ fn a_large_object_that_is_a_root_is_kept() {
 // belong to something else by then.
 #[test]
 fn the_span_the_allocator_is_holding_is_not_given_back() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let at = made(&mut rt, &shape);
@@ -101,6 +111,7 @@ fn the_span_the_allocator_is_holding_is_not_given_back() {
 // span nothing asks for again is never swept at all.
 #[test]
 fn a_slice_of_sweeping_does_a_bounded_number_of_spans() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     for _ in 0..3000 {
@@ -118,6 +129,7 @@ fn a_slice_of_sweeping_does_a_bounded_number_of_spans() {
 
 #[test]
 fn sweeping_a_slice_at_a_time_finishes_what_sweeping_all_would() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let mut held = Vec::new();

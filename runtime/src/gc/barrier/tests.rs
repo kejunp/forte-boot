@@ -18,6 +18,10 @@ use super::super::super::{alloc, Runtime};
 use super::super::{finish, mark, start_from, step, sweep, SLICE};
 use super::*;
 
+// Taken by every test below that starts a cycle: the phase a barrier reads is
+// one flag for the whole process. See `crate::alone`.
+use crate::alone;
+
 fn pair() -> Made {
     Made::new(16, 8, Kind::Opaque).points_at(0)
 }
@@ -59,6 +63,7 @@ fn a_bulk_copy_between_cycles_moves_the_bytes() {
 // itself shades what is being written.
 #[test]
 fn a_pointer_written_into_something_already_scanned_survives() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let black = made(&mut rt, &shape, 0);
@@ -83,6 +88,7 @@ fn a_pointer_written_into_something_already_scanned_survives() {
 // Shading what is being *overwritten* is what saves it.
 #[test]
 fn a_pointer_taken_out_of_something_not_yet_scanned_survives() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let victim = made(&mut rt, &shape, 0);
@@ -106,6 +112,7 @@ fn a_pointer_taken_out_of_something_not_yet_scanned_survives() {
 // died before it began rather than what has died by the time it ends.
 #[test]
 fn what_the_barrier_saved_is_collected_by_the_next_cycle() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let victim = made(&mut rt, &shape, 0);
@@ -130,6 +137,7 @@ fn what_the_barrier_saved_is_collected_by_the_next_cycle() {
 // barrier and not the flag and the lock in front of them.
 #[test]
 fn the_barrier_shades_both_ends_of_a_store() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let shape = pair();
     let old = made(&mut rt, &shape, 0);
@@ -152,6 +160,7 @@ fn the_barrier_shades_both_ends_of_a_store() {
 // of them needs the same two shades.
 #[test]
 fn a_bulk_copy_shades_every_pointer_word_it_moves() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let node = pair();
     let shape = Made::new(16, 8, Kind::Opaque).points_at(0);
@@ -179,6 +188,7 @@ fn a_bulk_copy_shades_every_pointer_word_it_moves() {
 // difference between a bulk barrier and shading everything that goes past.
 #[test]
 fn a_bulk_copy_does_not_shade_what_the_map_did_not_name() {
+    let _held = alone();
     let mut rt = Runtime::new();
     let node = pair();
     let shape = Made::new(16, 8, Kind::Opaque).points_at(0);

@@ -81,10 +81,24 @@ pub(super) fn unroll(body: &mut SIRBody, ttir: &TTIRProgram, level: Level, stats
     false
 }
 
-// Whether anything the loop makes is read outside it by something other than a
-// phi. A phi is answered by giving it one edge per copy; anything else needs
-// one block standing before it, and after this rewrite there are as many
-// blocks as there were turns.
+// Whether anything the loop makes is read outside it.
+//
+// Asked only where there is a second way out, a `break` being the only thing
+// that makes one -- with the head's failing test as the only exit this is no
+// limit at all, what the head made being taken from the last head.
+//
+// A phi at the *head* is answered by giving it one edge per copy, which the
+// rewrite does anyway. A phi *outside* is not, and that is the case this used
+// to let through: every copy's `break` branches to the one block the original
+// branched to, so a phi below it has one edge where the turns have as many
+// values as there are copies. What came of that was a phi carrying a value
+// made in a block the rewrite had left behind -- a graph that is not in SSA
+// form, and at `-O2` and above only.
+//
+// So a phi outside counts like anything else outside. The comment above this
+// pass had the argument right and the check did not: "a break reaches the code
+// after the loop without passing through the head, so there is no one copy to
+// take it from".
 fn reaches_out(body: &SIRBody, held: &Loop) -> bool {
     let live = body.live();
     let mut within = vec![false; body.values.len()];
@@ -101,6 +115,11 @@ fn reaches_out(body: &SIRBody, held: &Loop) -> bool {
     for at in 0..body.blocks.len() {
         if !live[at] || held.has(at) {
             continue;
+        }
+        for phi in &body.blocks[at].phis {
+            if phi.edges.iter().any(|&(_, value)| within[value]) {
+                return true;
+            }
         }
         for inst in &body.blocks[at].insts {
             if SIRBody::uses(&inst.kind).iter().any(|&value| within[value]) {
