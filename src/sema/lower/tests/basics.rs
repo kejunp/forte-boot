@@ -185,3 +185,59 @@ fn a_type_nobody_worked_out_is_refused() {
          fn f(): i32 {\n    let a: M<i32> = M::Nothing\n    0\n}\n",
     );
 }
+
+// ---- A declaration written in a block -------------------------------------------
+
+// "A `<const_decl>` is the compile-time constant, and stands there and in a
+// block alike" (§2), and a `<statement>` is a `<declaration>` -- so a struct, a
+// fn, an enum and the rest all stand in a body too. Nothing declared them: the
+// walk that makes declarations stopped at a fn's signature, so `const N = 7`
+// inside a body was "nothing is called `N`" on the next line, and every one of
+// them was written, lowered, and dropped on the floor.
+//
+// Which scope they stand in was already settled by the pass below this one:
+// "a declaration written in a block stands in the fn's scope, which is the one
+// the block does not open" (`sema::scopes`), and the mangler already nests one
+// under the fn's name.
+#[test]
+fn a_declaration_written_in_a_body_stands_in_it() {
+    clean(
+        "fn f(): i64 {\n\
+         \x20   const N: i64 = 7\n\
+         \x20   struct P { pub x: i64 }\n\
+         \x20   fn twice(n: i64): i64 { n * 2 }\n\
+         \x20   let p = P { x: N }\n\
+         \x20   twice(p.x)\n\
+         }\n",
+    );
+}
+
+// A nested block is the fn's too: one written in the `else` of an `if` inside a
+// `while` is as much the fn's as one at the top of it.
+#[test]
+fn a_declaration_in_a_nested_block_is_the_fns_as_well() {
+    clean(
+        "fn f(c: bool): i64 {\n\
+         \x20   if c {\n\
+         \x20       const K: i64 = 5\n\
+         \x20       return K\n\
+         \x20   }\n\
+         \x20   0\n\
+         }\n",
+    );
+}
+
+// And it is the *fn's* and not the file's, so two bodies may each declare one
+// of a name and neither reaches the other's.
+#[test]
+fn one_bodys_declaration_is_not_anothers() {
+    clean(
+        "fn one(): i64 {\n    const N: i64 = 7\n    N\n}\n\
+         fn two(): i64 {\n    const N: i64 = 9\n    N\n}\n",
+    );
+    let out = refused(
+        "fn one(): i64 {\n    const N: i64 = 7\n    N\n}\n\
+         fn two(): i64 { N }\n",
+    );
+    assert!(out.contains("nothing is called `N`"), "{}", out);
+}

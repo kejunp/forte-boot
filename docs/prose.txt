@@ -3115,6 +3115,22 @@ answer is not obvious from the rules alone.
     the same evaluator answers both, so anything it cannot read leaves the
     global starting at nought rather than refusing the program.
 
+    A declaration written in a block is declared, which it was not. "A
+    <const_decl> is the compile-time constant, and stands there and in a block
+    alike" (section 2) and a <statement> is a <declaration>, so a struct, a
+    fn, an enum and the rest all stand in a body too — the grammar admits
+    them, the parser builds them, the TIR carries them, and the pass below the
+    TIR walked only as far as a fn's signature. So "const N: i64 = 7" inside a
+    body was "nothing is called `N`" on the next line, and every declaration
+    written in a block was made, lowered, and dropped on the floor.
+
+    Which scope they stand in was settled already by two passes further down:
+    "a declaration written in a block stands in the fn's scope, which is the
+    one the block does not open", and the mangler nests one under the fn's
+    name. The fn's and not the file's, so two bodies may each write a "const
+    N" and neither reaches the other's — and not the block's either, so one
+    written in the "else" of an "if" is the whole fn's.
+
     A pointer to something fat is indexed as the run it is. "p[i] is a place,
     under the same unsafe and stepping by the same stride an indexed run steps
     by" (section 2) — so the address in hand is where element nought is, and

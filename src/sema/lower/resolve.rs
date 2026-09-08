@@ -119,6 +119,23 @@ impl<'a> Lowerer<'a> {
                     held.ret = ret;
                     held.ty = ty;
                     self.params.clear();
+
+                    // What the body declared, resolved in the scope the body
+                    // is walked in -- the fn's, which is where a declaration
+                    // written in a block stands. After the signature, so that
+                    // one cannot name a type the body declares: what is
+                    // written inside a fn is the fn's own and not the
+                    // caller's business.
+                    if let Some(value) = f.body {
+                        let held = self.inside(value);
+                        if !held.is_empty() {
+                            self.inner.push(self.inner_scope(value));
+                            let outer = std::mem::take(&mut self.outer);
+                            self.resolve(&held);
+                            self.outer = outer;
+                            self.inner.pop();
+                        }
+                    }
                 }
 
                 TIRItemKind::Struct { name: _, generics, fields, .. } => {

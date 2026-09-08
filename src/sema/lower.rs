@@ -178,6 +178,17 @@ pub struct Lowerer<'a> {
     // binds a slot to build the thing in, and a slot of a frame that is thrown
     // away is a slot the body it ends up in has never heard of. See `starting`.
     starts_frame: Option<Frame>,
+    // The declarations written inside the body being walked, by name.
+    //
+    // "A declaration written in a block stands in the fn's scope, which is the
+    // one the block does not open" (`sema::scopes`) -- so this is a stack, one
+    // frame per fn, and not one per block. It is consulted before the file's
+    // own scope, which is what makes a `const N` inside one body a different
+    // `N` from a `const N` inside another.
+    inner: Vec<HashMap<String, TTIRItemId>>,
+    // Whether `declare` is walking a body rather than a file. What it makes
+    // there goes in no scope of the file's.
+    nesting: bool,
     // The TTIR item each TIR item became, so the second pass can find the first
     // pass's work. Per file, the arenas being per file.
     made:   Vec<Vec<Option<TTIRItemId>>>,
@@ -397,6 +408,8 @@ impl<'a> Lowerer<'a> {
             by_path: HashMap::new(),
             builds: 0,
             starts_frame: None,
+            inner: Vec::new(),
+            nesting: false,
             made,
             frames: Vec::new(),
             params: Vec::new(),
@@ -445,6 +458,16 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn look_in(&self, file: usize, name: &str) -> Option<TTIRItemId> {
+        // What the body being walked declared, innermost first. Before the
+        // file's own, so a name written in a block reaches the declaration
+        // beside it and not one of the same name further out.
+        if file == self.at {
+            for held in self.inner.iter().rev() {
+                if let Some(&item) = held.get(name) {
+                    return Some(item);
+                }
+            }
+        }
         if let Some(&held) = self.scopes[file].get(name) {
             return Some(held);
         }
@@ -793,13 +816,19 @@ impl<'a> Lowerer<'a> {
                 // in the suite's by the path it is reached at anywhere: the
                 // first is `limits::MAX` inside the file that wrote `limits`,
                 // the second `shapes::limits::MAX` from outside it.
-                if shows(&self.out.items[made].kind) {
-                    let mut full = self.paths[self.at].clone();
-                    full.extend(path.iter().cloned());
-                    self.by_path.entry(full.join("::")).or_insert(made);
+                // A declaration written in a body is the fn's and not the
+                // file's: nothing outside it may name it, so it goes in
+                // neither map. `resolve` and `bodies` put it in scope for as
+                // long as the body they are walking.
+                if !self.nesting {
+                    if shows(&self.out.items[made].kind) {
+                        let mut full = self.paths[self.at].clone();
+                        full.extend(path.iter().cloned());
+                        self.by_path.entry(full.join("::")).or_insert(made);
+                    }
+                    self.scopes[self.at].insert(path.join("::"), made);
+                    self.scopes[self.at].entry(name).or_insert(made);
                 }
-                self.scopes[self.at].insert(path.join("::"), made);
-                self.scopes[self.at].entry(name).or_insert(made);
             }
 
             // Down into whatever holds more declarations.
@@ -814,9 +843,157 @@ impl<'a> Lowerer<'a> {
                     let members = members.clone();
                     self.declare(&members, within);
                 }
+                // "A `<const_decl>` is the compile-time constant, and stands
+                // there and in a block alike" (§2), and a `<statement>` is a
+                // `<declaration>` -- so a struct, a fn, an enum and the rest
+                // all stand in a body too. Nothing declared them: the walk
+                // stopped at the signature, so `const N = 7` inside a fn was
+                // "nothing is called `N`" on the next line.
+                //
+                // They are made here and put in no scope at all. Which scope
+                // they stand in is the fn's, and the fn's is a thing only the
+                // two passes below have -- see `Lowerer::inner`.
+                TIRItemKind::Fn(f) => {
+                    if let Some(body) = f.body {
+                        let held = self.inside(body);
+                        if !held.is_empty() {
+                            let outer = std::mem::replace(&mut self.nesting, true);
+                            self.declare(&held, within);
+                            self.nesting = outer;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    // Every declaration written inside a body, in the order they stand. A block
+    // is an expression and expressions nest, so one written in the `else` of an
+    // `if` inside a `while` is as much the fn's as one at the top of it --
+    // which is the same walk `sema::names::nested_items` makes over the tree
+    // below this one, and for the same reason.
+    pub(super) fn inside(&self, value: TIRExprId) -> Vec<TIRItemId> {
+        let mut out = Vec::new();
+        self.walk_items(value, &mut out);
+        out
+    }
+
+    fn walk_items(&self, id: TIRExprId, out: &mut Vec<TIRItemId>) {
+        use crate::tir::tir_nodes::TIRExprKind::*;
+        use crate::tir::tir_nodes::TIRStmt;
+        match &self.tir.exprs[id].kind {
+            Block { stmts, tail, .. } => {
+                for stmt in stmts {
+                    match stmt {
+                        TIRStmt::Item(item) => out.push(*item),
+                        TIRStmt::Let { init, .. } => {
+                            for &e in init.iter() {
+                                self.walk_items(e, out);
+                            }
+                        }
+                        TIRStmt::Expr { expr, .. } => self.walk_items(*expr, out),
+                    }
+                }
+                for &e in tail.iter() {
+                    self.walk_items(e, out);
+                }
+            }
+            If { cond, then, els } => {
+                self.walk_items(*cond, out);
+                self.walk_items(*then, out);
+                for &e in els.iter() {
+                    self.walk_items(e, out);
+                }
+            }
+            While { cond, body } => {
+                self.walk_items(*cond, out);
+                self.walk_items(*body, out);
+            }
+            For { iter, body, .. } => {
+                self.walk_items(*iter, out);
+                self.walk_items(*body, out);
+            }
+            Match { scrutinee, arms } => {
+                self.walk_items(*scrutinee, out);
+                for arm in arms {
+                    self.walk_items(arm.body, out);
+                }
+            }
+            Closure { body, .. } => self.walk_items(*body, out),
+
+            Field { base, .. } | TupleIndex { base, .. } | Path { base, .. }
+            | TypeArgs { base, .. } | Cast { value: base, .. } => self.walk_items(*base, out),
+            Unary { operand, .. } => self.walk_items(*operand, out),
+            Binary { lhs, rhs, .. } => {
+                self.walk_items(*lhs, out);
+                self.walk_items(*rhs, out);
+            }
+            Assign { place, value, .. } => {
+                self.walk_items(*place, out);
+                self.walk_items(*value, out);
+            }
+            Index { base, index } => {
+                self.walk_items(*base, out);
+                self.walk_items(*index, out);
+            }
+            Range { start, end, .. } => {
+                for &e in start.iter().chain(end.iter()) {
+                    self.walk_items(e, out);
+                }
+            }
+            Call { callee, args } => {
+                self.walk_items(*callee, out);
+                for &a in args {
+                    self.walk_items(a, out);
+                }
+            }
+            StructLit { base, fields } => {
+                self.walk_items(*base, out);
+                for f in fields {
+                    self.walk_items(f.value, out);
+                }
+            }
+            ArrayLit(held) | TupleLit(held) | Set { elems: held, .. } => {
+                for &e in held {
+                    self.walk_items(e, out);
+                }
+            }
+            Map { entries, .. } => {
+                for entry in entries {
+                    self.walk_items(entry.key, out);
+                    self.walk_items(entry.value, out);
+                }
+            }
+            Return(held) | Break(held) => {
+                for &e in held.iter() {
+                    self.walk_items(e, out);
+                }
+            }
+            Literal { .. } | Name(_) | SelfExpr | Continue => {}
+        }
+    }
+
+    // The scope a body is walked in: what it declared, by name. Built rather
+    // than remembered, `declare` having filled `made` on the way past.
+    pub(super) fn inner_scope(&self, value: TIRExprId) -> HashMap<String, TTIRItemId> {
+        let mut out = HashMap::new();
+        for id in self.inside(value) {
+            let Some(made) = self.made[self.at][id] else { continue };
+            let name = match &self.out.items[made].kind {
+                TTIRItemKind::Fn(f) => f.name.clone(),
+                TTIRItemKind::Struct { name, .. }
+                | TTIRItemKind::Enum { name, .. }
+                | TTIRItemKind::Trait { name, .. }
+                | TTIRItemKind::TypeAlias { name, .. }
+                | TTIRItemKind::Const { name, .. }
+                | TTIRItemKind::Global { name: TIRBinding::Name(name), .. }
+                | TTIRItemKind::Namespace { name, .. } => name.clone(),
+                _ => continue,
+            };
+            out.entry(name).or_insert(made);
+        }
+        out
     }
 
     // A fn with its name and nothing else: the signature is the second pass's.

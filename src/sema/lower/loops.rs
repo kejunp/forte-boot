@@ -203,7 +203,7 @@ impl<'a> Lowerer<'a> {
         let held = self.holder("walk", over, TIRIntro::Let, where_);
         let cursor = self.holder("at", whole, TIRIntro::Var, where_);
         let first = self.make(TTIRExprKind::Literal(TIRLit::Int(-1)), whole, at);
-        let mut outer = vec![
+        let outer = vec![
             TTIRStmt::Let { is_unsafe: false, local: held, init: Some(taken) },
             TTIRStmt::Let { is_unsafe: false, local: cursor, init: Some(first) },
         ];

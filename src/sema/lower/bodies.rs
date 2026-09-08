@@ -58,13 +58,35 @@ impl<'a> Lowerer<'a> {
                     self.bounds = bounds;
                     self.open_regions(&f.generics);
                     self.close_regions();
+                    // What the body declared stands in scope for the whole of
+                    // it, which is what `sema::scopes` already says: "a
+                    // declaration written in a block stands in the fn's scope,
+                    // which is the one the block does not open".
+                    let held = self.inside(value);
+                    let nested = !held.is_empty();
+                    if nested {
+                        self.inner.push(self.inner_scope(value));
+                    }
                     let body = self.body(made, &f, value);
-                    let TTIRItemKind::Fn(held) = &mut self.out.items[made].kind else {
+                    let TTIRItemKind::Fn(held_fn) = &mut self.out.items[made].kind else {
+                        if nested {
+                            self.inner.pop();
+                        }
                         continue;
                     };
-                    held.body = Some(body);
+                    held_fn.body = Some(body);
                     self.params.clear();
                     self.bounds.clear();
+                    // And their own bodies are walked inside that scope, so
+                    // one may call another.
+                    if nested {
+                        let (params, bounds) =
+                            (std::mem::take(&mut self.params), std::mem::take(&mut self.bounds));
+                        self.bodies(&held);
+                        self.params = params;
+                        self.bounds = bounds;
+                        self.inner.pop();
+                    }
                 }
                 // A global's initialiser, walked like any other expression.
                 //

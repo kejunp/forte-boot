@@ -534,6 +534,62 @@ fn a_literal_takes_a_string_key() {
     assert_eq(&hashmap::get_or(&m, &"two", 0), &2, "under a string")
 }
 
+// ---- A declaration written in a block ----------------------------------------------------
+
+// "A `<const_decl>` is the compile-time constant, and stands there and in a
+// block alike" (section 2), and a `<statement>` is a `<declaration>` -- so a
+// struct, a fn, an enum and the rest all stand in a body too. Nothing declared
+// them: the walk that makes declarations stopped at a fn's signature, so every
+// one of them was written, lowered, and dropped on the floor.
+
+%test
+fn a_body_declares_what_is_written_in_it() {
+    const N: i64 = 7
+    struct P { pub x: i64 }
+    fn twice(n: i64): i64 { n * 2 }
+    let p = P { x: N }
+    assert_eq(&twice(p.x), &14, "the const, the struct and the fn")
+}
+
+%test
+fn one_nested_fn_reaches_another() {
+    fn a(n: i64): i64 { b(n) + 1 }
+    fn b(n: i64): i64 { n * 2 }
+    assert_eq(&a(3), &7, "a calls b")
+}
+
+%test
+fn a_nested_declaration_may_be_generic() {
+    fn pair<T>(x: T, y: T): (T, T) { (x, y) }
+    let (p, q) = pair(5, 6)
+    assert_eq(&(p + q), &11, "both")
+}
+
+%test
+fn an_enum_and_an_impl_stand_in_a_block() {
+    enum E { A, B(i64) }
+    struct Q { pub x: i64 }
+    impl Q {
+        fn twice(&self): i64 { self.x * 2 }
+    }
+    let held = E::B(4)
+    let n = match held { E::A => 0, E::B(n) => n }
+    let q = Q { x: n }
+    assert_eq(&q.twice(), &8, "the impl was found")
+}
+
+// A block inside a block is the fn's too, which is where one written in the
+// `else` of an `if` inside a `while` stands.
+%test
+fn a_declaration_in_a_nested_block_is_the_fns_as_well() {
+    var t = 0
+    if true {
+        const K: i64 = 5
+        t = K
+    }
+    assert_eq(&t, &5, "declared inside an `if`")
+}
+
 // ---- Running through one ---------------------------------------------------------------
 
 // "The language has no iterator protocol, so what may be run through is a
