@@ -263,6 +263,36 @@ impl<'a> Lowerer<'a> {
                 }
 
                 TIRItemKind::Trait { members, .. } => {
+                    // A member with a body is refused. The grammar admits one
+                    // -- a `<trait_member>` is a `<fn_decl>` or a `<fn_sig>` --
+                    // and nothing below reads it: what a trait declares is a
+                    // *signature*, and the body it wrote was accepted, ignored,
+                    // and then left the table with an entry nobody had filled,
+                    // which is a call through a word nobody wrote.
+                    //
+                    // What it would take is `Self` as a type the body is
+                    // written about, so that one body serves every impl that
+                    // does not write its own. That is a parameter this language
+                    // has no spelling for, and inventing one here would be
+                    // inventing it in the one place it is needed.
+                    for &at in &members {
+                        let TIRItemKind::Fn(f) = &self.tir.items[at].kind else { continue };
+                        if f.body.is_none() {
+                            continue;
+                        }
+                        let name = f.name.clone();
+                        self.errors.push(
+                            Diagnostic::error(
+                                format!("`{}` is declared with a body", name),
+                                self.span(at),
+                            )
+                            .with_label("a trait declares a signature")
+                            .with_note(
+                                "a body here would be the one every impl that wrote none \
+                                 fell back to, which wants a `Self` to write it about",
+                            ),
+                        );
+                    }
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     self.resolve(&members);

@@ -654,3 +654,40 @@ fn a_gc_of_something_with_no_release_is_written() {
            fn f(b: gc Buf): i32 { b.n }\n\
            fn g() {\n    let gc b = Buf { n: 1 }\n}\n");
 }
+
+// ---- Every member a trait declares ------------------------------------------------
+
+// An impl of a trait writes all of them. Nothing asked: an impl of a trait with
+// two members that wrote one *was* an impl, so the type answered the trait, a
+// `&dyn T` was made of it, and the table built for it had an entry for a member
+// nobody had written a body for. That compiled, linked, and took the process
+// down.
+#[test]
+fn an_impl_writes_every_member_the_trait_declares() {
+    let with = "trait T {\n    fn f(&self): i32\n    fn g(&self): i32\n}\n\
+                struct Q {\n    pub n: i32,\n}\n";
+    clean(&format!(
+        "{}impl T for Q {{\n    fn f(&self): i32 {{ self.n }}\n\
+         \x20   fn g(&self): i32 {{ 0 }}\n}}\n",
+        with));
+    let out = refused(&format!("{}impl T for Q {{\n    fn f(&self): i32 {{ self.n }}\n}}\n", with));
+    assert!(out.contains("this impl of `T` is missing g"), "{}", out);
+    // And one that writes none at all, which was an impl too.
+    let out = refused(&format!("{}impl T for Q {{}}\n", with));
+    assert!(out.contains("missing f, g"), "{}", out);
+}
+
+// And a trait declares a *signature*: a member written with a body is refused
+// rather than accepted and ignored, which is what it was.
+//
+// What a body there would be is the one every impl that wrote none falls back
+// to, and writing it wants a `Self` to write it about -- a parameter this
+// language has no spelling for.
+#[test]
+fn a_trait_member_is_a_signature_and_not_a_body() {
+    let out = refused("trait T {\n    fn f(&self): i32 { 0 }\n}\n");
+    assert!(out.contains("`f` is declared with a body"), "{}", out);
+    assert!(out.contains("a trait declares a signature"), "{}", out);
+    // And one written the other way is what a trait is made of.
+    clean("trait T {\n    fn f(&self): i32\n}\n");
+}

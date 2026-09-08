@@ -2445,6 +2445,26 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - An impl of a trait writes every member the trait declares, which nothing
+    asked. An impl of a trait with two members that wrote one *was* an impl: the
+    type answered the trait, a "&dyn T" was made of it, and the table built for
+    it had an entry for a member nobody had written a body for. What that came
+    to was a call through a word nobody wrote -- a program that compiled,
+    linked, and took the process down.
+
+    It is asked of the finished tree and not where the impl is resolved,
+    because what a member *is* is not settled until the pass below that one has
+    run: a body is lowered in "bodies", and asking about one in "resolve" is
+    asking before the answer exists.
+
+    And a trait declares a *signature*. The grammar admits a body -- a
+    <trait_member> is a <fn_decl> or a <fn_sig> -- and one written there was
+    accepted and then ignored, which left the same hole by the other road. It
+    is refused now. What such a body would be is the one every impl that wrote
+    none falls back to, and writing it wants a "Self" to write it about: a
+    parameter this language has no spelling for, and inventing one in the one
+    place it is needed would be inventing it badly. So the grammar is wider
+    than the language here, and the language says so.
   - "%cfg" is written, and the configuration it was waiting on was already
     there. The compiler knows two things about a build that a program might
     reasonably differ on and knew them before the attribute existed: which

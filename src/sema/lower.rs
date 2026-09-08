@@ -525,6 +525,7 @@ impl<'a> Lowerer<'a> {
         self.out.types = arena;
         literals_in_range(&self.out, &mut self.errors);
         objects_answered(&self.out, &mut self.errors);
+        impls_complete(&self.out, &mut self.errors);
 
         // Moves and borrows, over the tree this just built. Only where nothing
         // has been turned down yet: a tree with an `Ty::Error` in it has holes
@@ -821,6 +822,58 @@ impl<'a> Lowerer<'a> {
 // After the types are settled and not while they are being worked out. A
 // number with no suffix is a hole until something fills it, so asking any
 // earlier would be asking what a hole can hold -- which is anything.
+// Every impl of a trait writes every member the trait declares.
+//
+// Nothing asked. An impl of a trait with two members that wrote one *was* an
+// impl: the type answered the trait, a `&dyn T` was made of it, and the table
+// built for it had an entry for a member nobody had written a body for. What
+// that came to was a call through a word nobody wrote -- a program that
+// compiled, linked, and took the process down.
+//
+// Here and not where the impl is resolved, because what a member *is* is not
+// settled until the pass below that one has run: a body is lowered in
+// `bodies`, and asking about one in `resolve` is asking before the answer
+// exists. So it is asked of the finished tree, like the two above it, and
+// points at the impl with the item's own line -- the trait is right and the
+// use is right, and what is missing is there.
+fn impls_complete(out: &TTIRProgram, errors: &mut Diagnostics) {
+    for held in &out.items {
+        let TTIRItemKind::Impl { ty, of: Some(of), members, .. } = &held.kind else { continue };
+        let TTIRItemKind::Trait { members: wants, name: trait_name, .. } = &out.items[*of].kind
+        else {
+            continue;
+        };
+        let written: Vec<&str> = members
+            .iter()
+            .filter_map(|&at| match &out.items[at].kind {
+                TTIRItemKind::Fn(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<&str> = wants
+            .iter()
+            .filter_map(|&at| match &out.items[at].kind {
+                TTIRItemKind::Fn(f) if !written.contains(&f.name.as_str()) => {
+                    Some(f.name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let subject = spelled(out, *ty);
+        errors.push(
+            Diagnostic::error(
+                format!("this impl of `{}` is missing {}", trait_name, missing.join(", ")),
+                Span::at(held.line, held.col),
+            )
+            .with_label(format!("`{}` answers `{}` here", subject, trait_name))
+            .with_note("every member a trait declares is written in an impl of it"),
+        );
+    }
+}
+
 // Every trait object in the finished tree, asked again of the type it was
 // made from.
 //
