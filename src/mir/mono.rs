@@ -304,9 +304,12 @@ impl<'a> Mono<'a> {
         let name = f.name.clone();
 
         // A receiver stands for what it refers to, so a method of the referent
-        // is a method of the reference -- the same rule `sema` resolves by.
+        // is a method of the reference -- the same rule `sema` resolves by. A
+        // `gc` is reached through exactly as a reference is (§2), and a
+        // `gc dyn T` is the owned trait object, so it is peeled here too or
+        // the trait's own member is never what a call on one names.
         let mut held = recv;
-        while let Some(Ty::Ref { inner, .. }) = self.p.types.get(held) {
+        while let Some(Ty::Ref { inner, .. } | Ty::GC(inner)) = self.p.types.get(held) {
             held = *inner;
         }
         // By head, so that a primitive receiver picks its impl exactly as a
@@ -566,7 +569,8 @@ impl<'a> Mono<'a> {
     // The trait a value of this type is an object of, where it is one: a
     // reference to a `Ty::Dyn` and nothing else.
     fn object_trait(&self, ty: TyId) -> Option<TTIRItemId> {
-        let (Ty::Ref { inner, .. } | Ty::Ptr(inner)) = self.p.types.get(ty)? else {
+        let (Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner)) = self.p.types.get(ty)?
+        else {
             return None;
         };
         match self.p.types.get(*inner)? {
@@ -578,7 +582,7 @@ impl<'a> Mono<'a> {
     // Through one reference, which is what a coercion of `&Sq` is written on.
     fn referent(&self, ty: TyId) -> TyId {
         match self.p.types.get(ty) {
-            Some(Ty::Ref { inner, .. } | Ty::Ptr(inner)) => *inner,
+            Some(Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner)) => *inner,
             _ => ty,
         }
     }

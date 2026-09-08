@@ -197,7 +197,7 @@ impl<'a> Layouts<'a> {
             // what it refers to has no width of its own, so something has to
             // travel beside the address, and for a run that is the length and
             // here it is the table.
-            Ty::Ref { inner, .. } | Ty::Ptr(inner)
+            Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner)
                 if matches!(self.ttir.types.get(inner), Some(Ty::Dyn(_))) =>
             {
                 Some(self.fat())

@@ -287,7 +287,9 @@ impl<'a> Lowerer<'a> {
     // order, and the trait is the one declaration both of them look at.
     fn member_at(&mut self, recv: SIRValueId, item: TTIRItemId) -> Option<usize> {
         let ty = self.ty_of(recv);
-        let (Ty::Ref { inner, .. } | Ty::Ptr(inner)) = self.made.ttir.types.get(ty)? else {
+        let (Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner)) =
+            self.made.ttir.types.get(ty)?
+        else {
             return None;
         };
         let Ty::Dyn(of) = self.made.ttir.types.get(*inner)? else { return None };

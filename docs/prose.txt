@@ -3008,9 +3008,30 @@ answer is not obvious from the rules alone.
     cannot reach -- "let x = a[1..3]" is a place of type "T[]" and nobody
     wrote a type down.
 
-    What is not done. There is no owned form: a trait object lives as long as
-    what it was made from, so a container of them wants a "gc" of one, which
-    is a shape neither word has been asked to make yet.
+    The owned form is "gc dyn Shape", and it is the same two words the
+    borrowed one is: where the value is, and where the routines that answer
+    for it are. What differs is the first — a handle the collector gave out
+    rather than an address into a frame — and that is the whole of what makes
+    it owned. So one made inside a fn outlives the fn, which is the thing a
+    reference could not do, and a "Vec<gc dyn Shape>" holds a row of several
+    types at once.
+
+    It is made from a "gc" of what it was and from nothing else. Handing the
+    collector's handle over is what makes it own anything; a reference would
+    be an address into a frame, and an object made from one would outlive what
+    it was made from — which is the rule this exists to keep rather than to
+    break.
+
+    The collector is told to follow the first word and not the second: the
+    table is in ".rodata" and no heap holds it, and naming it would be naming
+    an address outside the heap as one to walk into. That is the same sentence
+    the descriptor for a "&dyn Shape" already carried, said of a handle
+    instead of an address.
+
+    What is not done. A "gc" of a *run* is refused, its second word being a
+    length rather than a table: what one would take is an allocation that
+    knows how many are in it, and that is a shape neither word has been asked
+    to make.
 
     An <array_suffix> nested the other way round from the way section 2 says
     it does, and does not now. "Suffixes read left to right, outermost first"

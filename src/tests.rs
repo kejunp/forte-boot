@@ -1970,6 +1970,106 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- The owned trait object ----------------------------------------------------------
+
+// "A trait object lives as long as what it was made from, so a container of
+// them wants a `gc` of one, which is a shape neither word has been asked to
+// make" — section 8 said that, and this is the shape.
+//
+// A `gc dyn Shape` is the same two words a `&dyn Shape` is: where the value is,
+// and where the routines that answer for it are. What differs is the first — a
+// handle the collector gave out rather than an address into a frame — and that
+// is the whole of what makes it owned. So one made inside a fn outlives the fn,
+// which is the thing a reference could not do.
+//
+// The collector has to be told which of the two words to follow, and only that
+// one: the table is in `.rodata` and no heap holds it. So the test churns the
+// heap and collects, twice, with the objects reachable only through a vector —
+// a descriptor that named the table would walk out of the heap, and one that
+// named neither would free what is still held.
+#[test]
+fn a_collected_trait_object_outlives_what_it_was_made_from() {
+    let dir = std::env::temp_dir().join(format!("fortec-gcdyn-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("gcdyn.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import vec::{Vec, empty, push, at, len};\n\
+         import heap::collect;\n\
+         \n\
+         trait Shape {\n\
+         \x20   fn area(&self): i64\n\
+         }\n\
+         struct Sq { pub s: i64 }\n\
+         struct Ci { pub r: i64 }\n\
+         impl Shape for Sq { fn area(&self): i64 { self.s * self.s } }\n\
+         impl Shape for Ci { fn area(&self): i64 { self.r * 3 } }\n\
+         \n\
+         // The thing a reference cannot do: made here, read after this\n\
+         // frame is gone.\n\
+         fn made(n: i64): gc dyn Shape {\n\
+         \x20   let gc q = Sq { s: n }\n\
+         \x20   q\n\
+         }\n\
+         \n\
+         fn churn() {\n\
+         \x20   var i = 0\n\
+         \x20   while i < 50000 {\n\
+         \x20       let gc junk = Sq { s: i }\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_made_in_a_fn_outlives_it() {\n\
+         \x20   let held = made(4)\n\
+         \x20   assert_eq(&held.area(), &16, \"the frame that made it is gone\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_row_of_them_holds_several_types_at_once() {\n\
+         \x20   var held: Vec<gc dyn Shape> = empty()\n\
+         \x20   push(*held, made(4))\n\
+         \x20   let gc c = Ci { r: 5 }\n\
+         \x20   push(*held, c)\n\
+         \x20   var total = 0\n\
+         \x20   var i = 0\n\
+         \x20   while i < len(&held) {\n\
+         \x20       total = total + at(&held, i).area()\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   assert_eq(&total, &31, \"each answered its own\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn one_survives_a_collection() {\n\
+         \x20   var held: Vec<gc dyn Shape> = empty()\n\
+         \x20   push(*held, made(4))\n\
+         \x20   let gc c = Ci { r: 5 }\n\
+         \x20   push(*held, c)\n\
+         \x20   // Twice, with the heap churned between: what holds these is\n\
+         \x20   // the vector and not a name on this frame.\n\
+         \x20   churn()\n\
+         \x20   collect()\n\
+         \x20   churn()\n\
+         \x20   collect()\n\
+         \x20   assert_eq(&at(&held, 0).area(), &16, \"the first is still there\")\n\
+         \x20   assert_eq(&at(&held, 1).area(), &15, \"and so is the second\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "gcdyn");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a collected trait object was meant to answer:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- A receiver that came out of a generic -------------------------------------------
 
 // A method call on what a generic gave back.

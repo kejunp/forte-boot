@@ -263,20 +263,23 @@ fn a_type_nothing_holds_is_refused_where_it_is_written() {
     }
 }
 
-// A reference is what one stands behind, and a pointer counts: a `ptr`
-// promises nothing about what it addresses, which is the whole of what it is
-// (§2). A `gc` does not -- the collector has to know how big the thing it
-// allocated is, and neither of these says.
+// What one stands behind. A reference is the borrowed form and a `gc` the
+// owned; a pointer counts too, promising nothing about what it addresses,
+// which is the whole of what a `ptr` is (§2).
+//
+// A run is the one a `gc` does not carry: its second word is a *length*, and a
+// length is not something the collector hands out.
 #[test]
-fn a_reference_and_a_pointer_are_what_one_stands_behind() {
+fn a_reference_a_pointer_and_a_gc_are_what_one_stands_behind() {
     let with = "trait Shape {\n    fn area(&self): i32\n}\n";
     clean(&format!(
         "{}fn f(a: &i32[], s: &dyn Shape): i32 {{ a[0] + s.area() }}\n\
          fn g(a: *i32[], s: *dyn Shape): i32 {{ 0 }}\n\
-         fn h(p: ptr u8[], q: ptr dyn Shape): i32 {{ 0 }}\n",
+         fn h(p: ptr u8[], q: ptr dyn Shape): i32 {{ 0 }}\n\
+         fn k(s: gc dyn Shape): i32 {{ s.area() }}\n",
         with));
-    let out = refused(&format!("{}fn f(s: gc dyn Shape): i32 {{ 0 }}\n", with));
-    assert!(out.contains("nothing holds one"), "{}", out);
+    let out = refused(&format!("{}fn f(a: gc i32[]): i32 {{ 0 }}\n", with));
+    assert!(out.contains("is a run and nothing holds one"), "{}", out);
 }
 
 // A method reached through an object is the *trait's* member: which impl

@@ -660,7 +660,22 @@ impl<'a> Lowerer<'a> {
             }
 
             TIRTypeKind::Gc(inner) => {
+                // A `gc` counts as behind for a trait object and not for a
+                // run. What a `gc dyn Shape` is, is two words -- the handle
+                // and the table -- exactly as a `&dyn Shape` is, so the width
+                // the type has not got is supplied the same way; and it is the
+                // owned form a container of objects wants, a `&dyn Shape`
+                // living only as long as what it was made from.
+                //
+                // A run is refused because its second word is a *length*, and
+                // a length is not something the collector hands out: what it
+                // would take is an allocation that knows how many are in it,
+                // which is a shape neither word has been asked to make.
+                self.behind = true;
                 let inner = self.ty(inner);
+                if matches!(self.types.get(inner), Ty::Run(_)) && !self.unheld(inner, at) {
+                    return self.types.error();
+                }
                 self.types.intern(Ty::GC(inner))
             }
 
