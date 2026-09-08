@@ -523,14 +523,6 @@ pub enum TTIRExprKind {
 
     ArrayLit(Vec<TTIRExprId>),
     TupleLit(Vec<TTIRExprId>),
-    Map {
-        hashed:  bool,
-        entries: Vec<(TTIRExprId, TTIRExprId)>,
-    },
-    Set {
-        hashed: bool,
-        elems:  Vec<TTIRExprId>,
-    },
 
     Unary {
         op:      TIRUnaryOp,

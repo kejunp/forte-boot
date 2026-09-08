@@ -169,6 +169,15 @@ pub struct Lowerer<'a> {
     // up in and what a written path reaches, and it is one map because a full
     // path means the same thing wherever it is written.
     by_path: HashMap<String, TTIRItemId>,
+    // How many containers a literal has built, for naming the slot each one
+    // is put in. Spelled with a space and brackets, which no identifier has,
+    // so it stands in the body's own scope and collides with nothing.
+    builds:  usize,
+    // The frame every global's initialiser is lowered in, which is the frame
+    // `$starts` is built from. One and not one apiece: a container literal
+    // binds a slot to build the thing in, and a slot of a frame that is thrown
+    // away is a slot the body it ends up in has never heard of. See `starting`.
+    starts_frame: Option<Frame>,
     // The TTIR item each TIR item became, so the second pass can find the first
     // pass's work. Per file, the arenas being per file.
     made:   Vec<Vec<Option<TTIRItemId>>>,
@@ -386,6 +395,8 @@ impl<'a> Lowerer<'a> {
             errors: Diagnostics::new(),
             scopes,
             by_path: HashMap::new(),
+            builds: 0,
+            starts_frame: None,
             made,
             frames: Vec::new(),
             params: Vec::new(),
@@ -603,7 +614,10 @@ impl<'a> Lowerer<'a> {
             })
             .collect();
         let body = self.made_expr(TTIRExprKind::Block { stmts, tail: None }, null);
-        self.frames.push(Frame::new(null, false));
+        // The frame the initialisers were lowered in, with whatever slots they
+        // bound still in it.
+        let frame = self.starts_frame.take().unwrap_or_else(|| Frame::new(null, false));
+        self.frames.push(frame);
         let body = self.finish_body(body);
 
         let ty = self.types.intern(Ty::Fn {

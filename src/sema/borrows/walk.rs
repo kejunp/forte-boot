@@ -272,13 +272,7 @@ impl<'a> Checker<'a> {
             TTIRExprKind::StructLit { fields, .. }
             | TTIRExprKind::VariantLit { fields, .. }
             | TTIRExprKind::ArrayLit(fields)
-            | TTIRExprKind::TupleLit(fields)
-            | TTIRExprKind::Set { elems: fields, .. } => self.handing(&fields),
-            TTIRExprKind::Map { entries, .. } => {
-                let flat: Vec<TTIRExprId> =
-                    entries.iter().flat_map(|&(k, v)| [k, v]).collect();
-                self.handing(&flat)
-            }
+            | TTIRExprKind::TupleLit(fields) => self.handing(&fields),
 
             TTIRExprKind::Range { start, end, .. } => {
                 for held in start.iter().chain(end.iter()) {

@@ -218,14 +218,6 @@ pub enum GIRExprKind {
 
     ArrayLit(Vec<GIRExprId>),
     TupleLit(Vec<GIRExprId>),
-    Map {
-        hashed:  bool,
-        entries: Vec<(GIRExprId, GIRExprId)>,
-    },
-    Set {
-        hashed: bool,
-        elems:  Vec<GIRExprId>,
-    },
 
     Unary {
         op:      TIRUnaryOp,

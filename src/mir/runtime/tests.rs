@@ -12,17 +12,8 @@ fn every_fixed_name() -> Vec<&'static str> {
         COLLECT,
         WRITE,
         COPY,
-        MAP_NEW,
-        HASHMAP_NEW,
-        MAP_INSERT,
-        HASHMAP_INSERT,
-        SET_NEW,
-        HASHSET_NEW,
-        SET_INSERT,
-        HASHSET_INSERT,
-        ITER_VALID,
-        ITER_ELEM,
-        ITER_STEP,
+        STR_CMP,
+        ROOT,
     ]
 }
 
@@ -44,27 +35,6 @@ fn every_routine_is_under_the_runtime_prefix() {
     for name in every_fixed_name() {
         assert!(name.starts_with("__rt_"), "{} is not marked as the runtime's", name);
     }
-}
-
-// Which one you named says how it behaves (§8), so the two kinds are two
-// routines and not one routine told which it is.
-#[test]
-fn the_hashed_kind_is_a_different_routine() {
-    assert_ne!(map_new(true), map_new(false));
-    assert_ne!(map_insert(true), map_insert(false));
-    assert_ne!(set_new(true), set_new(false));
-    assert_ne!(set_insert(true), set_insert(false));
-}
-
-// There is no `start`. `IterStart` is a `Const(-1)` whatever is being walked,
-// so the contract is that stepping from -1 lands on the first -- and a symbol
-// nothing emits is a symbol that would be missing from the library or, worse,
-// present and never called.
-#[test]
-fn the_cursor_has_three_routines_and_not_four() {
-    let held = every_fixed_name();
-    assert!(!held.iter().any(|name| name.ends_with("iter_start")));
-    assert_eq!(held.iter().filter(|name| name.contains("iter_")).count(), 3);
 }
 
 // ---- The releases ----------------------------------------------------------

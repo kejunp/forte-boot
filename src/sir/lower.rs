@@ -766,19 +766,6 @@ impl<'a> Lowerer<'a> {
             }
             GIRExprKind::ArrayLit(elems) => SIRInstKind::ArrayLit(self.values(&elems)),
             GIRExprKind::TupleLit(elems) => SIRInstKind::TupleLit(self.values(&elems)),
-            GIRExprKind::Map { hashed, entries } => SIRInstKind::Map {
-                hashed,
-                entries: entries
-                    .iter()
-                    .map(|(k, v)| {
-                        let k = self.value(*k);
-                        (k, self.value(*v))
-                    })
-                    .collect(),
-            },
-            GIRExprKind::Set { hashed, elems } => {
-                SIRInstKind::Set { hashed, elems: self.values(&elems) }
-            }
             // The body is a graph of its own and keeps its number.
             GIRExprKind::Closure { captures, body } => SIRInstKind::Closure { captures, body },
         };

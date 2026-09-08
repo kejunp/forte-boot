@@ -215,16 +215,9 @@ impl<'a> Checker<'a> {
             TTIRExprKind::ArrayLit(parts)
             | TTIRExprKind::TupleLit(parts)
             | TTIRExprKind::StructLit { fields: parts, .. }
-            | TTIRExprKind::VariantLit { fields: parts, .. }
-            | TTIRExprKind::Set { elems: parts, .. } => {
+            | TTIRExprKind::VariantLit { fields: parts, .. } => {
                 for &part in parts {
                     self.walk_reaching(part, out);
-                }
-            }
-            TTIRExprKind::Map { entries, .. } => {
-                for &(key, value) in entries {
-                    self.walk_reaching(key, out);
-                    self.walk_reaching(value, out);
                 }
             }
             TTIRExprKind::Range { start, end, .. } => {

@@ -93,9 +93,18 @@ impl<'a> Lowerer<'a> {
                     };
                     let (ty, folded) = (*ty, *init);
                     self.here = self.span(id);
-                    self.frames.push(Frame::new(ty, false));
+                    // The one frame `$starts` is built from, and not one of
+                    // this global's own: what a container literal binds is a
+                    // slot, and a slot of a frame that is thrown away is a
+                    // slot the body it lands in has never heard of.
+                    let mut frame = self
+                        .starts_frame
+                        .take()
+                        .unwrap_or_else(|| Frame::new(ty, false));
+                    frame.ret = ty;
+                    self.frames.push(frame);
                     let held = self.expecting(written, ty);
-                    self.frames.pop();
+                    self.starts_frame = self.frames.pop();
 
                     let found = self.out.exprs[held].ty;
                     if self.types.unify(found, ty).is_err() {

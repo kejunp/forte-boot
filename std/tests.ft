@@ -493,6 +493,47 @@ fn a_tree_set_element_taken_out_is_gone() {
     assert(!treeset::has(&s, &5), "and the one taken out is not among them")
 }
 
+// ---- What a literal builds -------------------------------------------------------------
+
+// `#{1: 2}` is `var m = hashmap::empty(); hashmap::insert(*m, 1, 2); m`. That
+// is what "a literal is syntax for a type a library declares" has to mean: the
+// type is this library's, so the value has to be one this library made.
+//
+// It was a handle to a table inside the runtime, typed as the struct below --
+// so `hashmap::len` on a map of three read uninitialised bytes and came back
+// 136. It compiled, it linked, and every answer was garbage.
+
+%test
+fn a_map_literal_builds_the_library_type() {
+    var m = #{1: 10, 2: 20, 3: 30}
+    assert_eq(&hashmap::len(&m), &3, "three keys went in")
+    assert_eq(&hashmap::get_or(&m, &2, 0), &20, "under the second")
+    assert(!hashmap::has(&m, &9), "and one that was never put in is not there")
+}
+
+%test
+fn a_set_literal_builds_one_too() {
+    var s = #{1, 2, 2, 3}
+    assert_eq(&hashset::len(&s), &3, "the repeat went in once")
+    assert(hashset::has(&s, &2), "and it is there")
+}
+
+// The empty one is the shape worth proving: there are no entries to take the
+// key type from, so it comes from what the literal is assigned to.
+%test
+fn an_empty_literal_is_a_map_with_nothing_in_it() {
+    var m: HashMap<str, i64> = #{:}
+    assert_eq(&hashmap::len(&m), &0, "nothing in it")
+    hashmap::insert(*m, "a", 1)
+    assert_eq(&hashmap::get_or(&m, &"a", 0), &1, "and then one thing")
+}
+
+%test
+fn a_literal_takes_a_string_key() {
+    var m = #{"one": 1, "two": 2}
+    assert_eq(&hashmap::get_or(&m, &"two", 0), &2, "under a string")
+}
+
 // ---- A string as a key ---------------------------------------------------------------
 
 // What the traits bought. A `str` answers `Eq`, `Ord` and `Hash`, so it is a

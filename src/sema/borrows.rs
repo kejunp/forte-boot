@@ -396,11 +396,7 @@ impl<'a> Checker<'a> {
             TTIRExprKind::StructLit { fields, .. }
             | TTIRExprKind::VariantLit { fields, .. }
             | TTIRExprKind::ArrayLit(fields)
-            | TTIRExprKind::TupleLit(fields)
-            | TTIRExprKind::Set { elems: fields, .. } => inner(self, fields, clock),
-            TTIRExprKind::Map { entries, .. } => {
-                inner(self, entries.iter().flat_map(|&(k, v)| [k, v]).collect(), clock)
-            }
+            | TTIRExprKind::TupleLit(fields) => inner(self, fields, clock),
             TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => {
                 inner(self, vec![operand], clock)
             }

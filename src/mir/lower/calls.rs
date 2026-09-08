@@ -113,69 +113,6 @@ impl<'a> Lowerer<'a> {
                 );
             }
 
-            // The two descriptors are what let one `__rt_map_insert` serve
-            // every `K` and `V` in the program. The key arrives in one
-            // register and the register says nothing about what is in it; the
-            // descriptor says how wide it is, whether it is the value or its
-            // address, and how to order and hash it.
-            //
-            // They come from the map's own type and not from the entries,
-            // because `{:}` has no entries and still has a key type.
-            SIRInstKind::Map { hashed, entries } => {
-                let (hashed, entries) = (*hashed, entries.clone());
-                let args = self.container_args(value);
-                let key = self.shape_arg(args.first().copied(), line, col);
-                let held = self.shape_arg(args.get(1).copied(), line, col);
-                let made = self.push(
-                    MIRInstKind::Call {
-                        to:   MIRCallee::Symbol(runtime::map_new(hashed).to_string()),
-                        args: vec![key, held],
-                    },
-                    line,
-                    col,
-                );
-                self.handle(def, made, value, line, col);
-                let table = self.of(value);
-                for (key, held) in entries {
-                    let (key, held) = (self.of(key), self.of(held));
-                    self.effect(
-                        MIRInstKind::Call {
-                            to:   MIRCallee::Symbol(runtime::map_insert(hashed).to_string()),
-                            args: vec![table, key, held],
-                        },
-                        line,
-                        col,
-                    );
-                }
-            }
-
-            SIRInstKind::Set { hashed, elems } => {
-                let (hashed, elems) = (*hashed, elems.clone());
-                let args = self.container_args(value);
-                let elem = self.shape_arg(args.first().copied(), line, col);
-                let made = self.push(
-                    MIRInstKind::Call {
-                        to:   MIRCallee::Symbol(runtime::set_new(hashed).to_string()),
-                        args: vec![elem],
-                    },
-                    line,
-                    col,
-                );
-                self.handle(def, made, value, line, col);
-                let table = self.of(value);
-                for one in elems {
-                    let one = self.of(one);
-                    self.effect(
-                        MIRInstKind::Call {
-                            to:   MIRCallee::Symbol(runtime::set_insert(hashed).to_string()),
-                            args: vec![table, one],
-                        },
-                        line,
-                        col,
-                    );
-                }
-            }
-
             SIRInstKind::Closure { captures, .. } => {
                 let captures = captures.clone();
                 let name = self.symbol_at(at, i).unwrap_or_default();
@@ -195,8 +132,8 @@ impl<'a> Lowerer<'a> {
             SIRInstKind::IterElem { iter, at: cursor } => {
                 self.elem(def, *iter, *cursor, value, line, col)
             }
-            SIRInstKind::IterStep { iter, at: cursor } => {
-                self.step(def, *iter, *cursor, line, col)
+            SIRInstKind::IterStep { at: cursor, .. } => {
+                self.step(def, *cursor, line, col)
             }
 
             _ => self.making(def, MIRInstKind::Undef, line, col),
@@ -435,59 +372,6 @@ impl<'a> Lowerer<'a> {
         self.effect(MIRInstKind::Store { to: second, value: none, bytes: word }, line, col);
     }
 
-    // ---- What a container was made of --------------------------------------
-
-    // The type arguments of a `Map<K, V>` or a `Set<T>`. Taken from the type
-    // rather than from the entries, because `{:}` and `{,}` have no entries
-    // and still have a key type -- and because a literal whose entries all
-    // turned out to be `never` would say the wrong thing.
-    fn container_args(&self, value: SIRValueId) -> Vec<TyId> {
-        match self.made.ttir.types.get(self.ty_of(value)) {
-            Some(Ty::Named { args, .. }) => args.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    // A descriptor for one of them, or a nought where the type says nothing --
-    // which the runtime takes as "nothing was said" and refuses to make a
-    // container for, rather than reading a descriptor that is not there.
-    fn shape_arg(&mut self, ty: Option<TyId>, line: usize, col: usize) -> MIRRegId {
-        match ty {
-            Some(ty) => self.shape_reg(ty, line, col),
-            None => self.push(MIRInstKind::Const(MIRConst::Int(0)), line, col),
-        }
-    }
-
-    // Where the handle a constructor gave back goes.
-    //
-    // It is one word. The register the lowering spoke for may not be a
-    // register for one word: with no library declaring `Map`, the type is an
-    // error and falls on the one-word fallback by accident, but a library
-    // declaring `struct Map<K, V> { h: ptr u8 }` makes it a structure -- and
-    // an indirect register holds an *address* by convention, so the handle
-    // would be read as one. So where the type is indirect the handle is stored
-    // into the first word of a slot and the register holds that slot.
-    fn handle(
-        &mut self,
-        def: MIRRegId,
-        made: MIRRegId,
-        value: SIRValueId,
-        line: usize,
-        col: usize,
-    ) {
-        let ty = self.ty_of(value);
-        if !self.indirect(ty) {
-            self.making(def, MIRInstKind::Move(made), line, col);
-            return;
-        }
-        let word = self.word();
-        let held = self.laid(ty);
-        let name = format!("${}", self.frame_len());
-        let slot = self.slot(name, held.bytes.max(word), held.align.max(word));
-        self.making(def, MIRInstKind::Frame(slot), line, col);
-        self.effect(MIRInstKind::Store { to: def, value: made, bytes: word }, line, col);
-    }
-
     // ---- Releases ----------------------------------------------------------
 
     // One routine per type, named after the type -- see `mir::runtime::glue`.
@@ -537,20 +421,6 @@ impl<'a> Lowerer<'a> {
         line: usize,
         col: usize,
     ) {
-        let ty = self.ty_of(iter);
-        if self.library_walk(ty) {
-            let (iter, cursor) = (self.of(iter), self.of(cursor));
-            self.making(
-                def,
-                MIRInstKind::Call {
-                    to:   MIRCallee::Symbol(runtime::ITER_VALID.to_string()),
-                    args: vec![iter, cursor],
-                },
-                line,
-                col,
-            );
-            return;
-        }
         let len = self.length(iter, line, col);
         let cursor = self.of(cursor);
         self.making(
@@ -571,19 +441,6 @@ impl<'a> Lowerer<'a> {
         col: usize,
     ) {
         let ty = self.ty_of(iter);
-        if self.library_walk(ty) {
-            let (held, at) = (self.of(iter), self.of(cursor));
-            self.making(
-                def,
-                MIRInstKind::Call {
-                    to:   MIRCallee::Symbol(runtime::ITER_ELEM.to_string()),
-                    args: vec![held, at],
-                },
-                line,
-                col,
-            );
-            return;
-        }
         // A range yields its own numbers rather than what is at an address, so
         // the element is the far end of an addition and not of a load.
         if self.is_range(ty) {
@@ -608,28 +465,17 @@ impl<'a> Lowerer<'a> {
         self.take(def, held, want, line, col);
     }
 
+    // One on from where it was. Every cursor here counts, an array, a view, a
+    // string and a range all being walked by index arithmetic -- and paying a
+    // call to add one to a number would be paying a call to add one to a
+    // number.
     fn step(
         &mut self,
         def: MIRRegId,
-        iter: SIRValueId,
         cursor: SIRValueId,
         line: usize,
         col: usize,
     ) {
-        let ty = self.ty_of(iter);
-        if self.library_walk(ty) {
-            let (held, at) = (self.of(iter), self.of(cursor));
-            self.making(
-                def,
-                MIRInstKind::Call {
-                    to:   MIRCallee::Symbol(runtime::ITER_STEP.to_string()),
-                    args: vec![held, at],
-                },
-                line,
-                col,
-            );
-            return;
-        }
         let at = self.of(cursor);
         let one = self.push(MIRInstKind::Const(MIRConst::Int(1)), line, col);
         self.making(def, MIRInstKind::Bin { op: MIRBinOp::Add, lhs: at, rhs: one }, line, col);
@@ -671,15 +517,6 @@ impl<'a> Lowerer<'a> {
     }
 
     // ---- Which of the closed set it is -------------------------------------
-
-    // Whether what is being walked is one the library owns rather than one that
-    // can be counted through.
-    fn library_walk(&mut self, ty: TyId) -> bool {
-        matches!(
-            self.named_as(ty).as_deref(),
-            Some("Set") | Some("HashSet") | Some("Map") | Some("HashMap")
-        )
-    }
 
     fn is_range(&mut self, ty: TyId) -> bool {
         self.named_as(ty).as_deref() == Some("Range")

@@ -19,15 +19,20 @@ fn a_for_binds_what_it_runs_through() {
 }
 
 // The closed set the language has, there being no protocol to ask.
+//
+// A set was in it and is not. What the walk calls is `__rt_iter_elem`, over the
+// runtime's own table, and a set literal used to make a handle to one; it
+// builds the struct `std/hashset.ft` declares now, so walking one that way
+// would hand the runtime an address it never gave out. A wrong answer became a
+// refusal, and running through a container waits on the protocol a library can
+// answer (section 8).
 #[test]
 fn what_may_be_run_through_is_a_closed_set() {
-    let with = "struct Range<T> {\n    pub n: i32,\n}\n\
-                struct Set<T> {\n    pub n: i32,\n}\n";
-    // An array, a view of one, a range and a set.
+    let with = "struct Range<T> {\n    pub n: i32,\n}\n";
+    // An array, a view of one, and a range.
     clean(&format!("{}fn f(v: i32[3]) {{\n    for x in v {{\n    }}\n}}\n", with));
     clean(&format!("{}fn f(v: &i32[]) {{\n    for x in v {{\n    }}\n}}\n", with));
     clean(&format!("{}fn f() {{\n    for i in 0..10 {{\n    }}\n}}\n", with));
-    clean(&format!("{}fn f() {{\n    for i in {{1, 2}} {{\n    }}\n}}\n", with));
 
     // And a thing that is none of them says so, and says why the set is closed.
     let out = refused(&format!("{}fn f(n: i32) {{\n    for x in n {{\n    }}\n}}\n", with));

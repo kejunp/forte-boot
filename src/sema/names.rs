@@ -880,17 +880,10 @@ fn walk_expr(id: TTIRExprId, p: &TTIRProgram, out: &mut Vec<TTIRItemId>) {
         }
         ArrayLit(es)
         | TupleLit(es)
-        | Set { elems: es, .. }
         | StructLit { fields: es, .. }
         | VariantLit { fields: es, .. } => {
             for &e in es {
                 walk_expr(e, p, out);
-            }
-        }
-        Map { entries, .. } => {
-            for &(key, value) in entries {
-                walk_expr(key, p, out);
-                walk_expr(value, p, out);
             }
         }
         Return(e) | Break(e) => {

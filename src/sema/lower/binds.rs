@@ -115,11 +115,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::StructLit { fields, .. }
             | TTIRExprKind::VariantLit { fields, .. }
             | TTIRExprKind::ArrayLit(fields)
-            | TTIRExprKind::TupleLit(fields)
-            | TTIRExprKind::Set { elems: fields, .. } => fields.clone(),
-            TTIRExprKind::Map { entries, .. } => {
-                entries.iter().flat_map(|&(k, v)| [k, v]).collect()
-            }
+            | TTIRExprKind::TupleLit(fields) => fields.clone(),
             TTIRExprKind::Range { start, end, .. } => {
                 [start, end].into_iter().flatten().copied().collect()
             }
@@ -180,11 +176,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::StructLit { fields, .. }
             | TTIRExprKind::VariantLit { fields, .. }
             | TTIRExprKind::ArrayLit(fields)
-            | TTIRExprKind::TupleLit(fields)
-            | TTIRExprKind::Set { elems: fields, .. } => fields.clone(),
-            TTIRExprKind::Map { entries, .. } => {
-                entries.iter().flat_map(|&(k, v)| [k, v]).collect()
-            }
+            | TTIRExprKind::TupleLit(fields) => fields.clone(),
             TTIRExprKind::Range { start, end, .. } => {
                 [start, end].into_iter().flatten().copied().collect()
             }

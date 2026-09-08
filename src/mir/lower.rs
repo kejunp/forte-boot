@@ -604,7 +604,7 @@ impl<'a> Lowerer<'a> {
             | TupleIndex { .. } | Index { .. } | Undef => self.place(inst, at, i),
             StructLit { .. } | VariantLit { .. } | ArrayLit(_) | TupleLit(_) | Range { .. }
             | Discriminant(_) | Payload { .. } => self.aggregate(inst),
-            Call { .. } | Method { .. } | Closure { .. } | Map { .. } | Set { .. }
+            Call { .. } | Method { .. } | Closure { .. }
             | Drop(_) | DropSlot(_) | IterStart | IterValid { .. } | IterElem { .. }
             | IterStep { .. } => self.calling(inst, at, i),
             Pack(_) | Lane { .. } | Lanes { .. } | VecStore { .. } => self.vector(inst),

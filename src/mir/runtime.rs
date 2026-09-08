@@ -113,44 +113,6 @@ pub const ROOTS: &str = "__forte_roots";
 // way round is one call per word.
 pub const COPY: &str = "__rt_copy";
 
-// ---- Maps and sets ---------------------------------------------------------
-
-// §8 settles that these are library types and that "which one you named says
-// how it behaves", so the ordered and the hashed kind are separate routines
-// rather than one routine and a flag. A flag would be a branch on every
-// insertion of every map in the program, deciding something that was known when
-// the literal was written.
-//
-// `__rt_map_new(key, value): handle`, both of them descriptors.
-pub const MAP_NEW: &str = "__rt_map_new";
-pub const HASHMAP_NEW: &str = "__rt_hashmap_new";
-// `__rt_map_insert(map, key, value)`.
-pub const MAP_INSERT: &str = "__rt_map_insert";
-pub const HASHMAP_INSERT: &str = "__rt_hashmap_insert";
-
-// `__rt_set_new(elem): handle`.
-pub const SET_NEW: &str = "__rt_set_new";
-pub const HASHSET_NEW: &str = "__rt_hashset_new";
-// `__rt_set_insert(set, elem)`.
-pub const SET_INSERT: &str = "__rt_set_insert";
-pub const HASHSET_INSERT: &str = "__rt_hashset_insert";
-
-pub fn map_new(hashed: bool) -> &'static str {
-    if hashed { HASHMAP_NEW } else { MAP_NEW }
-}
-
-pub fn map_insert(hashed: bool) -> &'static str {
-    if hashed { HASHMAP_INSERT } else { MAP_INSERT }
-}
-
-pub fn set_new(hashed: bool) -> &'static str {
-    if hashed { HASHSET_NEW } else { SET_NEW }
-}
-
-pub fn set_insert(hashed: bool) -> &'static str {
-    if hashed { HASHSET_INSERT } else { SET_INSERT }
-}
-
 // ---- Comparing a string ----------------------------------------------------
 
 // `__rt_str_cmp(a, b): i64`, negative, nought or positive the way `strcmp` is.
@@ -160,27 +122,6 @@ pub fn set_insert(hashed: bool) -> &'static str {
 // same characters in two places are two different addresses. The six operators
 // all go through this one symbol and hold its answer against nought.
 pub const STR_CMP: &str = "__rt_str_cmp";
-
-// ---- Walking one -----------------------------------------------------------
-
-// The cursor protocol, for the things a cursor cannot just count through. An
-// array, a run and a `Range` are walked by index arithmetic and reach none of
-// these: paying a call to add one to a number would be paying a call to add one
-// to a number.
-//
-// `valid(it, at): bool`, `elem(it, at): T`, `step(it, at): cursor` -- which is
-// three of the SIR's four. There is no `start`: `IterStart` is a `Const(-1)`
-// whatever is being walked, so the contract is that stepping from -1 lands on
-// the first. It is already a protocol (§5: "the language has no iterator
-// protocol, so what may be run through is a closed set"), and this is the half
-// of that closed set which is the library's rather than the machine's.
-//
-// Named for the protocol rather than for the set, because a map takes it too --
-// the difference is what a turn yields, and that is the runtime's to know from
-// the handle.
-pub const ITER_VALID: &str = "__rt_iter_valid";
-pub const ITER_ELEM: &str = "__rt_iter_elem";
-pub const ITER_STEP: &str = "__rt_iter_step";
 
 // ---- Letting go ------------------------------------------------------------
 

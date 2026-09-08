@@ -220,14 +220,6 @@ pub enum SIRInstKind {
     },
     ArrayLit(Vec<SIRValueId>),
     TupleLit(Vec<SIRValueId>),
-    Map {
-        hashed:  bool,
-        entries: Vec<(SIRValueId, SIRValueId)>,
-    },
-    Set {
-        hashed: bool,
-        elems:  Vec<SIRValueId>,
-    },
     Closure {
         captures: Vec<TTIRCapture>,
         body:     SIRBodyId,
@@ -523,11 +515,7 @@ impl SIRBody {
             | SIRInstKind::VariantLit { fields, .. }
             | SIRInstKind::ArrayLit(fields)
             | SIRInstKind::TupleLit(fields)
-            | SIRInstKind::Set { elems: fields, .. }
             | SIRInstKind::Pack(fields) => fields.clone(),
-            SIRInstKind::Map { entries, .. } => {
-                entries.iter().flat_map(|(k, v)| [*k, *v]).collect()
-            }
         }
     }
 
@@ -588,11 +576,7 @@ impl SIRBody {
             | SIRInstKind::VariantLit { fields, .. }
             | SIRInstKind::ArrayLit(fields)
             | SIRInstKind::TupleLit(fields)
-            | SIRInstKind::Set { elems: fields, .. }
             | SIRInstKind::Pack(fields) => fields.iter_mut().collect(),
-            SIRInstKind::Map { entries, .. } => {
-                entries.iter_mut().flat_map(|(k, v)| [k, v]).collect()
-            }
         }
     }
 }

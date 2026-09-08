@@ -842,12 +842,8 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::StructLit { fields, .. }
             | TTIRExprKind::VariantLit { fields, .. }
             | TTIRExprKind::ArrayLit(fields)
-            | TTIRExprKind::TupleLit(fields)
-            | TTIRExprKind::Set { elems: fields, .. } => {
+            | TTIRExprKind::TupleLit(fields) => {
                 fields.iter().any(|&f| self.effects(f))
-            }
-            TTIRExprKind::Map { entries, .. } => {
-                entries.iter().any(|(k, v)| self.effects(*k) || self.effects(*v))
             }
             TTIRExprKind::Range { start, end, .. } => {
                 start.iter().chain(end.iter()).any(|&e| self.effects(e))
@@ -911,21 +907,6 @@ impl<'a> Lowerer<'a> {
 
             TTIRExprKind::ArrayLit(elems) => GIRExprKind::ArrayLit(self.operands(&elems)),
             TTIRExprKind::TupleLit(elems) => GIRExprKind::TupleLit(self.operands(&elems)),
-            TTIRExprKind::Map { hashed, entries } => {
-                // A key and its value are two operands like any other, and the
-                // pairs are undone and done up again around that.
-                let flat: Vec<TTIRExprId> =
-                    entries.iter().flat_map(|&(k, v)| [k, v]).collect();
-                let built = self.operands(&flat);
-                GIRExprKind::Map {
-                    hashed,
-                    entries: built.chunks(2).map(|pair| (pair[0], pair[1])).collect(),
-                }
-            }
-            TTIRExprKind::Set { hashed, elems } => {
-                GIRExprKind::Set { hashed, elems: self.operands(&elems) }
-            }
-
             TTIRExprKind::Unary { op, operand } => {
                 GIRExprKind::Unary { op, operand: self.value(operand) }
             }

@@ -37,7 +37,7 @@ impl<'a> Lowerer<'a> {
                             self.at(iter),
                         )
                         .with_label("this is what the loop is over")
-                        .with_note("an array, a view of one, a `Range`, a `Set` or a `HashSet`")
+                        .with_note("an array, a view of one, or a `Range`")
                         .with_help("the language has no iterator protocol, so what may be run through is a closed set"),
                     );
                 }
@@ -104,16 +104,21 @@ impl<'a> Lowerer<'a> {
                     }
                     _ => return None,
                 };
-                // A map is not here, and it is no longer the `for` that is in
-                // the way: one takes a `<tuple_pattern>` now, so `(k, v)` has
-                // somewhere to go, and `runtime/src/map.rs` has yielded the
-                // address of a `(K, V)` pair all along. What is in the way is
-                // that `#{..}` builds `hashmap::HashMap`, which is a struct
-                // written in Forte, and the walk on the other side of
-                // `__rt_iter_elem` is over the runtime's own table. Section 8
-                // has the rest.
+                // A `Range` and nothing else a library declares.
+                //
+                // A set was here, and a map was not: the walk on the other
+                // side of `IterElem` is `__rt_iter_elem`, over the runtime's
+                // own table, and a set literal used to make a handle to one.
+                // It does not any more -- `#{1, 2}` calls `hashset::empty`
+                // and `hashset::add` now, and what comes out is the struct
+                // `std/hashset.ft` declares -- so walking one that way would
+                // hand the runtime an address it never gave out.
+                //
+                // Which leaves running through a container waiting on a
+                // protocol the library answers, and section 8 says so. It was
+                // a wrong answer before and is a refusal now.
                 match held {
-                    "Range" | "Set" | "HashSet" => args.first().copied(),
+                    "Range" => args.first().copied(),
                     _ => None,
                 }
             }

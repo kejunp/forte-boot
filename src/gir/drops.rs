@@ -444,16 +444,9 @@ impl<'a> Drops<'a> {
             GIRExprKind::StructLit { fields, .. }
             | GIRExprKind::VariantLit { fields, .. }
             | GIRExprKind::ArrayLit(fields)
-            | GIRExprKind::TupleLit(fields)
-            | GIRExprKind::Set { elems: fields, .. } => {
+            | GIRExprKind::TupleLit(fields) => {
                 for &field in fields {
                     self.moves(gir, id, field, state);
-                }
-            }
-            GIRExprKind::Map { entries, .. } => {
-                for &(key, value) in entries {
-                    self.moves(gir, id, key, state);
-                    self.moves(gir, id, value, state);
                 }
             }
             GIRExprKind::Binary { lhs, rhs, .. } => {

@@ -5,22 +5,52 @@ use super::*;
 
 // ---- Maps, sets and ranges ------------------------------------------------
 
+// The four a literal builds, and the two routines each is built with. A real
+// suite has one type per module and `empty` is unambiguous there; here they
+// share a file, so which type each routine is *about* is what tells them apart
+// -- which is the rule the lowering asks either way.
+const LIBRARY: &str = "struct Map<K, V> { pub n: i32 }\n\
+     fn empty<K, V>(): Map<K, V> { Map { n: 0 } }\n\
+     fn insert<K, V>(m: *Map<K, V>, k: K, v: V) { m.n = 1 }\n\
+     struct HashMap<K, V> { pub n: i32 }\n\
+     fn empty<K, V>(): HashMap<K, V> { HashMap { n: 0 } }\n\
+     fn insert<K, V>(m: *HashMap<K, V>, k: K, v: V) { m.n = 1 }\n\
+     struct Set<T> { pub n: i32 }\n\
+     fn empty<T>(): Set<T> { Set { n: 0 } }\n\
+     fn add<T>(s: *Set<T>, x: T) { s.n = 1 }\n\
+     struct HashSet<T> { pub n: i32 }\n\
+     fn empty<T>(): HashSet<T> { HashSet { n: 0 } }\n\
+     fn add<T>(s: *HashSet<T>, x: T) { s.n = 1 }\n";
+
 // "A map and a set are `Map<K, V>` and `Set<T>`, and the hashed kinds are types
 // of their own, `HashMap<K, V>` and `HashSet<T>` -- so which one you named says
 // how it behaves, and a `#{` literal builds the hashed one" (section 8).
+//
+// And what it builds is the library's own routines, called: `empty` beside the
+// declaration and an `insert` or an `add` per entry. That is what "syntax for a
+// type a library declares" has to mean -- the type is the library's, so the
+// value has to be one the library made.
 #[test]
 fn a_literal_builds_the_type_a_library_declared() {
-    let with = "struct Map<K, V> {\n    pub n: i32,\n}\n\
-                struct HashMap<K, V> {\n    pub n: i32,\n}\n\
-                struct Set<T> {\n    pub n: i32,\n}\n\
-                struct HashSet<T> {\n    pub n: i32,\n}\n";
+    let with = LIBRARY;
     let ttir = clean(&format!(
         "{}fn f() {{\n    let m = {{1: 2}}\n    let h = #{{1: 2}}\n    let s = {{1, 2}}\n    let g = #{{1, 2}}\n}}\n",
         with
     ));
-    let names: Vec<String> = ttir.bodies[0]
+    let body = ttir
+        .items
+        .iter()
+        .find_map(|item| match &item.kind {
+            TTIRItemKind::Fn(f) if f.name == "f" => f.body,
+            _ => None,
+        })
+        .expect("the body");
+    // The four the reader bound. The slots the literals took to build their
+    // values in are here too, holding the same four types -- see `built_by`.
+    let names: Vec<String> = ttir.bodies[body]
         .locals
         .iter()
+        .filter(|l| matches!(&l.name, TIRBinding::Name(n) if n.len() == 1))
         .map(|l| match &ttir.types[l.ty] {
             Ty::Named { item, .. } => match &ttir.items[*item].kind {
                 TTIRItemKind::Struct { name, .. } => name.clone(),
@@ -37,7 +67,7 @@ fn a_literal_builds_the_type_a_library_declared() {
 // map rather than a list of pairs.
 #[test]
 fn a_map_holds_one_type_of_key_and_one_of_value() {
-    let with = "struct Map<K, V> {\n    pub n: i32,\n}\n";
+    let with = LIBRARY;
     clean(&format!("{}fn f() {{\n    let m = {{1: \"a\", 2: \"b\"}}\n}}\n", with));
     let out = refused(&format!("{}fn f() {{\n    let m = {{1: \"a\", \"b\": 2}}\n}}\n", with));
     assert!(out.contains("every key of a map is one type"), "{}", out);
@@ -45,7 +75,7 @@ fn a_map_holds_one_type_of_key_and_one_of_value() {
 
 #[test]
 fn a_set_holds_one_type() {
-    let with = "struct Set<T> {\n    pub n: i32,\n}\n";
+    let with = LIBRARY;
     clean(&format!("{}fn f() {{\n    let s = {{1, 2, 3}}\n}}\n", with));
     let out = refused(&format!("{}fn f() {{\n    let s = {{1, \"a\"}}\n}}\n", with));
     assert!(out.contains("every element of a set is one type"), "{}", out);

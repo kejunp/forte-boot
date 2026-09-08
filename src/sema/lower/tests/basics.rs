@@ -132,8 +132,12 @@ fn a_number_on_its_own_is_an_i32() {
 #[test]
 fn every_expression_form_is_typed() {
     let with = "struct Range<T> {\n    pub n: i32,\n}\n\
-                struct Map<K, V> {\n    pub n: i32,\n}\n\
-                struct Set<T> {\n    pub n: i32,\n}\n\
+                struct Map<K, V> { pub n: i32 }\n\
+                fn empty<K, V>(): Map<K, V> { Map { n: 0 } }\n\
+                fn insert<K, V>(m: *Map<K, V>, k: K, v: V) { m.n = 1 }\n\
+                struct Set<T> { pub n: i32 }\n\
+                fn empty<T>(): Set<T> { Set { n: 0 } }\n\
+                fn add<T>(s: *Set<T>, x: T) { s.n = 1 }\n\
                 struct P {\n    pub x: i32,\n}\n\
                 enum E {\n    A,\n    B(i32),\n}\n\
                 impl P {\n    fn get(&self): i32 { self.x }\n}\n";

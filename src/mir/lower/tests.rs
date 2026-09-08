@@ -399,67 +399,6 @@ fn shapes(p: &MIRProgram) -> Vec<String> {
         .collect()
 }
 
-// The whole reason a descriptor exists: `__rt_map_insert` is one symbol for
-// every `K` in the program, and the register the key arrives in says nothing
-// about what is in it.
-#[test]
-fn a_map_is_made_with_a_descriptor_for_its_key_and_its_value() {
-    let p = lowered(
-        "struct Map<K, V> {}\n\
-         fn f(a: i32, b: i64) { let m = {a: b} }\n",
-    );
-    let made = calls(&p, "1f", "__rt_map_new");
-    assert_eq!(made.len(), 1, "{:#?}", held(&p, "1f"));
-    assert_eq!(made[0].len(), 2, "a key and a value");
-    let held = shapes(&p);
-    assert!(held.contains(&"__T3i32".to_string()), "{:?}", held);
-    assert!(held.contains(&"__T3i64".to_string()), "{:?}", held);
-}
-
-#[test]
-fn a_set_is_made_with_a_descriptor_for_its_element() {
-    let p = lowered("struct Set<T> {}\nfn f(a: i32) { let s = {a} }\n");
-    let made = calls(&p, "1f", "__rt_set_new");
-    assert_eq!(made.len(), 1);
-    assert_eq!(made[0].len(), 1);
-    assert!(shapes(&p).contains(&"__T3i32".to_string()));
-}
-
-// A descriptor is under the type's own name and not a number, so two bodies
-// wanting the same type name the same thing -- otherwise the pool would hold
-// the same bytes twice and a linker would keep both.
-#[test]
-fn two_bodies_wanting_one_type_name_one_descriptor() {
-    let p = lowered(
-        "struct Set<T> {}\n\
-         fn f(a: i32) { let s = {a} }\n\
-         fn g(a: i32) { let s = {a} }\n",
-    );
-    assert_eq!(shapes(&p), vec!["__T3i32".to_string()]);
-}
-
-// The handle is one word. Where a library declares `Map` with fields, the type
-// is indirect and the register holds an address by convention -- so the handle
-// goes into a slot rather than being read as one.
-#[test]
-fn a_handle_goes_into_a_slot_where_the_type_is_indirect() {
-    let p = lowered(
-        "struct Set<T> {\n    pub h: i64,\n}\n\
-         fn f(a: i32) { let s = {a} }\n",
-    );
-    let kinds = held(&p, "1f");
-    let at = kinds
-        .iter()
-        .position(|k| matches!(k, MIRInstKind::Call { to: MIRCallee::Symbol(h), .. }
-            if h == "__rt_set_new"))
-        .expect("a call");
-    assert!(
-        kinds[at..].iter().any(|k| matches!(k, MIRInstKind::Frame(_))),
-        "the handle was not given room: {:#?}",
-        kinds
-    );
-}
-
 // ---- The write barrier -----------------------------------------------------
 
 // A pointer written through an address that is not in this frame goes through
