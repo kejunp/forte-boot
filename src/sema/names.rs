@@ -866,7 +866,7 @@ fn walk_expr(id: TTIRExprId, p: &TTIRProgram, out: &mut Vec<TTIRItemId>) {
                 walk_expr(e, p, out);
             }
         }
-        Call { callee, args } => {
+        Call { callee, args, .. } => {
             walk_expr(*callee, p, out);
             for &a in args {
                 walk_expr(a, p, out);

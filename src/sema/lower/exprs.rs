@@ -216,8 +216,8 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect();
                 let mut made = made;
-                let ty = self.calling(c, &mut made, id);
-                self.make(TTIRExprKind::Call { callee: c, args: made }, ty, id)
+                let (ty, types) = self.calling(c, &mut made, id);
+                self.make(TTIRExprKind::Call { callee: c, args: made, types }, ty, id)
             }
 
             TIRExprKind::If { cond, then, els } => {
@@ -551,10 +551,15 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect();
                 let made = self.expr(base);
-                let ty = self.instantiate(made, Some(held), id);
+                let (ty, args) = self.instantiate(made, Some(held), id);
                 // The node is spent: what is left is the base, with the type
-                // the arguments made of it.
+                // the arguments made of it -- and the arguments themselves put
+                // where the call can find them, there being nothing left in
+                // the type to work them back out of.
                 self.out.exprs[made].ty = ty;
+                if !args.is_empty() {
+                    self.written_args.insert(made, args);
+                }
                 made
             }
             // `self` is the receiver's slot, and the receiver is a parameter
@@ -706,11 +711,22 @@ impl<'a> Lowerer<'a> {
     // `args` is taken to be written to: an argument that is a reference to an
     // array where a view was wanted is rewritten into one (`viewed`), and the
     // node the caller goes on to build has to be the rewritten one.
-    fn calling(&mut self, callee: TTIRExprId, args: &mut [TTIRExprId], at: TIRExprId) -> TyId {
+    fn calling(
+        &mut self,
+        callee: TTIRExprId,
+        args: &mut [TTIRExprId],
+        at: TIRExprId,
+    ) -> (TyId, Vec<TyId>) {
         // Every parameter of what is called gets a hole, so `id(1)` works out
         // its own `T` -- "what it stands for is settled at the call and not at
         // the declaration".
-        let ct = self.instantiate(callee, None, at);
+        let (ct, types) = self.instantiate(callee, None, at);
+        // Or what a written `<type_args>` settled before this was reached,
+        // which leaves nothing in the type for `instantiate` to work out.
+        let types = match types.is_empty() {
+            true => self.written_args.get(&callee).cloned().unwrap_or_default(),
+            false => types,
+        };
         let Ty::Fn { params, ret, .. } = self.types.get(ct).clone() else {
             if !matches!(self.types.get(ct), Ty::Error) {
                 let ct = self.spell(ct);
@@ -719,7 +735,7 @@ impl<'a> Lowerer<'a> {
                         .with_label("this is called"),
                 );
             }
-            return self.types.error();
+            return (self.types.error(), Vec::new());
         };
         if params.len() != args.len() {
             self.errors.push(
@@ -729,7 +745,7 @@ impl<'a> Lowerer<'a> {
                 )
                 .with_label("the wrong number of arguments"),
             );
-            return ret;
+            return (ret, types);
         }
         for (i, &want) in params.iter().enumerate() {
             let Some(&got) = args.get(i) else { continue };
@@ -754,7 +770,7 @@ impl<'a> Lowerer<'a> {
             let at = self.at(at);
             self.stands_as(found, want, at);
         }
-        ret
+        (ret, types)
     }
 
     // The type a declaration stands for where its name is used as a value.

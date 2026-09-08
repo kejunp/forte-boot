@@ -197,11 +197,16 @@ pub enum SIRInstKind {
     Call {
         callee: SIRValueId,
         args:   Vec<SIRValueId>,
+        // The checker's, carried through -- see `TTIRExprKind::Call`. This is
+        // where it is read: `mir::mono` makes an instance out of it rather
+        // than working the same answer out again from the types beside it.
+        types:  Vec<TyId>,
     },
     Method {
-        recv: SIRValueId,
-        item: TTIRItemId,
-        args: Vec<SIRValueId>,
+        recv:  SIRValueId,
+        item:  TTIRItemId,
+        args:  Vec<SIRValueId>,
+        types: Vec<TyId>,
     },
 
     StructLit {
@@ -504,7 +509,7 @@ impl SIRBody {
             SIRInstKind::Range { start, end, .. } => {
                 start.iter().chain(end.iter()).copied().collect()
             }
-            SIRInstKind::Call { callee, args } => {
+            SIRInstKind::Call { callee, args, .. } => {
                 let mut out = vec![*callee];
                 out.extend(args.iter().copied());
                 out
@@ -569,7 +574,7 @@ impl SIRBody {
             SIRInstKind::Range { start, end, .. } => {
                 start.iter_mut().chain(end.iter_mut()).collect()
             }
-            SIRInstKind::Call { callee, args } => {
+            SIRInstKind::Call { callee, args, .. } => {
                 let mut out = vec![callee];
                 out.extend(args.iter_mut());
                 out

@@ -231,7 +231,7 @@ impl Fixture {
             }
         };
         let callee = self.expr(GIRExprKind::Item(item), ty);
-        self.expr(GIRExprKind::Call { callee, args }, ty)
+        self.expr(GIRExprKind::Call { callee, args, types: Vec::new() }, ty)
     }
 
     // ---- Patterns -----------------------------------------------------------
@@ -293,7 +293,7 @@ impl Fixture {
     pub fn calling(&mut self, item: TTIRItemId, args: Vec<GIRExprId>) -> GIRExprId {
         let ty = self.null;
         let callee = self.expr(GIRExprKind::Item(item), ty);
-        self.expr(GIRExprKind::Call { callee, args }, ty)
+        self.expr(GIRExprKind::Call { callee, args, types: Vec::new() }, ty)
     }
 
     // An enum whose variants are numbered as given, which is what a

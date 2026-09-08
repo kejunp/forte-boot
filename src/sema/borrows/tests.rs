@@ -116,7 +116,7 @@ impl Suite {
     // A call of nothing in particular, which is how a value is handed over.
     fn call(&mut self, args: Vec<TTIRExprId>) -> TTIRExprId {
         let callee = self.expr(TTIRExprKind::Literal(TIRLit::Null), Self::NULL);
-        self.expr(TTIRExprKind::Call { callee, args }, Self::NULL)
+        self.expr(TTIRExprKind::Call { callee, args, types: Vec::new() }, Self::NULL)
     }
 
     fn borrow(&mut self, of: TTIRExprId, op: TIRRefOp) -> TTIRExprId {
@@ -614,7 +614,7 @@ fn a_self_by_value_receiver_moves_it() {
 
     let recv = s.local(p);
     let call = s.expr(
-        TTIRExprKind::Method { recv, item: method, args: Vec::new() },
+        TTIRExprKind::Method { recv, item: method, args: Vec::new(), types: Vec::new() },
         Suite::NULL,
     );
     let read = s.local(p);
@@ -637,7 +637,7 @@ fn a_star_self_receiver_holds_the_whole_value() {
     let arg = s.local(p);
     let also = s.borrow(arg, TIRRefOp::Imm);
     let call = s.expr(
-        TTIRExprKind::Method { recv, item: method, args: vec![also] },
+        TTIRExprKind::Method { recv, item: method, args: vec![also], types: Vec::new() },
         Suite::NULL,
     );
     let body = s.block(vec![], Some(call));
@@ -651,12 +651,12 @@ fn a_star_self_receiver_holds_the_whole_value() {
     let p = s.slot("p", buf, TIRIntro::Var);
     let one = s.local(p);
     let first = s.expr(
-        TTIRExprKind::Method { recv: one, item: method, args: Vec::new() },
+        TTIRExprKind::Method { recv: one, item: method, args: Vec::new(), types: Vec::new() },
         Suite::NULL,
     );
     let two = s.local(p);
     let second = s.expr(
-        TTIRExprKind::Method { recv: two, item: method, args: Vec::new() },
+        TTIRExprKind::Method { recv: two, item: method, args: Vec::new(), types: Vec::new() },
         Suite::NULL,
     );
     let stmts = vec![s.eval(first), s.eval(second)];

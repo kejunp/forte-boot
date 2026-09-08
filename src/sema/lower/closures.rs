@@ -191,7 +191,7 @@ impl<'a> Lowerer<'a> {
         // see `instance_of`. Without this a member of `impl<T> Box<T>` gives
         // back the `T` it was declared with rather than what this receiver
         // makes it, and the caller is told its body answers `T`.
-        let fn_ty = self.instance_of(item, at);
+        let (fn_ty, types) = self.instance_of(item, at);
         let Ty::Fn { params, ret, .. } = self.types.get(fn_ty).clone() else { return None };
 
         // The receiver, against what the declaration says it takes. Nothing is
@@ -240,7 +240,7 @@ impl<'a> Lowerer<'a> {
             (true, Some(&want)) => self.received(recv, want),
             _ => recv,
         };
-        Some(self.make(TTIRExprKind::Method { recv, item, args: made }, ret, at))
+        Some(self.make(TTIRExprKind::Method { recv, item, args: made, types }, ret, at))
     }
 
     // The receiver made into what the method declares it takes.

@@ -749,13 +749,13 @@ impl<'a> Lowerer<'a> {
                 SIRInstKind::Index { base, index }
             }
 
-            GIRExprKind::Call { callee, args } => {
+            GIRExprKind::Call { callee, args, types } => {
                 let callee = self.value(callee);
-                SIRInstKind::Call { callee, args: self.values(&args) }
+                SIRInstKind::Call { callee, args: self.values(&args), types }
             }
-            GIRExprKind::Method { recv, item, args } => {
+            GIRExprKind::Method { recv, item, args, types } => {
                 let recv = self.value(recv);
-                SIRInstKind::Method { recv, item, args: self.values(&args) }
+                SIRInstKind::Method { recv, item, args: self.values(&args), types }
             }
 
             GIRExprKind::StructLit { item, fields } => {

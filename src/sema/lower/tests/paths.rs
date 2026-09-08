@@ -90,3 +90,72 @@ fn one_parameter_is_one_type_across_a_signature() {
     let out = refused("fn pair<T>(a: T, b: T): T { a }\nfn f(): i32 { pair(1, \"x\") }\n");
     assert!(out.contains("argument 2 is `str`"), "{}", out);
 }
+
+// ---- What a call carries about the callee -----------------------------------------
+
+// A call to a generic writes down what it made the callee's type parameters
+// stand for. It did not, and `mir::mono` worked the same answer out again a
+// pass later by matching the declaration's signature against the types the SIR
+// values beside the call had -- inference done twice, the second time on an
+// answer lowering is free to have rewritten.
+//
+// Lowering does rewrite it: `promote` replacing a load with the value that was
+// stored is the ordinary case, and the two need not agree. Three wrong programs
+// came out of that seam and the last was a segmentation fault.
+fn types_on_calls(source: &str) -> Vec<usize> {
+    let ttir = clean(source);
+    ttir.exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            TTIRExprKind::Call { types, .. } => Some(types.len()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_call_says_what_it_made_the_callees_parameters_stand_for() {
+    // Worked out from the argument,
+    assert_eq!(
+        types_on_calls("fn id<T>(x: T): T { x }\nfn f(): i32 { id(1) }\n"),
+        vec![1]
+    );
+    // written by hand, which settles them before the call is reached and so
+    // leaves nothing in the type for the call to work back out,
+    assert_eq!(
+        types_on_calls("fn id<T>(x: T): T { x }\nfn f(): i32 { id<i32>(1) }\n"),
+        vec![1]
+    );
+    // two of them,
+    assert_eq!(
+        types_on_calls(
+            "fn two<A, B>(a: A, b: B): A { a }\nfn f(): i32 { two(1, true) }\n"
+        ),
+        vec![2]
+    );
+    // and none, which is every other call there is.
+    assert_eq!(
+        types_on_calls("fn plain(x: i32): i32 { x }\nfn f(): i32 { plain(1) }\n"),
+        vec![0]
+    );
+}
+
+// A method says it too, and says the same thing: what its own parameters and
+// its impl's were made to stand for.
+#[test]
+fn a_method_says_it_as_well() {
+    let ttir = clean(
+        "struct Box<T> {\n    pub held: T,\n}\n\
+         impl<T> Box<T> {\n    fn get(&self): T { self.held }\n}\n\
+         fn f(): i32 {\n    let b = Box { held: 1 }\n    b.get()\n}\n",
+    );
+    let held: Vec<usize> = ttir
+        .exprs
+        .iter()
+        .filter_map(|e| match &e.kind {
+            TTIRExprKind::Method { types, .. } => Some(types.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held, vec![1], "the impl's `T`, said at the call");
+}

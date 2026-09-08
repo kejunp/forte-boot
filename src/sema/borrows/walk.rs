@@ -197,7 +197,7 @@ impl<'a> Checker<'a> {
             }
 
             // Every argument is a place a value is handed over.
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 if self.expr(callee, Use::Read).left() {
                     return Flow::Left;
                 }
@@ -219,7 +219,7 @@ impl<'a> Checker<'a> {
             // call, or moves it: "A `*self` receiver holds a mutable reference
             // to the whole value for the length of the call, so nothing reads
             // that value while the method runs" (§3).
-            TTIRExprKind::Method { recv, item, args } => {
+            TTIRExprKind::Method { recv, item, args, ..  } => {
                 let mode = self.receiver(item);
                 // The receiver stands where parameter 0 does, so the two go
                 // into one list before anything is asked of them -- and it is

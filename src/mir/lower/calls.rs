@@ -49,7 +49,7 @@ impl<'a> Lowerer<'a> {
 
         let Some(value) = inst.def else {
             // A call whose answer nobody wanted. It still runs.
-            if let SIRInstKind::Call { callee, args } = &inst.kind {
+            if let SIRInstKind::Call { callee, args, .. } = &inst.kind {
                 let (to, args) = self.callee(*callee, args, line, col);
                 self.effect(MIRInstKind::Call { to, args }, line, col);
             }
@@ -58,7 +58,7 @@ impl<'a> Lowerer<'a> {
         let def = self.of(value);
 
         match &inst.kind {
-            SIRInstKind::Call { callee, args } => {
+            SIRInstKind::Call { callee, args, .. } => {
                 let (to, args) = self.callee(*callee, args, line, col);
                 let args = self.answering(value, args, line, col);
                 self.making(def, MIRInstKind::Call { to, args }, line, col);
@@ -68,7 +68,7 @@ impl<'a> Lowerer<'a> {
             // address and the symbol is the one `mono` worked out. The receiver
             // goes in front of the arguments, which is where a signature that
             // declared one already put it.
-            SIRInstKind::Method { recv, item, args } => {
+            SIRInstKind::Method { recv, item, args, ..  } => {
                 // Through the table, where the receiver is a trait object.
                 // Which body answers is not known here and is not meant to be:
                 // the value carries a run of addresses beside it, the member's

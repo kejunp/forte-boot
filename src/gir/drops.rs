@@ -429,7 +429,7 @@ impl<'a> Drops<'a> {
             GIRExprKind::Unary { operand, .. } | GIRExprKind::Cast(operand) => {
                 self.moves(gir, id, *operand, state)
             }
-            GIRExprKind::Call { callee, args } => {
+            GIRExprKind::Call { callee, args, .. } => {
                 self.moves(gir, id, *callee, state);
                 for &arg in args {
                     self.moves(gir, id, arg, state);

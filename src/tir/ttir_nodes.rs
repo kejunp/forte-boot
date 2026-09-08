@@ -481,13 +481,30 @@ pub enum TTIRExprKind {
     Call {
         callee: TTIRExprId,
         args:   Vec<TTIRExprId>,
+        // What the checker made the callee's type parameters stand for at
+        // *this* call, in the declaration's order, and empty where the callee
+        // takes none.
+        //
+        // Written down because it was already known and was being worked out
+        // twice. `mir::mono` needs it to make an instance, and used to recover
+        // it by matching the declaration's signature against what the SIR
+        // values said their types were -- which is inference done again, a
+        // pass later, on an answer lowering is free to have rewritten. Three
+        // wrong programs came out of that seam and the third was a segmentation
+        // fault: an expression has a type in the checker and a type in the
+        // SIR, and only one of them is what the reader wrote.
+        //
+        // So the checker says, and nothing below has to ask.
+        types:  Vec<TyId>,
     },
     // A method, resolved to the one it calls. `.` and `::` are both gone: which
     // separator was written mattered to the resolver and to nobody after it.
     Method {
-        recv: TTIRExprId,
-        item: TTIRItemId,
-        args: Vec<TTIRExprId>,
+        recv:  TTIRExprId,
+        item:  TTIRItemId,
+        args:  Vec<TTIRExprId>,
+        // The checker's, as a `Call` carries them -- see there for why.
+        types: Vec<TyId>,
     },
     Index {
         base:  TTIRExprId,

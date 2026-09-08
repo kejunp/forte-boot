@@ -100,6 +100,10 @@ pub struct Made {
 // value that holds the fn, and a method call that names it and hands over the
 // pieces of its signature separately.
 enum Said {
+    // What the checker made the callee's type parameters stand for, in the
+    // declaration's order. The one that needs no recovering at all -- it is
+    // the answer, carried from where it was worked out.
+    Args(Vec<TyId>),
     Whole(TyId),
     Parts { params: Vec<TyId>, ret: Option<TyId> },
     // The receiver and nothing else, which is all a table entry knows. The
@@ -461,32 +465,40 @@ impl<'a> Mono<'a> {
         // What a call says about the declaration it reaches, gathered before
         // anything is asked for, because asking borrows.
         //
-        // This is where an *inferred* instantiation is written down and the
-        // only place it is. `sema::lower::paths::instantiate` substitutes into
-        // the type of the expression naming the fn only where the arguments
-        // were written -- `id<i32>` puts them in before the call is reached --
-        // and where they were worked out instead, the name keeps the
-        // declaration's own type and the call carries the answer.
-        let mut said: Vec<((SIRBlockId, usize), usize, Said)> = Vec::new();
+        // The call *carries* it. `sema::lower::paths::instantiate` is where a
+        // type parameter is made to stand for something, whether the reader
+        // wrote it -- `id<i32>` -- or the checker worked it out, and the
+        // answer goes on the `Call` node and comes through every IR to here.
+        //
+        // It used to be recovered instead: the declaration's signature matched
+        // against the types the SIR values beside the call said they had.
+        // That is inference done a second time, a pass later, on an answer
+        // lowering is free to have rewritten -- and lowering does rewrite it,
+        // `promote` replacing a load with the value that was stored being the
+        // ordinary case. Three wrong programs came out of that seam and the
+        // last was a segmentation fault. An expression has a type in the
+        // checker and a type in the SIR; only one of them is what the reader
+        // wrote, and this reads that one.
+        let mut said: Vec<((SIRBlockId, usize), usize, Vec<TyId>)> = Vec::new();
         for block in body.blocks.iter() {
             for inst in &block.insts {
-                let SIRInstKind::Call { callee, args } = &inst.kind else { continue };
+                let SIRInstKind::Call { callee, types, .. } = &inst.kind else { continue };
                 let Some(&(bl, i)) = item_at.get(callee) else { continue };
                 let (SIRInstKind::Item(item) | SIRInstKind::ItemAddr(item)) =
                     body.blocks[bl].insts[i].kind
                 else {
                     continue;
                 };
-                let params = args
-                    .iter()
-                    .filter_map(|&arg| body.values.get(arg).map(|held| held.ty))
-                    .collect();
-                let ret = inst.def.and_then(|def| body.values.get(def)).map(|held| held.ty);
-                said.push(((bl, i), item, Said::Parts { params, ret }));
+                said.push(((bl, i), item, types.clone()));
             }
         }
-        for ((bl, i), item, held) in said {
-            if let Some(name) = self.declaration(item, held, job) {
+        for ((bl, i), item, types) in said {
+            // The declaration's view, made this instance's. A call inside a
+            // generic body says what the *body's* parameters stand for, and
+            // this body is one of them filled in -- so `push<T>` calling
+            // `grow<T>` says `T` here and means whatever the job made `T`.
+            let types: Vec<TyId> = types.iter().map(|&ty| self.subst(ty, &job.args)).collect();
+            if let Some(name) = self.declaration(item, Said::Args(types), job) {
                 self.named.insert((job.to, bl, i), name);
             }
         }
@@ -634,19 +646,43 @@ impl<'a> Mono<'a> {
             // holding the signature. What there is instead is the receiver, the
             // arguments and the answer -- which is the same signature in
             // pieces.
-            SIRInstKind::Method { recv, item, args } => {
-                let mut params: Vec<TyId> = Vec::with_capacity(args.len() + 1);
-                params.extend(ty_of(*recv));
-                params.extend(args.iter().filter_map(|&arg| ty_of(arg)));
+            SIRInstKind::Method { recv, item, args: _, types } => {
                 // A method reached through a bound names the *trait's* member,
                 // which has no body: `sema` could not say which impl answered
                 // because what the parameter stood for was the caller's to say.
                 // Here it has been said -- the receiver's type is substituted --
                 // so this is where the impl that answers is chosen.
-                let held = params.first().copied();
-                let item = self.answering(*item, held);
-                let said = Said::Parts { params, ret: inst.def.and_then(ty_of) };
-                self.declaration(item, said, job)
+                //
+                // That read of the receiver's type stays, and is not the seam
+                // the entry above is about: it asks what this *instance* turned
+                // out to be, which is the one question a SIR type is the right
+                // place for. What it no longer does is work out the type
+                // arguments a second time -- the call carries them.
+                let held = ty_of(*recv);
+                let answered = self.answering(*item, held);
+                // Where the checker knew which body this was, it said, and the
+                // call carries the answer. Where it did not, it could not: a
+                // method reached through a bound or a trait names the *trait's*
+                // member, whose parameters are none, and the impl that answers
+                // is chosen here out of the receiver. So the types recorded are
+                // the trait member's and say nothing about the impl's.
+                //
+                // The receiver is what says what those are -- `&Box<i64>`
+                // against a declared `&Box<A>` is the whole of what makes it
+                // the i64 one -- which is the same question `table` asks of a
+                // vtable entry and asks the same way.
+                let said = match answered == *item {
+                    true => {
+                        let types: Vec<TyId> =
+                            types.iter().map(|&ty| self.subst(ty, &job.args)).collect();
+                        Said::Args(types)
+                    }
+                    false => match held {
+                        Some(held) => Said::Receiver(held),
+                        None => Said::Nothing,
+                    },
+                };
+                self.declaration(answered, said, job)
             }
             // A closure is part of the body that wrote it, so it is made
             // wherever that body was made and with the same arguments. Its name
@@ -732,8 +768,13 @@ impl<'a> Mono<'a> {
     // type beside the one this use was given. Where the declaration says `T`,
     // the use says what `T` is.
     fn recover(&self, decl: TyId, said: &Said, wants: usize) -> Vec<TyId> {
+        // Nothing to recover: the checker said, and this is it.
+        if let Said::Args(args) = said {
+            return args.clone();
+        }
         let mut found: Vec<Option<TyId>> = vec![None; wants];
         match said {
+            Said::Args(_) => {}
             Said::Nothing => {}
             Said::Whole(actual) => self.against(decl, *actual, &mut found),
             Said::Receiver(actual) => {

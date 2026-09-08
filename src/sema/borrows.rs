@@ -387,7 +387,7 @@ impl<'a> Checker<'a> {
                 inner(self, vec![base], clock)
             }
             TTIRExprKind::Index { base, index } => inner(self, vec![base, index], clock),
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 inner(self, std::iter::once(callee).chain(args).collect(), clock)
             }
             TTIRExprKind::Method { recv, args, .. } => {

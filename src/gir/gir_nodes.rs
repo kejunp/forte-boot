@@ -193,11 +193,14 @@ pub enum GIRExprKind {
     Call {
         callee: GIRExprId,
         args:   Vec<GIRExprId>,
+        // The checker's, carried through -- see `TTIRExprKind::Call`.
+        types:  Vec<TyId>,
     },
     Method {
-        recv: GIRExprId,
-        item: TTIRItemId,
-        args: Vec<GIRExprId>,
+        recv:  GIRExprId,
+        item:  TTIRItemId,
+        args:  Vec<GIRExprId>,
+        types: Vec<TyId>,
     },
     Index {
         base:  GIRExprId,

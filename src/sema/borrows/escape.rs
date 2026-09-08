@@ -76,7 +76,7 @@ impl<'a> Checker<'a> {
             // the parameters its result is tied to, and no more: a `'a` written
             // in the signature is what shortens that list, and this is where
             // the caller gets the precision it paid for.
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 let ties = self.callee(*callee).map(|item| self.tied(item));
                 match ties {
                     // A fn whose result gives back no reference. Nothing that
@@ -100,7 +100,7 @@ impl<'a> Checker<'a> {
                 }
             }
             // The same, with the receiver standing where parameter 0 does.
-            TTIRExprKind::Method { recv, item, args } => match self.tied(*item) {
+            TTIRExprKind::Method { recv, item, args, ..  } => match self.tied(*item) {
                 None => {}
                 Some(ties) => {
                     if ties.contains(&0) {

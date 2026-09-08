@@ -86,7 +86,7 @@ fn shifts_that_differ_by_lane_are_not_on_the_oldest() {
 #[test]
 fn a_shape_is_not_an_operation() {
     let field = SIRInstKind::Field { base: 0, index: 0 };
-    let call = SIRInstKind::Call { callee: 0, args: Vec::new() };
+    let call = SIRInstKind::Call { callee: 0, args: Vec::new(), types: Vec::new() };
     for held in [X86_64, X86_64_V4, AARCH64] {
         assert!(!held.does(&field, TIRPrim::I32, 4), "{}", held.name);
         assert!(!held.does(&call, TIRPrim::I32, 4), "{}", held.name);

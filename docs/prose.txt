@@ -2445,6 +2445,40 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - A call carries what the checker made the callee's type parameters stand
+    for, and "mir::mono" reads that rather than working the same answer out
+    again.
+
+    It used to recover it: the declaration's signature matched against the
+    types the SIR values beside the call had. That is inference done twice --
+    once by the checker, which is what a checker is, and once a pass later on
+    an answer lowering is free to have rewritten. And lowering does rewrite
+    it. "sir::promote" replacing a load with the value that was stored is the
+    ordinary case, and the two need not have the same type; "sir::lower"
+    writing the type the source gave over an address it just made is another.
+    Three wrong programs came out of that seam this far and the last was a
+    segmentation fault.
+
+    So the answer is written where it is worked out. "instantiate" and
+    "instance_of" are the two places a type parameter is made to stand for
+    something -- whether the reader wrote it, "id<i32>", or the checker
+    settled it from the arguments -- and both hand it back now. It goes on the
+    "Call" and the "Method" and comes through every IR to the one pass that
+    wants it.
+
+    Two reads of a SIR type stay, and neither is the seam. Which impl answers
+    a method reached through a bound is chosen *here* -- the checker could not
+    say, what the parameter stood for being the caller's to say -- so the
+    receiver's type is asked, and what it recovers is that impl's parameters,
+    which the checker never had to record. The same question a table entry
+    asks, asked the same way. That is what a SIR type is the right place for:
+    what an *instance* turned out to be, rather than what the reader wrote.
+
+    What this is worth is checkable, and was checked: with the guard in
+    "sir::lower" that the last of the three bugs needed taken back out, the
+    whole suite still passes. The guard stays -- a SIR type is still what
+    every width below is read from, and an honest one is worth a move -- but
+    it is no longer what stands between the compiler and a wrong program.
   - An impl of a trait writes every member the trait declares, which nothing
     asked. An impl of a trait with two members that wrote one *was* an impl: the
     type answered the trait, a "&dyn T" was made of it, and the table built for
@@ -2568,11 +2602,9 @@ answer is not obvious from the rules alone.
     be two values with one definition, which is a thing every pass below there
     counts on not being so.
 
-    What the bug is really about is left standing: an expression has a type in
-    the checker and a type in the SIR, lowering may rewrite the second, and
-    nothing says which passes may. "mono" reading the second is what turns a
-    rewrite into a wrong program, and that it reads the second at all is the
-    thing to change if this shape appears again.
+    What the bug was really about is settled below, in its own entry: an
+    expression has a type in the checker and a type in the SIR, and "mono"
+    reading the second is what turned a rewrite into a wrong program.
   - A slot whose address an inlined call holds stays in the frame, which it did
     not -- and what that was is a wrong answer at "-O2" and above and nowhere
     else, which is the level everything is built at.

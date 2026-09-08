@@ -136,7 +136,7 @@ fn pick(program: &SIRProgram, graph: &Calls, caller: SIRBodyId, level: Level) ->
             continue;
         }
         for (index, inst) in body.blocks[at].insts.iter().enumerate() {
-            let SIRInstKind::Call { callee, args } = &inst.kind else { continue };
+            let SIRInstKind::Call { callee, args, .. } = &inst.kind else { continue };
             let Some(Some(SIRInstKind::Item(item))) = held.get(*callee) else { continue };
             let Some(&(callee, asked)) = graph.of.get(item) else { continue };
             // `%noinline` is a promise and not a preference (§1): whatever

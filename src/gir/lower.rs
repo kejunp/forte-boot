@@ -807,7 +807,7 @@ impl<'a> Lowerer<'a> {
             }
             TTIRExprKind::Unary { operand, .. } => self.effects(*operand),
             TTIRExprKind::Cast(operand) => self.effects(*operand),
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 self.effects(*callee) || args.iter().any(|&a| self.effects(a))
             }
             TTIRExprKind::Method { recv, args, .. } => {
@@ -853,16 +853,17 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::TupleIndex { base, index } => {
                 GIRExprKind::TupleIndex { base: self.based(base), index }
             }
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, types } => {
                 let mut all = vec![callee];
                 all.extend(args.iter().copied());
                 let mut built = self.operands(&all).into_iter();
                 GIRExprKind::Call {
                     callee: built.next().expect("the callee"),
                     args:   built.collect(),
+                    types,
                 }
             }
-            TTIRExprKind::Method { recv, item, args } => GIRExprKind::Method {
+            TTIRExprKind::Method { recv, item, args, types } => GIRExprKind::Method {
                 // Reached into rather than handed over, so the same as a
                 // base: a slot only where the receiver is a value the
                 // statement made and nobody keeps. A receiver that is already
@@ -872,6 +873,7 @@ impl<'a> Lowerer<'a> {
                 recv: self.based(recv),
                 item,
                 args: self.operands(&args),
+                types,
             },
             TTIRExprKind::Index { base, index } => {
                 GIRExprKind::Index { base: self.based(base), index: self.value(index) }

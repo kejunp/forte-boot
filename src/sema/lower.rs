@@ -228,6 +228,15 @@ pub struct Lowerer<'a> {
     // spent it. That is what keeps `f(if c { 1 } else { 2 })` from offering
     // the argument's type to the two numbers inside the `if`.
     want: Option<TyId>,
+    // What a written `<type_args>` made a callee's parameters stand for, by
+    // the expression naming the callee.
+    //
+    // `id<i32>(1)` settles them before the call is reached, so by the time the
+    // call is walked there is nothing left to work out and nothing to hand the
+    // `Call` node -- which is the answer it has to carry (`mir::mono`). So the
+    // arm that spends the `<type_args>` leaves them here, and `calling` picks
+    // them up. Within this pass only: the ids are this tree's.
+    written_args: HashMap<TTIRExprId, Vec<TyId>>,
     // Whether the `match` being walked runs through a reference, and with
     // which `<ref_op>` if it does.
     //
@@ -384,6 +393,7 @@ impl<'a> Lowerer<'a> {
             bounds: Vec::new(),
             starts: Vec::new(),
             want: None,
+            written_args: HashMap::new(),
             matching: None,
             behind: false,
             guarded: 0,

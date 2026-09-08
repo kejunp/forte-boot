@@ -185,7 +185,7 @@ impl<'a> Checker<'a> {
             | TTIRExprKind::TupleIndex { base, .. }
             | TTIRExprKind::Index { base, .. } => self.walk_reaching(*base, out),
             TTIRExprKind::Cast(inner) => self.walk_reaching(*inner, out),
-            TTIRExprKind::Call { callee, args } => match self.callee(*callee).map(|i| self.tied(i)) {
+            TTIRExprKind::Call { callee, args, .. } => match self.callee(*callee).map(|i| self.tied(i)) {
                 Some(None) => {}
                 Some(Some(ties)) => {
                     for (i, &arg) in args.iter().enumerate() {
@@ -200,7 +200,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
-            TTIRExprKind::Method { recv, item, args } => {
+            TTIRExprKind::Method { recv, item, args, ..  } => {
                 if let Some(ties) = self.tied(*item) {
                     if ties.contains(&0) {
                         self.walk_reaching(*recv, out);

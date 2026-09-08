@@ -106,7 +106,7 @@ impl<'a> Lowerer<'a> {
             TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => vec![*operand],
             TTIRExprKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
             TTIRExprKind::Assign { place, value, .. } => vec![*place, *value],
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 std::iter::once(*callee).chain(args.iter().copied()).collect()
             }
             TTIRExprKind::Method { recv, args, .. } => {
@@ -171,7 +171,7 @@ impl<'a> Lowerer<'a> {
             }
             TTIRExprKind::Unary { operand, .. } | TTIRExprKind::Cast(operand) => vec![*operand],
             TTIRExprKind::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
-            TTIRExprKind::Call { callee, args } => {
+            TTIRExprKind::Call { callee, args, .. } => {
                 std::iter::once(*callee).chain(args.iter().copied()).collect()
             }
             TTIRExprKind::Method { recv, args, .. } => {

@@ -63,7 +63,7 @@ impl Fixture {
     pub fn call(&mut self) -> TTIRExprId {
         let ty = self.null;
         let callee = self.expr(TTIRExprKind::Item(0), ty);
-        self.expr(TTIRExprKind::Call { callee, args: Vec::new() }, ty)
+        self.expr(TTIRExprKind::Call { callee, args: Vec::new(), types: Vec::new() }, ty)
     }
 
     pub fn block(&mut self, stmts: Vec<TTIRStmt>, tail: Option<TTIRExprId>) -> TTIRExprId {
@@ -153,7 +153,7 @@ impl Fixture {
     pub fn hands(&mut self, arg: TTIRExprId) -> TTIRExprId {
         let ty = self.null;
         let callee = self.expr(TTIRExprKind::Item(0), ty);
-        self.expr(TTIRExprKind::Call { callee, args: vec![arg] }, ty)
+        self.expr(TTIRExprKind::Call { callee, args: vec![arg], types: Vec::new() }, ty)
     }
 
     // The fn a body belongs to, so a pass over the graph knows which slots the

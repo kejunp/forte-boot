@@ -239,8 +239,14 @@ impl<'a> Lowerer<'a> {
     //
     // Bounds are registered as `instantiate` registers them, so that a method
     // of an impl whose parameter is held to a trait is held to it at the call.
-    pub(super) fn instance_of(&mut self, item: TTIRItemId, at: TIRExprId) -> TyId {
-        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return self.types.error() };
+    // The type, and what the parameters were made to stand for -- the second
+    // for the same reason `instantiate` hands its own back: the `Method` node
+    // keeps it, so `mir::mono` need not work it out again from the types the
+    // SIR values beside the call happen to have.
+    pub(super) fn instance_of(&mut self, item: TTIRItemId, at: TIRExprId) -> (TyId, Vec<TyId>) {
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else {
+            return (self.types.error(), Vec::new());
+        };
         let (ty, generics) = (f.ty, f.generics.clone());
         let bounds: Vec<(String, Vec<TTIRBound>)> = generics
             .iter()
@@ -250,7 +256,7 @@ impl<'a> Lowerer<'a> {
             })
             .collect();
         if bounds.is_empty() {
-            return ty;
+            return (ty, Vec::new());
         }
         let args: Vec<TyId> = (0..bounds.len()).map(|_| self.types.fresh()).collect();
         for (arg, (name, held)) in args.iter().zip(bounds.iter()) {
@@ -258,7 +264,7 @@ impl<'a> Lowerer<'a> {
                 self.pending.push((*arg, bound.clone(), name.clone(), at));
             }
         }
-        self.types.substitute(ty, &args)
+        (self.types.substitute(ty, &args), args)
     }
 
     // What a declaration's type comes to at one use of it. A generic is written
@@ -268,22 +274,31 @@ impl<'a> Lowerer<'a> {
     //
     // "what it stands for is settled at the call and not at the declaration",
     // which is the whole of why this happens here and not in `resolve`.
+    // What the callee's type is at this use, and what its type parameters were
+    // made to stand for.
+    //
+    // The second was worked out here and thrown away, and `mir::mono` worked it
+    // out again a pass later by matching the declaration against the types the
+    // SIR values had -- inference redone on an answer lowering is free to have
+    // rewritten. It is handed back now, and the `Call` node keeps it.
     pub(super) fn instantiate(
         &mut self,
         callee: TTIRExprId,
         written: Option<Vec<TyId>>,
         at: TIRExprId,
-    ) -> TyId {
+    ) -> (TyId, Vec<TyId>) {
         let held = self.out.exprs[callee].ty;
         // Already settled: a `TypeArgs` puts the arguments in before the call
         // is reached, and putting more in would make holes nobody fills. Only
         // where none were written -- arguments written on something with no
         // parameters still have to be answered for.
         if written.is_none() && !self.types.has_param(held) {
-            return held;
+            return (held, Vec::new());
         }
-        let TTIRExprKind::Item(item) = self.out.exprs[callee].kind else { return held };
-        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return held };
+        let TTIRExprKind::Item(item) = self.out.exprs[callee].kind else {
+            return (held, Vec::new());
+        };
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return (held, Vec::new()) };
         // One per type parameter. A lifetime takes no argument here: what it
         // stands for is a region, and regions are worked out by the pass that
         // compares them and not by unification.
@@ -300,7 +315,7 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
-            return held;
+            return (held, Vec::new());
         }
 
         let args: Vec<TyId> = match written {
@@ -326,7 +341,9 @@ impl<'a> Lowerer<'a> {
         // Every parameter is held to what it was declared with. A hole cannot
         // be held to anything yet -- what fills it is settled by the call, and
         // the call is not over -- so only what is known is asked.
-        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else { return held };
+        let TTIRItemKind::Fn(f) = &self.out.items[item].kind else {
+            return (held, Vec::new());
+        };
         let bounds: Vec<(String, Vec<TTIRBound>)> = f
             .generics
             .iter()
@@ -341,7 +358,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        self.types.substitute(held, &args)
+        (self.types.substitute(held, &args), args)
     }
 
     // A `const` whose value is a literal, as that literal. The type is the

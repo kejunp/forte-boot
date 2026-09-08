@@ -173,7 +173,7 @@ fn from_elsewhere(lets_out: bool) -> SIRBody {
         // The address of the name handed to something, which is the one thing
         // that could have put it where `p` came from.
         insts.push(hold(SIRInstKind::Addr(0), Some(5)));
-        insts.push(hold(SIRInstKind::Call { callee: 6, args: vec![5] }, Some(7)));
+        insts.push(hold(SIRInstKind::Call { callee: 6, args: vec![5], types: Vec::new() }, Some(7)));
     }
     SIRBody {
         entry:  0,
