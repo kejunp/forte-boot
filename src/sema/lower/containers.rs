@@ -191,7 +191,7 @@ impl<'a> Lowerer<'a> {
     // than one container -- the tests do -- and `empty` there would be one name
     // for two routines; the type each is written about is what tells them
     // apart, and it is the same question `head_of` asks everywhere else.
-    fn beside(
+    pub(super) fn beside(
         &self,
         declared: TTIRItemId,
         file: usize,
@@ -231,7 +231,7 @@ impl<'a> Lowerer<'a> {
     // type arguments -- `K` and `V`, or `T` -- and they are unified with the
     // holes `instance_of` made rather than written in, so the routine's bounds
     // are pending against the same types every other call's are.
-    fn calling_in(
+    pub(super) fn calling_in(
         &mut self,
         item: TTIRItemId,
         args: &[TyId],

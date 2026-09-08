@@ -2247,14 +2247,38 @@ answer is not obvious from the rules alone.
     that answers neither "Hash" nor "Eq" is turned down at the literal, where
     the reader wrote it.
 
-    What that leaves is running through one. "for (k, v) in m" binds — a "for"
-    takes a "<tuple_pattern>" now — and there is nothing on the other side of
-    it: the walk called "__rt_iter_elem", over the runtime's table, and a
-    literal no longer makes one. So a set has come *out* of the closed set a
-    "for" may run through, and a wrong answer is a refusal until a container
-    can say how it is walked. Three routines would do it — step, valid, elem,
-    which is the cursor the SIR already has — declared beside the type and
-    found the way "empty" is.
+    And a container says how it is run through, in the file that declares it.
+    "The language has no iterator protocol, so what may be run through is a
+    closed set" — the set is still closed, and a file joins it by writing
+    three routines beside its declaration: "step", one on from where the
+    cursor was; "valid", whether there is another; and "elem", what is there.
+    The cursor starts at -1 and every turn is those three in order, so
+    stepping from -1 has to land on the first. That is the cursor the runtime
+    already had, moved to where the container is.
+
+    What a "for" over one becomes is the loop those three make:
+
+        let $c = &c
+        var $at = -1
+        while true {
+            $at = step($c, $at)
+            if !valid($c, $at) { break }
+            let x = elem($c, $at)
+            ..body..
+        }
+
+    Written out in the checker and not further down, because what comes of it
+    is three ordinary calls: every pass below finds the instances the way it
+    finds every other one, and none of them learns what a container is.
+
+    It is what lets a map be run through at all. A map hands out a "(K, V)"
+    and that is "elem"'s answer, so "for (k, v) in m" is a tuple pattern over
+    an ordinary call — and a tuple pattern is what a "for" takes now
+    (section 2). The four containers write the three, and so does "Vec<T>",
+    which was never runnable through before.
+
+    An array, a view of one and a "Range" are still the machine's: a call to
+    add one to a number would be a call to add one to a number.
 
     The runtime's own map, set and cursor are unreached from here on. They
     still build and still pass their own tests; nothing a program compiles

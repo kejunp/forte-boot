@@ -276,3 +276,34 @@ pub fn remove<K: Hash + Eq, V>(m: *HashMap<K, V>, k: &K): bool {
     m.len = m.len - 1
     true
 }
+
+// ---- Running through one -----------------------------------------------------
+
+// The three a `for` calls. There is no iterator protocol -- "what may be run
+// through is a closed set" (section 5) -- so a container says how it is walked
+// by writing these three beside its declaration, and the compiler writes the
+// loop out of them.
+//
+// The cursor starts at -1 and every turn is `step`, then `valid`, then `elem`.
+// So the first `step` has to land on the first, and a `step` past the last has
+// to give something `valid` says no to.
+
+pub fn step<K: Hash + Eq, V>(m: &HashMap<K, V>, at: i64): i64 {
+    var i = at + 1
+    while i < m.cap {
+        if taken_at(m, i) {
+            return i
+        }
+        i = i + 1
+    }
+    m.cap
+}
+
+pub fn valid<K: Hash + Eq, V>(m: &HashMap<K, V>, at: i64): bool {
+    at < m.cap
+}
+
+// A map hands out a pair, which is what `for (k, v) in m` binds.
+pub fn elem<K: Hash + Eq, V>(m: &HashMap<K, V>, at: i64): (K, V) {
+    (key_at(m, at), val_at(m, at))
+}

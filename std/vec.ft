@@ -132,3 +132,22 @@ pub fn pop<T>(v: *Vec<T>): T {
     v.len = v.len - 1
     out
 }
+
+// ---- Running through one -----------------------------------------------------
+
+// The three a `for` calls, which is how a container says it may be run through
+// -- "the language has no iterator protocol, so what may be run through is a
+// closed set" (section 5), and this is how a file joins that set. The cursor
+// starts at -1 and the first `step` lands on the first, so a vector's is one
+// on from where it was and nothing else.
+pub fn step<T>(v: &Vec<T>, i: i64): i64 {
+    i + 1
+}
+
+pub fn valid<T>(v: &Vec<T>, i: i64): bool {
+    i < v.len
+}
+
+pub fn elem<T>(v: &Vec<T>, i: i64): T {
+    at(v, i)
+}

@@ -20,12 +20,10 @@ fn a_for_binds_what_it_runs_through() {
 
 // The closed set the language has, there being no protocol to ask.
 //
-// A set was in it and is not. What the walk calls is `__rt_iter_elem`, over the
-// runtime's own table, and a set literal used to make a handle to one; it
-// builds the struct `std/hashset.ft` declares now, so walking one that way
-// would hand the runtime an address it never gave out. A wrong answer became a
-// refusal, and running through a container waits on the protocol a library can
-// answer (section 8).
+// Two of the three are the machine's: an array, a view of one and a `Range` are
+// walked by index arithmetic, because a call to add one to a number would be a
+// call to add one to a number. The third is a file's own, and it is how the set
+// stays closed while anything may join it.
 #[test]
 fn what_may_be_run_through_is_a_closed_set() {
     let with = "struct Range<T> {\n    pub n: i32,\n}\n";
@@ -38,6 +36,47 @@ fn what_may_be_run_through_is_a_closed_set() {
     let out = refused(&format!("{}fn f(n: i32) {{\n    for x in n {{\n    }}\n}}\n", with));
     assert!(out.contains("there is no running through a `i32`"), "{}", out);
     assert!(out.contains("no iterator protocol"), "{}", out);
+}
+
+// A file joins the set by writing the three a walk calls beside its
+// declaration: `step`, one on from where it was; `valid`, whether there is
+// another; and `elem`, what is there. The cursor starts at -1 and every turn is
+// those three in order, so stepping from -1 has to land on the first.
+//
+// What a turn hands over is `elem`'s answer, which is what lets a map be run
+// through at all: it gives back a pair, and nothing below the checker has to
+// know that a map is a thing that does.
+#[test]
+fn a_file_says_how_what_it_declares_is_run_through() {
+    let with = "struct Held<T> { pub n: i64 }\n\
+                fn step<T>(h: &Held<T>, at: i64): i64 { at + 1 }\n\
+                fn valid<T>(h: &Held<T>, at: i64): bool { at < h.n }\n\
+                fn elem<T>(h: &Held<T>, at: i64): T { elem(h, at) }\n";
+    let ttir = clean(&format!(
+        "{}fn f(h: Held<i32>): i32 {{\n\
+         \x20   var t: i32 = 0\n\
+         \x20   for x in h {{ t = t + x }}\n\
+         \x20   t\n\
+         }}\n",
+        with
+    ));
+    // What comes out is the loop the three make, and not a `For`: three
+    // ordinary calls, so no pass below this one has to learn a thing.
+    assert!(
+        !ttir.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::For { .. })),
+        "a walk was left as a `For`"
+    );
+    assert!(ttir.exprs.iter().any(|e| matches!(e.kind, TTIRExprKind::While { .. })));
+
+    // And one that writes only two of the three is not run through: the walk
+    // is the three together, and two of them is nothing.
+    let out = refused(
+        "struct Held<T> { pub n: i64 }\n\
+         fn step<T>(h: &Held<T>, at: i64): i64 { at + 1 }\n\
+         fn valid<T>(h: &Held<T>, at: i64): bool { at < h.n }\n\
+         fn f(h: Held<i32>) {\n    for x in h {\n    }\n}\n",
+    );
+    assert!(out.contains("there is no running through a `Held<i32>`"), "{}", out);
 }
 
 // "while, for -- the operand of the `break` that leaves it. Every loop takes

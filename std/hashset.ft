@@ -278,3 +278,35 @@ pub fn difference<T: Hash + Eq>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
     }
     out
 }
+
+// ---- Running through one -----------------------------------------------------
+
+// The three a `for` calls. There is no iterator protocol -- "what may be run
+// through is a closed set" (section 5) -- so a container says how it is walked
+// by writing these three beside its declaration, and the compiler writes the
+// loop out of them.
+//
+// The cursor starts at -1 and every turn is `step`, then `valid`, then `elem`.
+// So the first `step` has to land on the first, and a `step` past the last has
+// to give something `valid` says no to.
+
+// The places are in no order and most of them are empty, so a step is a walk
+// forward to the next one that holds something.
+pub fn step<T: Hash + Eq>(s: &HashSet<T>, at: i64): i64 {
+    var i = at + 1
+    while i < s.cap {
+        if taken_at(s, i) {
+            return i
+        }
+        i = i + 1
+    }
+    s.cap
+}
+
+pub fn valid<T: Hash + Eq>(s: &HashSet<T>, at: i64): bool {
+    at < s.cap
+}
+
+pub fn elem<T: Hash + Eq>(s: &HashSet<T>, at: i64): T {
+    elem_at(s, at)
+}
