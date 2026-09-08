@@ -262,7 +262,7 @@ impl<'a> Lowerer<'a> {
                     *items = inner;
                 }
 
-                TIRItemKind::Trait { members, .. } => {
+                TIRItemKind::Trait { generics, members, .. } => {
                     // A member with a body is refused. The grammar admits one
                     // -- a `<trait_member>` is a `<fn_decl>` or a `<fn_sig>` --
                     // and nothing below reads it: what a trait declares is a
@@ -270,11 +270,10 @@ impl<'a> Lowerer<'a> {
                     // and then left the table with an entry nobody had filled,
                     // which is a call through a word nobody wrote.
                     //
-                    // What it would take is `Self` as a type the body is
-                    // written about, so that one body serves every impl that
-                    // does not write its own. That is a parameter this language
-                    // has no spelling for, and inventing one here would be
-                    // inventing it in the one place it is needed.
+                    // What it would take is a body written about `Self`, so
+                    // that one body serves every impl that does not write its
+                    // own. `Self` is a type now -- see below -- and this is
+                    // what is left to do with it.
                     for &at in &members {
                         let TIRItemKind::Fn(f) = &self.tir.items[at].kind else { continue };
                         if f.body.is_none() {
@@ -293,14 +292,37 @@ impl<'a> Lowerer<'a> {
                             ),
                         );
                     }
+                    // `Self` is the trait's first parameter, standing for the
+                    // type that answers it -- so `fn same(&self, other: &Self)`
+                    // is a signature the checker can hold an impl to, and a
+                    // call through a bound fills it from the receiver by the
+                    // same unification that fills an `impl<T>`'s `T`.
+                    //
+                    // It is a parameter and not a fresh idea: a member's
+                    // generics are the declaration's followed by its own
+                    // (`Lowerer::outer`), and putting `Self` at the front of
+                    // the trait's makes every pass below treat it as the
+                    // parameter it is. `instance_of` makes a hole for it at
+                    // each use, and `mir::mono` substitutes the concrete type
+                    // in, which is what a table for one type is.
+                    self.params = type_names_of(&generics);
+                    self.open_regions(&generics);
+                    let mut made_generics =
+                        vec![TTIRGeneric::Type { name: SELF.to_string(), bounds: Vec::new() }];
+                    made_generics.extend(self.generics(&generics, &[]));
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[self.at][i]).collect();
+                    let outer = std::mem::replace(&mut self.outer, made_generics.clone());
                     self.resolve(&members);
-                    let TTIRItemKind::Trait { members, .. } = &mut self.out.items[made].kind
+                    self.outer = outer;
+                    let TTIRItemKind::Trait { generics, members, .. } =
+                        &mut self.out.items[made].kind
                     else {
                         continue;
                     };
+                    *generics = made_generics;
                     *members = inner;
+                    self.params.clear();
                 }
 
                 TIRItemKind::Impl { generics, wheres, ty, for_ty, members, .. } => {
@@ -715,6 +737,31 @@ impl<'a> Lowerer<'a> {
                 // A parameter of the declaration this stands in, which is a
                 // name that is not a declaration.
                 if path.len() == 1 {
+                    // Inside an impl `Self` is the type the impl is about,
+                    // which is a type and not a parameter: it is written down
+                    // in the header and there is nothing left to work out.
+                    // Inside a trait it is the parameter put there above, and
+                    // `self.params` holds it like any other.
+                    if path[0] == SELF {
+                        if let Some(subject) = self.subject {
+                            return subject;
+                        }
+                        if !self.params.iter().any(|p| p == SELF) {
+                            self.errors.push(
+                                Diagnostic::error(
+                                    "`Self` is written outside a trait or an impl".to_string(),
+                                    at,
+                                )
+                                .with_label("there is nothing here for it to name")
+                                .with_help(
+                                    "`Self` is the type an impl is about, and the type \
+                                     that answers a trait -- it names neither anywhere \
+                                     else",
+                                ),
+                            );
+                            return self.types.error();
+                        }
+                    }
                     if let Some(index) = self.params.iter().position(|p| *p == path[0]) {
                         return self.types.intern(Ty::Param { name: path[0].clone(), index });
                     }
@@ -910,6 +957,11 @@ pub(super) fn lifetimes_of(generics: &[TIRGeneric]) -> usize {
 
 // The same over the ones already made, which is what an impl hands its members:
 // by then the bounds have been resolved and there is no going back to the tree.
+// The name of a trait's first parameter, and of the type an impl is about.
+// Capitalised, so it is not `self`: one is a type and the other is a value,
+// and the two stand in different positions.
+pub(super) const SELF: &str = "Self";
+
 pub(super) fn names_of_made(generics: &[TTIRGeneric]) -> Vec<String> {
     generics
         .iter()

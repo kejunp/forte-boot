@@ -3410,3 +3410,81 @@ fn a_let_takes_a_tuple_apart() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 7 tests"), "{}", said);
 }
+
+// ---- `Self` --------------------------------------------------------------------
+
+// "`Self` is the type an impl is about, and the type that answers a trait."
+// It is the trait's first parameter, so a call through a bound fills it from
+// the receiver -- which is what makes an `Eq` writable, and an `Eq` is what a
+// map wants of its keys.
+#[test]
+fn self_is_the_type_that_answers_a_trait() {
+    let dir = std::env::temp_dir().join(format!("fortec-selfty-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("selfty.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import test::assert;\n\
+         \n\
+         pub trait Key {\n\
+         \x20   fn hash(&self): i64\n\
+         \x20   fn same(&self, other: &Self): bool\n\
+         }\n\
+         \n\
+         impl Key for i64 {\n\
+         \x20   fn hash(&self): i64 { self * 3 }\n\
+         \x20   fn same(&self, other: &i64): bool { self == other }\n\
+         }\n\
+         \n\
+         impl Key for bool {\n\
+         \x20   fn hash(&self): i64 { if self == &true { 1 } else { 0 } }\n\
+         \x20   fn same(&self, other: &bool): bool { self == other }\n\
+         }\n\
+         \n\
+         struct Pair<K> { pub a: K, pub b: K }\n\
+         \n\
+         fn agree<K: Key>(p: &Pair<K>): bool { p.a.same(&p.b) }\n\
+         fn spread<K: Key>(k: &K): i64 { k.hash() }\n\
+         \n\
+         %test\n\
+         fn a_bound_fills_self_from_the_receiver() {\n\
+         \x20   let same: Pair<i64> = Pair { a: 4, b: 4 }\n\
+         \x20   let apart: Pair<i64> = Pair { a: 4, b: 5 }\n\
+         \x20   assert(agree(&same), \"two of one number agree\")\n\
+         \x20   assert(!agree(&apart), \"and two others do not\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn each_impl_answers_for_its_own_type() {\n\
+         \x20   let n: i64 = 7\n\
+         \x20   let t: bool = true\n\
+         \x20   assert_eq(&spread(&n), &21, \"the i64 body\")\n\
+         \x20   assert_eq(&spread(&t), &1, \"the bool body\")\n\
+         }\n\
+         \n\
+         struct Held { pub x: i64 }\n\
+         \n\
+         impl Held {\n\
+         \x20   pub fn twin(&self): Self { Self { x: self.x } }\n\
+         \x20   pub fn bump(&self, n: i64): Self { Self { x: self.x + n } }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn self_in_an_impl_is_the_type_it_is_about() {\n\
+         \x20   let h = Held { x: 5 }\n\
+         \x20   assert_eq(&h.twin().x, &5, \"`Self` as the answer\")\n\
+         \x20   assert_eq(&h.bump(3).x, &8, \"and at the head of a literal\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "selfty");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "`Self` was meant to name the type that answers a trait:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

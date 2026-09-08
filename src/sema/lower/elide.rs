@@ -23,6 +23,7 @@ use crate::tir::ttir_nodes::*;
 use super::Lowerer;
 use super::resolve::names_of;
 use super::resolve::lifetimes_of;
+use super::resolve::SELF;
 
 impl<'a> Lowerer<'a> {
     // Every region standing anywhere in these types.
@@ -73,18 +74,23 @@ impl<'a> Lowerer<'a> {
     // whole of what a receiver's type comes from.
     //
     // A trait's is another matter: the type is whatever answers the trait, and
-    // `Ty` has no way to say "the one this is about". It is a parameter in all
-    // but name -- what it stands for is settled by whoever answers the trait,
-    // exactly as a `T` is settled by whoever calls -- so it is written as one,
-    // named `Self` and placed after the method's own. A `Ty::SelfTy` would say
-    // it more plainly and is what to add if this starts costing anything.
+    // `Ty` has no way to say "the one this is about". It is a parameter -- what
+    // it stands for is settled by whoever answers the trait, exactly as a `T`
+    // is settled by whoever calls -- and it is now the trait's *first* one,
+    // put there by `resolve` and named in `self.params` like any other. So the
+    // receiver reaches it by name, and `&self` and a written `&Self` are the
+    // same type rather than two parameters that never meet.
     pub(super) fn receiver_ty(&mut self, name: &TIRBinding, at: Span) -> TyId {
         let TIRBinding::SelfRecv(how, life) = name else { return self.types.fresh() };
         let subject = match self.subject {
             Some(subject) => subject,
             None => {
-                let index = self.params.len();
-                self.types.intern(Ty::Param { name: "Self".to_string(), index })
+                let index = self
+                    .params
+                    .iter()
+                    .position(|p| p == SELF)
+                    .unwrap_or(self.params.len());
+                self.types.intern(Ty::Param { name: SELF.to_string(), index })
             }
         };
         let op = match how {

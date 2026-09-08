@@ -933,12 +933,54 @@ fn impls_complete(out: &TTIRProgram, errors: &mut Diagnostics) {
 // remember which were which: one that answered then answers now in the same
 // line of code, and the pass is a walk either way.
 fn objects_answered(out: &TTIRProgram, errors: &mut Diagnostics) {
+    let mut said: Vec<TTIRItemId> = Vec::new();
     for held in &out.exprs {
         let TTIRExprKind::Cast(from) = held.kind else { continue };
         let (Some(of), Some(made)) = (dyn_of(out, held.ty), referred(out, out.exprs[from].ty))
         else {
             continue;
         };
+        // A trait whose members write `Self` anywhere but the receiver is not
+        // a trait an object can be made of.
+        //
+        // What a table is, is one address per member, and every one of them is
+        // called through the object and knows nothing else about it. So a
+        // member taking a second `Self` -- `fn same(&self, other: &Self)` --
+        // is asking the caller for a type the object has thrown away: two
+        // `&dyn Key` may stand for two different types, and the call would
+        // hand one body a value of the other's.
+        //
+        // The receiver is the exception and the reason the whole thing works:
+        // it is the word beside the table, so it is the one `Self` the object
+        // still holds.
+        //
+        // Asked here rather than where `dyn` is written, because it is a
+        // question about the trait's members and a member is not settled until
+        // the pass below `resolve` has run -- the same reason `impls_complete`
+        // is asked of the finished tree.
+        if let Some(name) = self_in_a_member(out, of) {
+            if !said.contains(&of) {
+                said.push(of);
+                let of = named(out, of);
+                errors.push(
+                    Diagnostic::error(
+                        format!("no object is made of `{}`", of),
+                        Span::at(held.line, held.col),
+                    )
+                    .with_label(format!("this is asked to be a `dyn {}`", of))
+                    .with_note(format!(
+                        "`{}` writes `Self` past its receiver, and an object has \
+                         thrown that type away",
+                        name
+                    ))
+                    .with_help(
+                        "a bound keeps it -- `fn f<T: Trait>(x: &T)` knows what \
+                         `T` is at every call",
+                    ),
+                );
+            }
+            continue;
+        }
         // A parameter is answered by its bound and not by an impl written for
         // it: `fn f<T: Show>(x: &T)` says every `T` a caller supplies answers
         // `Show`, and `holds` is what checks each caller did. Which table is
@@ -963,6 +1005,45 @@ fn objects_answered(out: &TTIRProgram, errors: &mut Diagnostics) {
                     of, made
                 )),
         );
+    }
+}
+
+// The name of the first member of `of` that writes `Self` somewhere an object
+// cannot supply it: a parameter past the receiver, or the answer.
+//
+// `Self` is the trait's first parameter (`resolve::SELF`), so this is a walk
+// looking for `Ty::Param { index: 0 }` -- and index 0 of a trait member's
+// generics is `Self` and can be nothing else, the trait's own parameters
+// following it and the member's own following those.
+fn self_in_a_member(out: &TTIRProgram, of: TTIRItemId) -> Option<String> {
+    let TTIRItemKind::Trait { members, .. } = &out.items[of].kind else { return None };
+    for &at in members {
+        let TTIRItemKind::Fn(f) = &out.items[at].kind else { continue };
+        let Some(Ty::Fn { params, ret, .. }) = out.types.get(f.ty) else { continue };
+        let takes_self =
+            matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..)));
+        let past = if takes_self { 1 } else { 0 };
+        if params[past..].iter().chain(std::iter::once(ret)).any(|&ty| is_self(out, ty)) {
+            return Some(f.name.clone());
+        }
+    }
+    None
+}
+
+// Whether `Self` is anywhere in a type, however deep.
+fn is_self(out: &TTIRProgram, ty: TyId) -> bool {
+    match &out.types[ty] {
+        Ty::Param { index, .. } => *index == 0,
+        Ty::Ref { inner, .. } | Ty::Ptr(inner) | Ty::GC(inner) | Ty::Run(inner) => {
+            is_self(out, *inner)
+        }
+        Ty::Array { elem, .. } => is_self(out, *elem),
+        Ty::Tuple(held) => held.iter().any(|&t| is_self(out, t)),
+        Ty::Named { args, .. } => args.iter().any(|&t| is_self(out, t)),
+        Ty::Fn { params, ret, .. } => {
+            params.iter().any(|&t| is_self(out, t)) || is_self(out, *ret)
+        }
+        _ => false,
     }
 }
 

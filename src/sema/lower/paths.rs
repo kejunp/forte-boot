@@ -13,6 +13,7 @@ use crate::tir::tir_nodes::*;
 use crate::tir::ttir_nodes::*;
 
 use super::Lowerer;
+use super::resolve::SELF;
 
 impl<'a> Lowerer<'a> {
     // The path an expression spells, where it spells one. A `::` chain of names
@@ -100,6 +101,30 @@ impl<'a> Lowerer<'a> {
 
     // A name, however it was spelled: a slot of this body, a variant of an
     // enum, or a declaration.
+    // `Self` at the head of a path, replaced by the name of the declaration the
+    // impl is about, so `Self { x: 0 }` and `Self::zero()` reach what `P { .. }`
+    // and `P::zero()` reach. Anything not headed by `Self` is handed back as it
+    // stands, which is what lets every caller run a path through this.
+    //
+    // `None` where `Self` names nothing a `::` or a brace can be written after:
+    // outside an impl, and inside one whose subject is a primitive or a
+    // reference -- `impl Show for i64` is an impl and `i64 { .. }` is not a
+    // thing to write.
+    pub(super) fn selfed(&mut self, path: &[String]) -> Option<Vec<String>> {
+        if path.first().map(String::as_str) != Some(SELF) {
+            return Some(path.to_vec());
+        }
+        let subject = self.subject?;
+        let Ty::Named { item, .. } = self.types.get(subject) else { return None };
+        let name = match &self.out.items[*item].kind {
+            TTIRItemKind::Struct { name, .. } | TTIRItemKind::Enum { name, .. } => name.clone(),
+            _ => return None,
+        };
+        let mut out = vec![name];
+        out.extend(path[1..].iter().cloned());
+        Some(out)
+    }
+
     pub(super) fn named(&mut self, path: &[String], id: TIRExprId) -> TTIRExprId {
         if path.len() == 1 {
             if let Some(slot) = self.slot(&path[0], self.at(id)) {
@@ -111,6 +136,11 @@ impl<'a> Lowerer<'a> {
         if let Some((of, index)) = self.variant_path(path) {
             return self.variant_lit(of, index, &[], id);
         }
+        let held = self.selfed(path);
+        let path: &[String] = match &held {
+            Some(held) => held,
+            None => path,
+        };
         match self.look(&path.join("::")) {
             Some(item) => {
                 // "A `<const_decl>` is the compile-time constant" (§2), so a

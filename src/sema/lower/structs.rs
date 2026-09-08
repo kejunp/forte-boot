@@ -47,6 +47,27 @@ impl<'a> Lowerer<'a> {
         if let Some((of, index)) = self.variant_path(&path) {
             return self.named_variant(of, index, written, at);
         }
+        // `Self { .. }` inside an impl builds the type the impl is about. The
+        // name is not a declaration, so `look` never finds one -- what it
+        // stands for is in `subject`, and the declaration is what is at the
+        // head of that.
+        let path = match self.selfed(&path) {
+            Some(held) => held,
+            None => {
+                self.errors.push(
+                    Diagnostic::error(
+                        "`Self` names no struct here".to_string(),
+                        self.at(base),
+                    )
+                    .with_label("this builds one")
+                    .with_help(
+                        "`Self` is the type an impl is about, and only a struct \
+                         or a variant of an enum is built with a `{ .. }`",
+                    ),
+                );
+                return self.errored(at);
+            }
+        };
         let Some(item) = self.look(&path.join("::")) else {
             let name = path.join("::");
             self.errors.push(

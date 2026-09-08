@@ -483,6 +483,35 @@ members are <fn_decl>s and there is no other kind: no constant, no type, no
 field. Whatever else wants to be grouped under a name is grouped by
 <namespace_decl> below, which is the thing for it.
 
+"Self" is a type wherever an impl or a trait is around it, and it means two
+things that are one thing. Inside an impl it is the type the impl is written
+about — "impl P { fn twin(&self): Self { Self { x: self.x } } }" — which is a
+type and not a parameter, the header having said what it is. Inside a trait
+it is the type that answers the trait, which nobody knows yet: it is the
+trait's first parameter, standing for whatever an impl fills it with, exactly
+as a "T" stands for whatever a caller fills that with.
+
+That is what makes a signature about two of the same type writable:
+
+    trait Key {
+        fn same(&self, other: &Self): bool
+    }
+
+    fn agree<K: Key>(a: &K, b: &K): bool { a.same(b) }
+
+The receiver is that same parameter, so "&self" and a written "&Self" are one
+type; the call above fills it from the receiver by the same unification that
+fills an "impl<T>"'s "T".
+
+A trait that writes "Self" past its receiver is not one a "dyn" is made of. A
+table is one address per member and the object holds one type, so a member
+asking for a *second* "Self" is asking for a type the object threw away — two
+"&dyn Key" may stand for two types, and the call would hand one body a value
+of the other's. The receiver is the exception and the reason the whole thing
+works: it is the word beside the table, so it is the one "Self" an object
+still holds. A bound keeps them all, which is where a signature like the one
+above belongs.
+
 Two trait names mean something to the compiler, and neither needs a rule of
 its own to be written. "Copy" says the type is copied rather than moved
 (above, <var_decl>) and holds nothing:
@@ -2583,10 +2612,14 @@ answer is not obvious from the rules alone.
     <trait_member> is a <fn_decl> or a <fn_sig> -- and one written there was
     accepted and then ignored, which left the same hole by the other road. It
     is refused now. What such a body would be is the one every impl that wrote
-    none falls back to, and writing it wants a "Self" to write it about: a
-    parameter this language has no spelling for, and inventing one in the one
-    place it is needed would be inventing it badly. So the grammar is wider
-    than the language here, and the language says so.
+    none falls back to, and writing it wants a "Self" to write it about.
+
+    There is a "Self" now (section 2). It is the trait's first parameter and
+    the impl's own subject, and it was wanted for its own sake: an "Eq" whose
+    method takes a second value of the type is a signature nothing could
+    write, and a map wants one of its keys. What is left of this entry is the
+    default body itself -- the grammar is still wider than the language, and
+    what "Self" removed is the reason it had to be.
   - A collected value stands where a reference is wanted, which it did not.
     "It is one word -- the address the collector handed back -- and it is
     reached through exactly as a reference is" (section 2), so a "gc T" is a

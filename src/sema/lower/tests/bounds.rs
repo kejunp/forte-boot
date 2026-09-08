@@ -166,3 +166,110 @@ fn a_name_two_bounds_both_declare_is_refused() {
     assert!(out.contains("more than one `tell`"), "{}", out);
     assert!(out.contains("`Show`") && out.contains("`Say`"), "{}", out);
 }
+
+// ---- `Self` ----------------------------------------------------------------
+
+// "`Self` is the type an impl is about, and the type that answers a trait."
+// A trait's is a parameter -- its first -- so a signature written about it is
+// one the checker can hold an impl to, and a call through a bound fills it
+// from the receiver by the same unification that fills an `impl<T>`'s `T`.
+#[test]
+fn self_in_a_trait_is_the_type_that_answers_it() {
+    clean(
+        "trait Key {\n\
+         \x20   fn same(&self, other: &Self): bool;\n\
+         }\n\
+         impl Key for i64 {\n\
+         \x20   fn same(&self, other: &i64): bool { self == other }\n\
+         }\n\
+         fn holds<K: Key>(a: &K, b: &K): bool { a.same(b) }\n",
+    );
+}
+
+// And `&self` is that same parameter, not a second one beside it. It used to
+// be made afresh at the end of the member's own, so a body's receiver and a
+// written `&Self` were two parameters that never met.
+#[test]
+fn a_receiver_and_a_written_self_are_one_type() {
+    let out = clean(
+        "trait Key {\n\
+         \x20   fn same(&self, other: &Self): bool;\n\
+         }\n",
+    );
+    let held = out
+        .items
+        .iter()
+        .find_map(|item| match &item.kind {
+            TTIRItemKind::Fn(f) if f.name == "same" => Some(f.ty),
+            _ => None,
+        })
+        .expect("the member");
+    let Ty::Fn { params, .. } = &out.types[held] else { panic!("{:?}", out.types[held]) };
+    let inner = |ty: TyId| match &out.types[ty] {
+        Ty::Ref { inner, .. } => out.types[*inner].clone(),
+        other => other.clone(),
+    };
+    assert_eq!(inner(params[0]), inner(params[1]), "{:#?}", out.types);
+    assert!(matches!(inner(params[0]), Ty::Param { index: 0, .. }), "{:?}", inner(params[0]));
+}
+
+// Inside an impl it is the type written in the header, which is a type and not
+// a parameter: there is nothing left to work out. It stands where a type does
+// and at the head of a struct literal.
+#[test]
+fn self_in_an_impl_is_the_type_it_is_about() {
+    clean(
+        "struct P { pub x: i64 }\n\
+         impl P {\n\
+         \x20   pub fn twin(&self): Self { Self { x: self.x } }\n\
+         }\n",
+    );
+}
+
+// And nowhere else. A `Self` with no impl and no trait around it names
+// nothing, and used to come out as "no type is called `Self`" -- which is true
+// and says nothing about why.
+#[test]
+fn self_outside_a_trait_or_an_impl_names_nothing() {
+    let out = refused("fn f(): Self { 0 }\n");
+    assert!(out.contains("`Self` is written outside a trait or an impl"), "{}", out);
+}
+
+// A trait whose members write `Self` past the receiver is not one an object is
+// made of: a table is one address per member and the object holds one type, so
+// a member wanting a *second* `Self` is asking for a type the object threw
+// away.
+#[test]
+fn no_object_is_made_of_a_trait_that_writes_self_past_its_receiver() {
+    let out = refused(
+        "trait Key {\n\
+         \x20   fn same(&self, other: &Self): bool;\n\
+         }\n\
+         impl Key for i64 {\n\
+         \x20   fn same(&self, other: &i64): bool { self == other }\n\
+         }\n\
+         fn f(n: &i64) {\n\
+         \x20   let d: &dyn Key = n\n\
+         }\n",
+    );
+    assert!(out.contains("no object is made of `Key`"), "{}", out);
+    assert!(out.contains("writes `Self` past its receiver"), "{}", out);
+}
+
+// The receiver is the exception and the reason the whole thing works: it is the
+// word beside the table. So a trait that writes `Self` there and nowhere else
+// is an object as it always was.
+#[test]
+fn a_trait_that_writes_self_only_as_its_receiver_is_still_an_object() {
+    clean(
+        "trait Key {\n\
+         \x20   fn hash(&self): i64;\n\
+         }\n\
+         impl Key for i64 {\n\
+         \x20   fn hash(&self): i64 { self }\n\
+         }\n\
+         fn f(n: &i64) {\n\
+         \x20   let d: &dyn Key = n\n\
+         }\n",
+    );
+}
