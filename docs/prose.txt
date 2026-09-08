@@ -3066,6 +3066,22 @@ answer is not obvious from the rules alone.
     the same evaluator answers both, so anything it cannot read leaves the
     global starting at nought rather than refusing the program.
 
+    An operator over a reference is an operator over what it refers to, and
+    now so is a condition. Section 3's rule — a reference "is read, called,
+    indexed and reached into exactly as that place is" — held for the binary
+    operators and for nothing else. "!a" on a "&bool" negated the *address*
+    and typed the answer a "bool", so the back end wrote a one-byte
+    instruction over an eight-byte register and the assembler refused the
+    program; "-a" on a "&i64" was the same shape and quietly wrong instead.
+    And "if r" on a "&bool" was "an `if` asks a `bool` and this is `&bool`",
+    so a reference was a condition everywhere it was compared and nowhere it
+    was asked.
+
+    The three operators that take a value read through; the three about the
+    place itself do not. "&x" and "addr x" would take the address of
+    something else, and "deref p" is the one operator whose whole job is the
+    layer this would strip.
+
     A "str" compares by what it says, which it did not. It is fat — an
     address and a length — and the register holds the address of the pair, so
     the instruction a comparison lowered to compared the two *places*: two

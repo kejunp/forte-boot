@@ -63,6 +63,25 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let held = self.expr(operand);
+                // "A reference stands for the place it refers to and is read
+                // and written as that place" (§3), so an operator over one is
+                // an operator over what it refers to -- which `Binary` does
+                // just below and this did not. `!a` on a `&bool` negated the
+                // *address* and gave the answer the type of a `bool`, and what
+                // came out of the back end was a one-byte instruction over an
+                // eight-byte register: not a wrong answer but an assembler
+                // error, which is the only reason it was ever noticed.
+                //
+                // The three that take a value read through; the three that
+                // are about the place itself do not. `&x`, `addr x` and
+                // `deref p` are the second kind: reading through the first two
+                // would take the address of something else, and `deref` is the
+                // one operator whose whole job is the layer this would strip.
+                let held = match op {
+                    crate::tir::tir_nodes::TIRUnaryOp::Not
+                    | crate::tir::tir_nodes::TIRUnaryOp::Neg => self.read_through(held),
+                    _ => held,
+                };
                 let inner = self.out.exprs[held].ty;
                 let ty = match op {
                     crate::tir::tir_nodes::TIRUnaryOp::Not => self.types.prim(TIRPrim::Bool),
@@ -258,7 +277,13 @@ impl<'a> Lowerer<'a> {
             }
 
             TIRExprKind::If { cond, then, els } => {
+                // Read through, for the reason `Binary` gives: a reference
+                // stands for the place it refers to and is read as that place
+                // (§3), so a `&bool` is a condition. It was refused, which
+                // made the rule hold for every operator and not for the two
+                // words that ask a question.
                 let c = self.expr(cond);
+                let c = self.read_through(c);
                 let asks = self.types.prim(TIRPrim::Bool);
                 let got = self.out.exprs[c].ty;
                 if self.types.unify(got, asks).is_err() {
@@ -310,6 +335,7 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::While { cond, body } => {
                 let c = self.expr(cond);
+                let c = self.read_through(c);
                 let want = self.types.prim(TIRPrim::Bool);
                 let got = self.out.exprs[c].ty;
                 if self.types.unify(got, want).is_err() {

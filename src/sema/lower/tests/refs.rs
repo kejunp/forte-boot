@@ -586,3 +586,67 @@ fn reaching_into_something_that_is_not_a_tuple_says_so() {
     let said = refused("fn f() {\n    let (d, e) = 7\n}\n");
     assert!(said.contains("`.0` reads a member out of a tuple"), "{}", said);
 }
+
+// ---- An operator over a reference, and a condition -----------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3). `Binary` had that and the
+// two unary operators over a value did not: `!a` on a `&bool` negated the
+// *address* and then called the answer a `bool`, so the back end wrote a
+// one-byte instruction over an eight-byte register and the assembler refused
+// the program. `-a` on a `&i64` was the same shape.
+#[test]
+fn a_unary_operator_over_a_reference_reads_through_it() {
+    let p = assigned("fn f(a: &bool, b: &i64) {\n    let x = !a\n    let y = -b\n}\n");
+    let held: Vec<TTIRExprId> = p
+        .exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            matches!(
+                e.kind,
+                TTIRExprKind::Unary { op: TIRUnaryOp::Not | TIRUnaryOp::Neg, .. }
+            )
+        })
+        .map(|(at, _)| at)
+        .collect();
+    for at in held {
+        let TTIRExprKind::Unary { operand, .. } = p.exprs[at].kind else { unreachable!() };
+        assert!(
+            !matches!(p.types[p.exprs[operand].ty], Ty::Ref { .. }),
+            "the operand is still a reference\n{:#?}",
+            p.exprs[operand]
+        );
+    }
+}
+
+// And `&` and `addr` and `deref` do not, which is the other half of the rule:
+// two of them are about the place itself and the third is the one operator
+// whose whole job is the layer this would strip.
+#[test]
+fn taking_an_address_does_not_read_through_one() {
+    let p = assigned("fn f(a: &i64) {\n    let x = &a\n}\n");
+    let held = p
+        .exprs
+        .iter()
+        .find(|e| matches!(e.kind, TTIRExprKind::Unary { op: TIRUnaryOp::Ref(_), .. }))
+        .expect("the `&`");
+    let TTIRExprKind::Unary { operand, .. } = held.kind else { unreachable!() };
+    assert!(matches!(p.types[p.exprs[operand].ty], Ty::Ref { .. }), "{:#?}", p.exprs[operand]);
+}
+
+// The two words that ask a question read through as well. It was the one place
+// the rule did not hold: `if r` on a `&bool` was "an `if` asks a `bool` and
+// this is `&bool`", so a reference was a condition everywhere it was compared
+// and nowhere it was asked.
+#[test]
+fn a_condition_reads_through_a_reference() {
+    clean(
+        "fn f(c: &bool): i64 {\n\
+         \x20   var n = 0\n\
+         \x20   if c { n = 1 }\n\
+         \x20   while c { n = 2 }\n\
+         \x20   n\n\
+         }\n",
+    );
+}

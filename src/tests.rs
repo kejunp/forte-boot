@@ -3558,3 +3558,64 @@ fn two_strings_compare_by_what_they_say() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- An operator over a reference ----------------------------------------------
+
+// "A reference stands for the place it refers to and is read, called, indexed
+// and reached into exactly as that place is" (§3). It held for the binary
+// operators and not for the two unary ones over a value, nor for the two words
+// that ask a question -- so a `&bool` could be compared and could not be
+// negated, and could not be a condition.
+//
+// `!a` on one is what showed it: the operand was the *address*, the answer was
+// typed a `bool`, and the back end wrote a one-byte instruction over an
+// eight-byte register. The assembler refused the program, which is the only
+// reason it was ever seen -- `-a` on a `&i64` had been quietly wrong.
+#[test]
+fn an_operator_over_a_reference_reads_through_it() {
+    let dir = std::env::temp_dir().join(format!("fortec-thru-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("thru.ft");
+    std::fs::write(
+        &root,
+        "import test::assert;\n\
+         import test::assert_eq;\n\
+         \n\
+         fn negate(a: &bool): bool { !a }\n\
+         fn minus(a: &i64): i64 { -a }\n\
+         fn both(a: &bool, b: &bool): bool { a && b }\n\
+         fn either(a: &bool, b: &bool): bool { a || b }\n\
+         fn picked(c: &bool): i64 { if c { 1 } else { 0 } }\n\
+         \n\
+         %test\n\
+         fn a_unary_operator_reads_through_a_reference() {\n\
+         \x20   assert(negate(&false), \"`!` on a reference to a false\")\n\
+         \x20   assert(!negate(&true), \"and on one to a true\")\n\
+         \x20   assert_eq(&minus(&5), &-5, \"`-` on one to a number\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_two_branching_operators_do_too() {\n\
+         \x20   assert(both(&true, &true), \"two trues\")\n\
+         \x20   assert(!both(&true, &false), \"and one of each\")\n\
+         \x20   assert(either(&false, &true), \"either way round\")\n\
+         \x20   assert(!either(&false, &false), \"and neither\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_condition_reads_through_one() {\n\
+         \x20   assert_eq(&picked(&true), &1, \"an `if` over a reference\")\n\
+         \x20   assert_eq(&picked(&false), &0, \"the other way\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "thru");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "an operator was meant to read through a reference:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
