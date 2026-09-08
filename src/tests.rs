@@ -1971,6 +1971,68 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- What a loop is worth ------------------------------------------------------------
+
+// "Every loop takes a `break x` and yields `null` where none is given" (§8),
+// and the first half of that answered nought instead.
+//
+// The loop's own end and a `break` out of it arrived in one block, and that
+// block wrote the `null`: the break wrote the slot and the null went on top of
+// it. So `let r = while c { break 7 }` compiled, ran, and was 0 -- which is the
+// kind of thing only running finds, the tree being right about all of it.
+#[test]
+fn a_break_carries_its_value_out_of_the_loop() {
+    let dir = std::env::temp_dir().join(format!("fortec-brk-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("brk.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         %test\n\
+         fn a_break_is_what_the_loop_is_worth() {\n\
+         \x20   let held = while true { break 7 }\n\
+         \x20   assert_eq(&held, &7, \"broken with straight away\")\n\
+         \x20   var i = 0\n\
+         \x20   let held = while i < 10 {\n\
+         \x20       i = i + 1\n\
+         \x20       if i > 3 { break i }\n\
+         \x20   }\n\
+         \x20   assert_eq(&held, &4, \"and after going round\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_loop_nobody_breaks_is_worth_nothing() {\n\
+         \x20   // Which is the other half, and what it always was: the loop\n\
+         \x20   // runs out and the value is `null`, so what the reader reads\n\
+         \x20   // is what the body left behind.\n\
+         \x20   var i = 0\n\
+         \x20   while i < 3 { i = i + 1 }\n\
+         \x20   assert_eq(&i, &3, \"it went round three times\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_break_carrying_nothing_still_leaves() {\n\
+         \x20   var i = 0\n\
+         \x20   while true {\n\
+         \x20       i = i + 1\n\
+         \x20       if i > 3 { break }\n\
+         \x20   }\n\
+         \x20   assert_eq(&i, &4, \"out on the fourth\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "brk");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a break was meant to carry its value out:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- What a `%cfg` keeps -------------------------------------------------------------
 
 // `%cfg` was the last name the attribute list said was waiting, and what it

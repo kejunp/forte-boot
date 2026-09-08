@@ -114,3 +114,24 @@ fn a_break_outside_a_loop_is_refused() {
     let out = refused("fn f() {\n    break\n}\n");
     assert!(out.contains("`break` is not in a loop"), "{}", out);
 }
+
+// ---- What a loop is worth ---------------------------------------------------
+
+// "Every loop takes a `break x` and yields `null` where none is given" (§8) --
+// and the first half of that did not work. The loop's own end and a `break` out
+// of it arrived in one block, and that block wrote the `null`: the break wrote
+// the slot and the null went on top of it, so every `break x` used as a value
+// came to nought. It compiled, and it answered wrongly.
+//
+// What the tree shows is the shape of the fix -- two ways out and not one, so
+// that the null can be written where a break does not reach. What the *answer*
+// is, is `src/tests.rs`', running being the only thing that can say a value
+// survived.
+#[test]
+fn a_loop_and_a_break_out_of_it_are_two_ways_out() {
+    clean("fn f(): i32 {\n    let r = while true { break 7 }\n    r\n}\n");
+    // With nothing broken, which is the `null` half and is what it always was.
+    clean("fn f() {\n    var i = 0\n    while i < 3 { i = i + 1 }\n}\n");
+    // A `break` carrying nothing out of a loop nobody reads.
+    clean("fn f() {\n    var i = 0\n    while true { i = i + 1\n        if i > 3 { break } }\n}\n");
+}

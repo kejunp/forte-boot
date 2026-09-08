@@ -2445,6 +2445,29 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - "Every loop takes a `break x` and yields `null` where none is given", and
+    the first half of that answered nought. The loop's own end and a "break"
+    out of it arrived in one block and that block wrote the "null": the break
+    wrote the slot and the null went on top of it. So "let r = while c { break
+    7 }" compiled, ran, and was 0 -- a wrong answer, which is the kind of thing
+    only running finds, the tree being right about all of it.
+
+    Two ways out now and not one. The loop's own end writes the "null" in a
+    block of its own and a "break" goes to another, and they meet below; both
+    writes are then outside the loop's back edge, which keeps the join the
+    ordinary shape -- a slot written on two arms of a branch, which is what
+    everything else here makes.
+
+    A "while" is right. A "for" is *not*, and what stops it is a bug of its
+    own, older than this and already refused rather than answered wrongly: a
+    "for" that contains a "break" and writes a slot inside itself builds a
+    graph that is not in SSA form, and "sir::verify" says so and stops. It is
+    reachability that disagrees -- the value the return reads is defined in a
+    block the liveness walk calls dead -- and where the two come apart is in
+    how a "for"'s pre-header and head are built, which is the one loop here
+    with two blocks at its top. So "for x in .. { break v }" is a message and
+    not an answer, where before this it was nought; a refusal is the better of
+    the two and neither is the right one.
   - A call carries what the checker made the callee's type parameters stand
     for, and "mir::mono" reads that rather than working the same answer out
     again.

@@ -474,21 +474,38 @@ impl<'a> Lowerer<'a> {
             }
 
             TTIRExprKind::While { cond, body } => {
+                // Four blocks and not three. The loop's own end and a `break`
+                // out of it are two ways to the same place and they are worth
+                // two different things: the first is `null` and the second is
+                // whatever was broken with. Sharing one block made the second
+                // impossible -- the `break` wrote the slot and the block it
+                // arrived in wrote a null over it, so every `break x` used as
+                // a value came to nought.
+                //
+                // So each writes its own block and they meet below. Both
+                // writes are then outside the loop's back edge, which is what
+                // keeps the join an ordinary one: a slot written on two arms
+                // of a branch, which is the shape everything else here makes.
                 let (head, inner, exit) =
                     (self.new_block(cond), self.new_block(body), self.new_block(id));
+                let (brk, after) = (self.new_block(id), self.new_block(id));
                 self.terminate(GIRTerm::Goto(head));
                 self.switch_to(head);
                 self.cond(cond, inner, exit);
                 self.switch_to(inner);
                 let depth = self.b().scopes.len();
-                self.b().loops.push(LoopCtx { brk: exit, cont: head, value: dest, depth });
+                self.b().loops.push(LoopCtx { brk, cont: head, value: dest, depth });
                 self.discard(body);
                 self.b().loops.pop();
                 self.terminate(GIRTerm::Goto(head));
+                // The way out the condition takes, which is worth `null`.
                 self.switch_to(exit);
-                // A loop nobody broke out of yields `null`; a `break x` will
-                // have written the slot itself.
                 self.fill_null(dest, id);
+                self.terminate(GIRTerm::Goto(after));
+                // And the way out a `break` takes, which wrote the slot itself.
+                self.switch_to(brk);
+                self.terminate(GIRTerm::Goto(after));
+                self.switch_to(after);
             }
 
             TTIRExprKind::For { local, iter, body } => {
@@ -500,6 +517,11 @@ impl<'a> Lowerer<'a> {
                 self.into(iter, held);
                 let (head, inner, exit) =
                     (self.new_block(iter), self.new_block(body), self.new_block(id));
+                // Where the loop's *own* end goes, which is worth `null` --
+                // see `While` above. A `break` goes straight to `exit` and has
+                // written the slot itself, so the two do not share a block and
+                // the null cannot land on top of a value.
+                let done = self.new_block(id);
                 self.terminate(GIRTerm::Goto(head));
 
                 // The head, which is where the loop ends as well as where it
@@ -512,7 +534,7 @@ impl<'a> Lowerer<'a> {
                 // iterator afterwards and the binding is what goes each turn.
                 // Whether that is the right division is the iterator protocol's
                 // to settle, and the language has none.
-                self.terminate(GIRTerm::ForEach { local, iter: it, body: inner, exit });
+                self.terminate(GIRTerm::ForEach { local, iter: it, body: inner, exit: done });
 
                 self.switch_to(inner);
                 let depth = self.b().scopes.len();
@@ -527,8 +549,10 @@ impl<'a> Lowerer<'a> {
                 self.close_scope(id);
                 self.terminate(GIRTerm::Goto(head));
 
-                self.switch_to(exit);
+                self.switch_to(done);
                 self.fill_null(dest, id);
+                self.terminate(GIRTerm::Goto(exit));
+                self.switch_to(exit);
             }
 
             TTIRExprKind::Match { scrutinee, arms } => {
