@@ -584,6 +584,35 @@ pub struct TIRAttrs {
     // The words the attribute was given, warned about wherever the thing it
     // marks is named.
     pub deprecated: Option<String>,
+    // What `%repr` said about how the type is laid out. `None` is the layout
+    // this compiler chooses.
+    pub repr:       Option<TIRRepr>,
+}
+
+// What a `%repr` asks for.
+//
+// A layout is two questions and this answers both: where a struct's fields go,
+// and how wide an enum's tag is. What it is *for* is a value that crosses to C
+// -- the runtime boundary is `%symbol` fns and structs read through a pointer
+// on the other side -- and the point of writing it down is that the compiler
+// then owes it, where without it the compiler owes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TIRRepr {
+    // `%repr(C)`: the platform's. On a struct that is the fields in
+    // declaration order, each at the next offset its own alignment allows and
+    // the whole rounded up to the widest -- which is what every struct here
+    // gets today, so this changes nothing and promises it. On an enum it is a
+    // tag as wide as a C `int`, which is *not* what one gets today.
+    C,
+    // `%repr(4)`: an enum's tag is that many bytes, whatever its
+    // discriminants would have fitted in.
+    //
+    // A width and not a type name, which is two things. The tag is a *signed*
+    // integer by rule (`mir::layout`, `tag_bytes`), so how wide it is, is all
+    // there is left to say. And an attribute argument is an identifier or a
+    // literal, which `i32` is neither -- it is a type keyword, and admitting
+    // one there is a change to the grammar for a difference in spelling.
+    Tag(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

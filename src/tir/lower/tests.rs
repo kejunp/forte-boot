@@ -685,3 +685,45 @@ fn a_deref_is_its_own_operator() {
     });
     assert!(held, "nothing in the tree reads through a pointer");
 }
+
+// ---- Where a `%repr` may be written --------------------------------------------
+
+// A width fixes an enum's *tag*, so it goes on an enum; `%repr(C)` is the one
+// that says something about a struct, and neither says anything about a fn.
+//
+// The word is a closed list, as every attribute's arguments are: what a layout
+// may be is what this compiler knows how to lay out, and a name it does not
+// know is an error where it is written rather than a shape somebody supplies.
+#[test]
+fn a_repr_goes_on_a_type_and_a_width_on_an_enum() {
+    assert!(errors_in("%repr(C)\nstruct P {\n    pub x: i32,\n}\n").is_empty());
+    assert!(errors_in("%repr(C)\nenum E {\n    A,\n}\n").is_empty());
+    assert!(errors_in("%repr(4)\nenum E {\n    A,\n}\n").is_empty());
+
+    let said = errors_in("%repr(4)\nstruct P {\n    pub x: i32,\n}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("a width fixes an enum's tag"), "{}", said[0]);
+
+    let said = errors_in("%repr(C)\nfn f(): i32 { 0 }\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("`%repr` goes on a type"), "{}", said[0]);
+}
+
+// And what it takes: `C`, or one of the four widths a tag may be.
+#[test]
+fn a_repr_takes_c_or_a_width() {
+    for source in [
+        "%repr(packed)\nstruct P {\n    pub x: i32,\n}\n",
+        "%repr(3)\nenum E {\n    A,\n}\n",
+        "%repr(\"C\")\nstruct P {\n    pub x: i32,\n}\n",
+    ] {
+        let said = errors_in(source);
+        assert_eq!(said.len(), 1, "{}\n{:#?}", source, said);
+        assert!(said[0].contains("`%repr` takes `C` or a width"), "{}", said[0]);
+    }
+    // And none at all, or more than one.
+    let said = errors_in("%repr\nstruct P {\n    pub x: i32,\n}\n");
+    assert!(said[0].contains("`%repr` takes one word"), "{}", said[0]);
+    let said = errors_in("%repr(C, 4)\nenum E {\n    A,\n}\n");
+    assert!(said[0].contains("`%repr` takes one word"), "{}", said[0]);
+}

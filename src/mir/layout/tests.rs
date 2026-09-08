@@ -91,6 +91,20 @@ impl Held {
 
     // An enum, each variant given as its payload and the number the checker
     // would have worked out for it.
+    // The same with a `%repr` written on it, which is what fixes the tag.
+    fn enumeration_repr(
+        &mut self,
+        name: &str,
+        variants: &[(Vec<TyId>, i64)],
+        repr: crate::tir::tir_nodes::TIRRepr,
+    ) -> TTIRItemId {
+        let at = self.enumeration(name, variants);
+        if let TTIRItemKind::Enum { attrs, .. } = &mut self.p.items[at].kind {
+            attrs.repr = Some(repr);
+        }
+        at
+    }
+
     fn enumeration(&mut self, name: &str, variants: &[(Vec<TyId>, i64)]) -> TTIRItemId {
         let variants = variants
             .iter()
@@ -521,4 +535,53 @@ fn a_hole_and_an_error_have_no_layout() {
     let mut l = laid(&h);
     assert_eq!(l.of(hole), None);
     assert_eq!(l.of(wrong), None);
+}
+
+// ---- What `%repr` fixes ------------------------------------------------------
+
+// The tag is as wide as `%repr` said, and not as narrow as the numbers would
+// have let it be.
+//
+// Which is the whole of what the attribute buys: the other side of a `%symbol`
+// boundary cannot guess a width this compiler chose from the values, so a type
+// that crosses says which it is and the compiler owes it. Without one the tag
+// is the narrowest that holds what the variants were numbered, which is right
+// for a type nothing outside reads and wrong for one something does.
+#[test]
+fn a_repr_fixes_how_wide_a_tag_is() {
+    use crate::tir::tir_nodes::TIRRepr;
+    let mut h = Held::new();
+    // Two variants numbered 0 and 1, which is a byte if nothing says
+    // otherwise.
+    let held = &[(vec![], 0i64), (vec![], 1i64)];
+    let loose = h.enumeration("Loose", held);
+    let c = h.enumeration_repr("C", held, TIRRepr::C);
+    let one = h.enumeration_repr("One", held, TIRRepr::Tag(1));
+    let two = h.enumeration_repr("Two", held, TIRRepr::Tag(2));
+    let eight = h.enumeration_repr("Eight", held, TIRRepr::Tag(8));
+    let named: Vec<TyId> =
+        [loose, c, one, two, eight].iter().map(|&i| h.named(i, Vec::new())).collect();
+    let mut l = laid(&h);
+    assert_eq!(l.tag(named[0]), Some(1), "nothing written is the narrowest");
+    assert_eq!(l.tag(named[1]), Some(4), "`C` is a C `int`");
+    assert_eq!(l.tag(named[2]), Some(1));
+    assert_eq!(l.tag(named[3]), Some(2));
+    assert_eq!(l.tag(named[4]), Some(8));
+}
+
+// And what it fixes is the whole value's width and alignment, a tag being the
+// first thing in one.
+#[test]
+fn a_fixed_tag_is_what_the_value_is_laid_out_around() {
+    use crate::tir::tir_nodes::TIRRepr;
+    let mut h = Held::new();
+    let held = &[(vec![], 0i64), (vec![h.prim(TIRPrim::U8)], 1i64)];
+    let loose = h.enumeration("Loose", held);
+    let wide = h.enumeration_repr("Wide", held, TIRRepr::Tag(8));
+    let (a, b) = (h.named(loose, Vec::new()), h.named(wide, Vec::new()));
+    let mut l = laid(&h);
+    // A byte of tag and a byte of payload,
+    assert_eq!(l.bytes(a), Some(2));
+    // against eight of tag and one of payload, rounded to the tag's own.
+    assert_eq!(l.bytes(b), Some(16));
 }

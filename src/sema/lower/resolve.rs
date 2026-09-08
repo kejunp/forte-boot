@@ -148,7 +148,7 @@ impl<'a> Lowerer<'a> {
                     self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let made_generics = self.generics(&generics, &[]);
-                    let made_variants = self.numbered(&variants);
+                    let made_variants = self.numbered(&variants, made);
                     let TTIRItemKind::Enum { generics, variants, .. } =
                         &mut self.out.items[made].kind
                     else {
@@ -489,7 +489,53 @@ impl<'a> Lowerer<'a> {
     // holds what has been worked out so far, so a discriminant naming a const
     // declared below it does not fold. That is the order a reader writes in
     // anyway.
-    fn numbered(&mut self, variants: &[crate::tir::tir_nodes::TIRVariant]) -> Vec<TTIRVariant> {
+    fn numbered(
+        &mut self,
+        variants: &[crate::tir::tir_nodes::TIRVariant],
+        made: TTIRItemId,
+    ) -> Vec<TTIRVariant> {
+        // How wide the tag was fixed at, where `%repr` fixed one. Every number
+        // below has to fit in it: a value that does not is one the tag cannot
+        // hold, and quietly keeping the low bytes of it would be a variant
+        // that reads back as another.
+        let fixed = match &self.out.items[made].kind {
+            TTIRItemKind::Enum { attrs, .. } => match attrs.repr {
+                Some(crate::tir::tir_nodes::TIRRepr::C) => Some(4usize),
+                Some(crate::tir::tir_nodes::TIRRepr::Tag(bytes)) => Some(bytes),
+                None => None,
+            },
+            _ => None,
+        };
+        // `%repr(C)` says a value is laid out the way the platform's C would
+        // lay it out, and C has no name for an enum that carries something: a
+        // tagged union there is a struct holding an int and a union, which is
+        // not this shape and not one a reader writing `%repr(C)` meant. So it
+        // is refused, and `%repr(4)` is what fixes the tag of one that does
+        // carry -- which is a promise this compiler makes about itself rather
+        // than one about C.
+        let carries = variants
+            .iter()
+            .any(|v| !matches!(v.payload, crate::tir::tir_nodes::TIRPayload::None
+                                        | crate::tir::tir_nodes::TIRPayload::Discriminant(_)));
+        let c = matches!(
+            &self.out.items[made].kind,
+            TTIRItemKind::Enum { attrs, .. }
+                if attrs.repr == Some(crate::tir::tir_nodes::TIRRepr::C)
+        );
+        if c && carries {
+            self.errors.push(
+                Diagnostic::error(
+                    "`%repr(C)` is written on an enum that carries nothing".to_string(),
+                    self.here,
+                )
+                .with_label("a variant of this one carries something")
+                .with_note(
+                    "C has no name for an enum that carries: what it writes for one is a \
+                     struct holding an int and a union, which is not this shape",
+                )
+                .with_help("`%repr(4)` fixes the tag of one that carries"),
+            );
+        }
         let mut out = Vec::with_capacity(variants.len());
         let mut next = 0i64;
         for v in variants {
@@ -535,6 +581,29 @@ impl<'a> Lowerer<'a> {
                          names nothing can tell apart",
                     ),
                 );
+            }
+            // Held to the width, where one was written. Signed, the tag
+            // being a signed integer whatever the numbers are (§8).
+            //
+            // Eight bytes is every number there is, and asking the question
+            // of it would be asking for `-(1 << 63)`, which is one more than
+            // an `i64` holds.
+            if let Some(bytes) = fixed.filter(|&held| held < 8) {
+                let bits = bytes * 8;
+                let (low, high) = (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1);
+                if value < low || value > high {
+                    self.errors.push(
+                        Diagnostic::error(
+                            format!("{} does not fit in a tag of {} bytes", value, bytes),
+                            self.here,
+                        )
+                        .with_label(format!("`{}` is given this number", v.name))
+                        .with_note(format!(
+                            "a tag of {} bytes holds {} to {}, and `%repr` is what fixed it",
+                            bytes, low, high
+                        )),
+                    );
+                }
             }
             next = value.saturating_add(1);
             out.push(TTIRVariant {

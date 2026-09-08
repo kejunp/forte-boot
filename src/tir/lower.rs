@@ -24,7 +24,7 @@ use super::tir_nodes::*;
 // The six the compiler knows. A name outside this set is an error where it was
 // written -- see `docs/prose.txt` section 1, which is where the set is closed.
 const ATTRS: &[&str] =
-    &["symbol", "must_use", "inline", "noinline", "deprecated", "test", "derive"];
+    &["symbol", "must_use", "inline", "noinline", "deprecated", "test", "derive", "repr"];
 
 // What a `gc` binding was found to hold. Three answers and not two because
 // this pass has no types: only what the syntax settles on its own is decided
@@ -185,7 +185,9 @@ impl<'a> Lowerer<'a> {
             // like. The rest say something only a function can be.
             let (goes, wants) = match name.as_str() {
                 "deprecated" => (true, ""),
-                "derive" => (matches!(target, Target::Struct | Target::Enum), "a type"),
+                "derive" | "repr" => {
+                    (matches!(target, Target::Struct | Target::Enum), "a type")
+                }
                 _ => (matches!(target, Target::Fn), "a function"),
             };
             if !goes {
@@ -213,6 +215,11 @@ impl<'a> Lowerer<'a> {
                 // names rather than the string or nothing every other
                 // attribute here takes.
                 "derive" => {}
+                "repr" => {
+                    if let Some(held) = self.one_repr(&args, id, target) {
+                        out.common.repr = Some(held);
+                    }
+                }
                 "must_use" | "inline" | "noinline" | "test" => {
                     if !args.is_empty() {
                         self.errors.push(
@@ -1149,6 +1156,72 @@ fn describe_arg(kind: &ASTNodeKind) -> &'static str {
         _ => "not a literal",
     }
 }
+
+impl<'a> Lowerer<'a> {
+    // The one word a `%repr` takes.
+    //
+    // A closed list, as every attribute's arguments are: what a layout may be
+    // is what this compiler knows how to lay out, and a name it does not know
+    // is an error where it is written rather than a shape somebody supplies.
+    fn one_repr(
+        &mut self,
+        args: &[ASTNodeId],
+        at: ASTNodeId,
+        target: Target,
+    ) -> Option<TIRRepr> {
+        let held = match args {
+            [one] => *one,
+            _ => {
+                self.errors.push(
+                    Diagnostic::error("`%repr` takes one word".to_string(), self.span(at))
+                        .with_label("this is what it was given")
+                        .with_help(REPRS_HELP),
+                );
+                return None;
+            }
+        };
+        // Either a word -- an `<attr_item>` is an `Attr` of its own, `%repr(C)`
+        // and `%derive(Show)` being one shape -- or a number, which is a
+        // `<literal>`.
+        match &self.parser.get_node(held).kind {
+            ASTNodeKind::Attr { name, args } if args.is_empty() && name == "C" => {
+                Some(TIRRepr::C)
+            }
+            ASTNodeKind::Literal(ASTLit::Int(n, None)) if matches!(n, 1 | 2 | 4 | 8) => {
+                // A width fixes a *tag*, and a struct has none. `%repr(C)` is
+                // the one that says something about a struct.
+                if !matches!(target, Target::Enum) {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "a width fixes an enum's tag".to_string(),
+                            self.span(held),
+                        )
+                        .with_label(format!("this is {}", target.what()))
+                        .with_help("`%repr(C)` is the one that goes on a struct"),
+                    );
+                    return None;
+                }
+                Some(TIRRepr::Tag(*n as usize))
+            }
+            _ => {
+                self.errors.push(
+                    Diagnostic::error(
+                        "`%repr` takes `C` or a width".to_string(),
+                        self.span(held),
+                    )
+                    .with_label("this is neither")
+                    .with_help(REPRS_HELP),
+                );
+                None
+            }
+        }
+    }
+}
+
+// Said wherever a `%repr` is turned down, so the list is written once.
+const REPRS_HELP: &str = "`%repr(C)` is the platform's layout, and `%repr(1)`, \
+                          `%repr(2)`, `%repr(4)` or `%repr(8)` fixes how wide an \
+                          enum's tag is";
 
 // The known attribute a misspelling is nearest to, where it is near enough to
 // be worth naming. The set is closed, which is what makes the guess worth

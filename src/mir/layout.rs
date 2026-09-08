@@ -259,11 +259,20 @@ impl<'a> Layouts<'a> {
                 let tys: Vec<TyId> = fields.iter().map(|f| f.ty).collect();
                 self.fields(&tys, &handed)
             }
-            TTIRItemKind::Enum { variants, .. } => {
+            TTIRItemKind::Enum { variants, attrs, .. } => {
                 let payloads: Vec<Vec<TyId>> =
                     variants.iter().map(|v| payload_types(&v.payload)).collect();
                 let values: Vec<i64> = variants.iter().map(|v| v.value).collect();
-                self.tagged(&payloads, &values, &handed)
+                // What `%repr` fixed, where one did. `C` is a C `int`, which
+                // is four bytes on every machine here; a number is that many
+                // bytes; and nothing written is the narrowest that holds what
+                // the variants were numbered.
+                let fixed = match attrs.repr {
+                    Some(crate::tir::tir_nodes::TIRRepr::C) => Some(4),
+                    Some(crate::tir::tir_nodes::TIRRepr::Tag(bytes)) => Some(bytes),
+                    None => None,
+                };
+                self.tagged(&payloads, &values, fixed, &handed)
             }
             // A trait as a type is what it points at and what answers for it.
             TTIRItemKind::Trait { .. } => Some(self.fat()),
@@ -301,13 +310,17 @@ impl<'a> Layouts<'a> {
         &mut self,
         payloads: &[Vec<TyId>],
         values: &[i64],
+        // What `%repr` fixed the tag at, where one did. The other side of a
+        // `%symbol` boundary cannot guess a width this file chose, so a type
+        // that crosses says which it is and the compiler owes it.
+        fixed: Option<usize>,
         env: &[TyId],
     ) -> Option<Layout> {
         if payloads.is_empty() {
             // No variants, so no value of it exists. Nothing to hold.
             return Some(Layout { bytes: 0, align: 1, shape: Shape::Empty });
         }
-        let tag = tag_bytes(values);
+        let tag = fixed.unwrap_or_else(|| tag_bytes(values));
 
         // Every variant laid out on its own first, so that the widest
         // alignment among all of them is known before any offset is fixed.

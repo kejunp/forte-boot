@@ -288,3 +288,35 @@ fn a_discriminant_that_is_not_a_whole_number_is_refused() {
                        fn main(): i64 { 0 }\n");
     assert!(out.contains("not given a whole number"), "{}", out);
 }
+
+// ---- What a `%repr` is held to ---------------------------------------------------
+
+// A width fixes the tag, so a number that does not fit in it is refused --
+// keeping the low bytes of one quietly would be a variant that reads back as
+// another.
+#[test]
+fn a_number_is_held_to_the_width_a_repr_fixed() {
+    let out = refused("%repr(1)\nenum E {\n    A = 0,\n    B = 200,\n}\n\
+                       fn main(): i64 { 0 }\n");
+    assert!(out.contains("200 does not fit in a tag of 1 bytes"), "{}", out);
+    // Signed, the tag being a signed integer whatever the numbers are.
+    clean("%repr(1)\nenum E {\n    A = 0,\n    B = 100,\n}\nfn main(): i64 { 0 }\n");
+    // `C` is a C `int`, which is four bytes on every machine here.
+    let out = refused("%repr(C)\nenum E {\n    A = 0,\n    B = 3000000000,\n}\n\
+                       fn main(): i64 { 0 }\n");
+    assert!(out.contains("does not fit in a tag of 4 bytes"), "{}", out);
+    // And eight bytes is every number there is.
+    clean("%repr(8)\nenum E {\n    A = 0,\n    B = 3000000000,\n}\nfn main(): i64 { 0 }\n");
+}
+
+// `%repr(C)` says a value is laid out the way the platform's C lays one out,
+// and C has no name for an enum that carries something.
+#[test]
+fn a_c_layout_is_refused_on_an_enum_that_carries() {
+    let out = refused("%repr(C)\nenum E {\n    A,\n    B(i32),\n}\nfn main(): i64 { 0 }\n");
+    assert!(out.contains("carries nothing"), "{}", out);
+    assert!(out.contains("`%repr(4)`"), "{}", out);
+    // Which is what to write instead, and it is a promise about this compiler
+    // rather than one about C.
+    clean("%repr(4)\nenum E {\n    A,\n    B(i32),\n}\nfn main(): i64 { 0 }\n");
+}

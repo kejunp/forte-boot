@@ -1994,14 +1994,21 @@ answer is not obvious from the rules alone.
     which is before anything reads a name: a macro is spent on the AST, and
     what "sema" is given has none left in it.
   - <attribute> is "%name" with its arguments, one per "%", the set of them
-    is closed, and an unknown one is an error (section 1). Settled. The seven
-    are %symbol, %must_use, %inline, %noinline, %deprecated, %test and
-    %derive; "%repr" and "%cfg" wait on features that do not exist.
+    is closed, and an unknown one is an error (section 1). Settled. The eight
+    are %symbol, %must_use, %inline, %noinline, %deprecated, %test, %derive
+    and %repr; "%cfg" waits on a feature that does not exist.
 
     Which declarations each may sit on is answered now, and was not.
     "%deprecated" goes on any declaration -- a name that should not be used is
-    a name whatever declared it. "%derive" goes on a type, being about what
-    one looks like. The other five say something only a function can be.
+    a name whatever declared it. "%derive" and "%repr" go on a type, being
+    about what one looks like and how one is laid out. The other five say
+    something only a function can be.
+
+    And an attribute written on a type reaches the tree now, which it did not:
+    the pass that declares one put an empty set of attributes there and nothing
+    filled them in afterwards, so a "%deprecated" on a struct was read and then
+    dropped. It was found by "%repr" wanting one, and it had been true of every
+    attribute a type can carry.
 
     "%derive" is spent where a macro is spent, on the AST and before anything
     reads a name, and what it stands for is *source*: the impl is generated as
@@ -2411,6 +2418,34 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - "%repr" is written, and the layout story it was waiting on is this: without
+    one the compiler chooses, and with one it owes.
+
+    What it chooses for a struct is already C's -- the fields in declaration
+    order, each at the next offset its own alignment allows, the whole rounded
+    up to the widest -- so "%repr(C)" on a struct changes nothing today and
+    *promises* it. That is not nothing: it is what makes a later pass that
+    packs fields safe to write, because the types that may not move say so.
+
+    What it chooses for an enum's tag is the narrowest signed integer the
+    variants' numbers fit in, which is neither C's nor anything the other side
+    of a "%symbol" boundary could guess. So the tag is the half with an effect
+    today: "%repr(C)" makes it a C "int" and a width makes it that many bytes,
+    and every discriminant is held to what the tag can hold -- keeping the low
+    bytes of one quietly would be a variant that reads back as another.
+
+    "%repr(C)" on an enum that *carries* something is refused. C has no name
+    for one: what it writes for a tagged union is a struct holding an int and a
+    union, which is not this shape, and a reader asking for C's layout of a
+    thing C cannot spell has been told something untrue. A width is what fixes
+    the tag of one that carries, and it is a promise this compiler makes about
+    itself rather than one about C.
+
+    What is not done. Nothing here links against a C header to check any of
+    it: the promise is written down and kept by the layout, and whether the
+    platform agrees is a thing the tests do not ask. "%repr(packed)" and a
+    transparent one-field struct are the two other spellings worth having, and
+    neither is written.
   - A conversion follows a hole before it asks anything, which it did not.
     Whether a value may become a view, a trait object, a collected value or a
     read of one is answered by reading the arena entry the type is — and what

@@ -672,24 +672,28 @@ impl<'a> Lowerer<'a> {
         for &id in items {
             let (name, kind) = match &self.tir.items[id].kind {
                 TIRItemKind::Fn(f) => (f.name.clone(), self.blank_fn(f)),
-                TIRItemKind::Struct { vis, name, .. } => (
+                // The attributes the declaration wrote come with it. They did
+                // not: every one of these put a `TIRAttrs::default()` here and
+                // nothing filled it in afterwards, so what a `%deprecated` or
+                // a `%repr` on a type said reached the TTIR as nothing at all.
+                TIRItemKind::Struct { vis, attrs, name, .. } => (
                     name.clone(),
                     TTIRItemKind::Struct {
-                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        vis: *vis, attrs: attrs.clone(), name: name.clone(),
                         generics: Vec::new(), fields: Vec::new(),
                     },
                 ),
-                TIRItemKind::Enum { vis, name, .. } => (
+                TIRItemKind::Enum { vis, attrs, name, .. } => (
                     name.clone(),
                     TTIRItemKind::Enum {
-                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        vis: *vis, attrs: attrs.clone(), name: name.clone(),
                         generics: Vec::new(), variants: Vec::new(),
                     },
                 ),
-                TIRItemKind::Trait { vis, name, .. } => (
+                TIRItemKind::Trait { vis, attrs, name, .. } => (
                     name.clone(),
                     TTIRItemKind::Trait {
-                        vis: *vis, attrs: TIRAttrs::default(), name: name.clone(),
+                        vis: *vis, attrs: attrs.clone(), name: name.clone(),
                         generics: Vec::new(), wheres: Vec::new(), members: Vec::new(),
                     },
                 ),

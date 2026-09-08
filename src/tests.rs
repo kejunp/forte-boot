@@ -1970,6 +1970,81 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- What `%repr` fixes --------------------------------------------------------------
+
+// `%repr` is the attribute the list said was waiting on "a layout story", and
+// the story is this: without one the compiler chooses, and with one it owes.
+//
+// What it chooses today for a struct is C's — the fields in declaration order,
+// each at the next offset its own alignment allows — so `%repr(C)` on a struct
+// changes nothing and *promises* it, which is what makes a later packing pass
+// safe to write. What it chooses for an enum's tag is the narrowest signed
+// integer the variants' numbers fit in, which is not C's and not anything the
+// other side of a `%symbol` boundary could guess.
+//
+// So the tag is the half with an effect, and this is where it is asserted:
+// running, through the stride of an array of them, which is the one way a
+// program can see its own layout.
+#[test]
+fn a_repr_fixes_the_layout_the_compiler_would_have_chosen() {
+    let dir = std::env::temp_dir().join(format!("fortec-repr-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("repr.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import mem::stride;\n\
+         \n\
+         // Two variants numbered 0 and 1, which is a byte if nothing says\n\
+         // otherwise.\n\
+         enum Narrow { A, B }\n\
+         %repr(C)\n\
+         enum Cish { A, B }\n\
+         %repr(2)\n\
+         enum Two { A, B }\n\
+         %repr(8)\n\
+         enum Wide { A, B }\n\
+         \n\
+         %test\n\
+         fn a_tag_is_as_wide_as_the_repr_said() {\n\
+         \x20   let n: Narrow[2] = [Narrow::A, Narrow::B]\n\
+         \x20   let c: Cish[2] = [Cish::A, Cish::B]\n\
+         \x20   let t: Two[2] = [Two::A, Two::B]\n\
+         \x20   let w: Wide[2] = [Wide::A, Wide::B]\n\
+         \x20   unsafe {\n\
+         \x20       // The stride of an array of them is the whole value's\n\
+         \x20       // width, which for one that carries nothing is the tag.\n\
+         \x20       assert_eq(&stride(addr n[0]), &1, \"nothing written\")\n\
+         \x20       assert_eq(&stride(addr c[0]), &4, \"`C` is a C `int`\")\n\
+         \x20       assert_eq(&stride(addr t[0]), &2, \"two bytes\")\n\
+         \x20       assert_eq(&stride(addr w[0]), &8, \"and eight\")\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_variants_still_read_back_as_themselves() {\n\
+         \x20   // A wider tag is the same numbers in more room, so what a\n\
+         \x20   // `match` reads is what it always read.\n\
+         \x20   let held = Wide::B\n\
+         \x20   let n = match held {\n\
+         \x20       Wide::A => 0,\n\
+         \x20       Wide::B => 1,\n\
+         \x20   }\n\
+         \x20   assert_eq(&n, &1, \"the second, in eight bytes\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "repr");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a `%repr` was meant to fix the layout:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- The owned trait object ----------------------------------------------------------
 
 // "A trait object lives as long as what it was made from, so a container of
