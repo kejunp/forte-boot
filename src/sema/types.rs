@@ -94,8 +94,27 @@ impl Types {
         id
     }
 
+    // The type behind a handle, with a filled hole followed.
+    //
+    // Followed, because a caller asking what a type *is* means the type and
+    // not the hole that stood in for it. A `Ty::Var` some later unification
+    // filled still reads as one in the arena, and every pass that asked the
+    // arena as it stands got the answer from before the fill.
+    //
+    // Four bugs came of that and each was a shape that did not look like
+    // itself: a `&dyn Shape` out of a generic that was not a reference, so
+    // `push(*v, &q)` on a `Vec<&dyn Shape>` was refused; the same receiver,
+    // which had its address taken a second time and stopped being a trait
+    // object; a fn value out of a `Vec<fn(i64): i64>` that was "not a fn";
+    // and a callee whose type parameters were read before they were known.
+    // Each was patched where it was found. This is the rule instead.
+    //
+    // A hole nothing has filled still reads as a `Ty::Var`, which is what a
+    // caller asking whether something is settled wants -- and what `unify`
+    // and the walks beside it want is the hole itself, so they read the arena
+    // directly and none of them comes through here.
     pub fn get(&self, id: TyId) -> &Ty {
-        &self.arena[id]
+        &self.arena[self.shallow(id)]
     }
 
     pub fn len(&self) -> usize {

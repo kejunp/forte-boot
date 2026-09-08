@@ -737,7 +737,12 @@ impl<'a> Lowerer<'a> {
             true => self.written_args.get(&callee).cloned().unwrap_or_default(),
             false => types,
         };
-        let Ty::Fn { params, ret, .. } = self.types.get(ct).clone() else {
+        // Through the hole: what a generic gave back is a `Ty::Var` until
+        // something fills it, so `at(&v, 0)(4)` on a `Vec<fn(i64): i64>` --
+        // where the vector had already filled it with a fn type -- did not
+        // look like a fn and was refused as "`fn(i64): i64` is not a fn",
+        // which is the message spelling what this did not read.
+        let Ty::Fn { params, ret, .. } = self.types.get(self.types.shallow(ct)).clone() else {
             if !matches!(self.types.get(ct), Ty::Error) {
                 let ct = self.spell(ct);
                 self.errors.push(

@@ -289,3 +289,41 @@ fn a_type_is_spelled_the_way_it_was_written() {
         "Map<i32, str>"
     );
 }
+
+// ---- A filled hole reads as what filled it ------------------------------------
+
+// What `get` hands back is the type and not the hole that stood in for it.
+//
+// A `Ty::Var` some later unification filled still reads as one in the arena,
+// and a pass that asks the arena as it stands gets the answer from before the
+// fill. Four bugs came of that and each was a shape that did not look like
+// itself: a `&dyn Shape` out of a generic that was not a reference, a fn value
+// out of a `Vec<fn(i64): i64>` that was "not a fn", and two more beside them.
+#[test]
+fn a_filled_hole_reads_as_what_filled_it() {
+    let mut t = Types::new();
+    let held = t.prim(TIRPrim::I64);
+    let hole = t.fresh();
+    // Before anything fills it, a hole is a hole -- which is what a caller
+    // asking whether something is settled wants.
+    assert!(matches!(t.get(hole), Ty::Var(_)));
+    assert!(t.unify(hole, held).is_ok());
+    // And after, it is what filled it, however it is asked.
+    assert!(matches!(t.get(hole), Ty::Prim(TIRPrim::I64)));
+
+    // Through as many as stand in a row: a hole filled with a hole filled
+    // with a type is that type.
+    let (a, b) = (t.fresh(), t.fresh());
+    assert!(t.unify(a, b).is_ok());
+    assert!(t.unify(b, held).is_ok());
+    assert!(matches!(t.get(a), Ty::Prim(TIRPrim::I64)));
+
+    // And inside a shape, which is where it was wanted: a `&T` whose `T` was
+    // filled reads as a reference to what filled it.
+    let hole = t.fresh();
+    let held = t.prim(TIRPrim::Bool);
+    let made = t.intern(Ty::Ref { op: TIRRefOp::Imm, life: 0, inner: hole });
+    assert!(t.unify(hole, held).is_ok());
+    let Ty::Ref { inner, .. } = t.get(made).clone() else { panic!("a reference") };
+    assert!(matches!(t.get(inner), Ty::Prim(TIRPrim::Bool)));
+}

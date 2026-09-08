@@ -2625,25 +2625,32 @@ answer is not obvious from the rules alone.
     platform agrees is a thing the tests do not ask. "%repr(packed)" and a
     transparent one-field struct are the two other spellings worth having, and
     neither is written.
-  - A conversion follows a hole before it asks anything, which it did not.
-    Whether a value may become a view, a trait object, a collected value or a
-    read of one is answered by reading the arena entry the type is — and what
-    a generic gives back is a "Ty::Var" until something fills it, so a "T" the
-    checker had already settled did not look like the type it was settled as.
+  - What the arena hands back is a type and not the hole that stood in for it.
+    A "Ty::Var" some later unification filled still reads as one where it is
+    written down, and every pass that asked the arena as it stands got the
+    answer from before the fill.
 
-    Two things came of that, and they are the same omission at two removes.
-    "push(*v, &q)" on a "Vec<&dyn Shape>" was refused, the parameter being a
-    hole the vector had already filled: "argument 2 is `&Sq` and it takes
-    `&dyn Shape`". And a method call on what a generic gave back had its
+    Four bugs came of that, and each was a shape that did not look like
+    itself. "push(*v, &q)" on a "Vec<&dyn Shape>" was refused, the parameter
+    being a hole the vector had already filled: "argument 2 is `&Sq` and it
+    takes `&dyn Shape`". A method call on what a generic gave back had its
     receiver's address taken a second time — "a place is reached through any
-    number of `&`" is read off the type, a hole is not a reference, so
+    number of `&`" is read off the type, and a hole is not a reference — so
     "at(&v, 0).area()" made a "&&dyn Shape", which is not a trait object: the
     call went to the trait's own member by *name*, and that member has no
-    body, so the program did not link.
+    body, so the program did not link. Between them a row of trait objects —
+    the ordinary way to hold several types at once, and the thing the language
+    grew "dyn" for — did not work at all, in either the borrowed form or the
+    owned one. A fn value out of a "Vec<fn(i64): i64>" was refused as
+    "`fn(i64): i64` is not a fn", which is the message spelling what the check
+    beside it had not read. And a callee's type was read before it was known.
 
-    Which means a row of trait objects — the ordinary way to hold several
-    types at once, and the thing the language grew "dyn" for — did not work at
-    all, in either the borrowed form or the owned one.
+    Each was found on its own and patched where it was found, which is three
+    patches and no rule. The rule is that asking what a type *is* follows the
+    hole, and it is written in the one place a type is asked about. A hole
+    nothing has filled still reads as a hole, which is what a caller asking
+    whether something is settled wants; "unify" and the walks beside it read
+    the arena directly, having to see the hole in order to fill it.
   - "&(deref p)" is "p", and it is a value of its own all the same.
 
     "sir::lower" gives an address the type the source wrote over it rather than
