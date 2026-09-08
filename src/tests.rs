@@ -118,6 +118,7 @@ fn with(
         Some(at.clone()),
         Some(runtime),
         tests,
+        &[],
     );
     assert!(built, "{} was meant to compile", root.display());
 
@@ -1968,6 +1969,77 @@ fn one_println_prints_whatever_it_was_handed() {
     // each piece.
     assert!(said.contains("[    Point { x: 3, y: 4 }]\n"), "{}", said);
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
+}
+
+// ---- What a `%cfg` keeps -------------------------------------------------------------
+
+// `%cfg` was the last name the attribute list said was waiting, and what it
+// waited on was "a configuration to ask about". There was one: which machine
+// the compiler is building for, and whether it is a `--test` build, are two
+// things the driver knew before this existed.
+//
+// A declaration the configuration turns down is *not there* -- its name does
+// not resolve and nothing below this is told a choice was made -- so what only
+// running can say is which body was kept: three fns of one name, one per
+// machine, and the answer says which was compiled.
+#[test]
+fn a_cfg_keeps_the_declaration_the_build_asked_for() {
+    let dir = std::env::temp_dir().join(format!("fortec-cfg-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("cfg.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         // One name, three bodies, and the machine says which.\n\
+         %cfg(x86_64)\n\
+         fn machine(): i64 { 1 }\n\
+         %cfg(aarch64)\n\
+         fn machine(): i64 { 2 }\n\
+         %cfg(riscv64)\n\
+         fn machine(): i64 { 3 }\n\
+         \n\
+         // A helper that lives beside what it helps rather than in a file of\n\
+         // its own, which is what `test` is for.\n\
+         %cfg(test)\n\
+         fn only_under_test(): i64 { 40 }\n\
+         \n\
+         %cfg(not(test))\n\
+         fn only_otherwise(): i64 { 50 }\n\
+         \n\
+         %cfg(all(x86_64, test))\n\
+         fn both(): i64 { 600 }\n\
+         \n\
+         %cfg(any(nothing_said, test))\n\
+         fn either(): i64 { 7000 }\n\
+         \n\
+         %cfg(nothing_said)\n\
+         fn gone(): i64 { 90000 }\n\
+         \n\
+         %test\n\
+         fn the_machines_own_body_is_the_one_compiled() {\n\
+         \x20   // Whichever it is, there is exactly one and it answers.\n\
+         \x20   let held = machine()\n\
+         \x20   assert_eq(&(held > 0 && held < 4), &true, \"one of the three\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_test_build_keeps_what_it_asked_for() {\n\
+         \x20   assert_eq(&only_under_test(), &40, \"`test` holds here\")\n\
+         \x20   assert_eq(&both(), &600, \"and so does `all` of it\")\n\
+         \x20   assert_eq(&either(), &7000, \"and `any`\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "cfg");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a `%cfg` was meant to keep what the build asked for:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
 }
 
 // ---- What `%repr` fixes --------------------------------------------------------------

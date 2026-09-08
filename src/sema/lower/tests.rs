@@ -40,7 +40,7 @@ fn typed(source: &str) -> (TTIRProgram, Vec<String>) {
     let root = p.parse();
     assert!(p.errors().is_empty(), "{}\n{:#?}", source, p.errors());
     let root = {
-        let mut e = Expander::new(&mut p);
+        let mut e = Expander::new(&mut p, crate::expand::Config::none());
         let out = e.expand(&root);
         assert!(e.errors().is_empty(), "{}\n{:#?}", source, e.errors());
         out
@@ -79,7 +79,7 @@ fn suite(files: &[(&str, &str)], bound: &[Vec<Bound>]) -> (TTIRProgram, Vec<Stri
         let root = p.parse();
         assert!(p.errors().is_empty(), "{}\n{:#?}", source, p.errors());
         let root = {
-            let mut e = Expander::new(&mut p);
+            let mut e = Expander::new(&mut p, crate::expand::Config::none());
             let out = e.expand(&root);
             assert!(e.errors().is_empty(), "{}\n{:#?}", source, e.errors());
             out

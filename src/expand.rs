@@ -25,7 +25,10 @@ use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::parse::ast_nodes::{ASTNode, ASTNodeId, ASTNodeKind};
 use crate::parse::parser::Parser;
 
+mod cfg;
 mod derive;
+
+pub use cfg::Config;
 
 // The fragments a parameter may ask for. Closed, as the attributes are: the
 // compiler knows every one there is, and one it does not know is an error where
@@ -55,6 +58,10 @@ pub struct Expander<'a> {
     macros: HashMap<String, MacroDef>,
     errors: Diagnostics,
     depth:  usize,
+    // What the build is, for the `%cfg`s to be asked against. Empty for every
+    // caller that is not the driver: a `%cfg` in a test of another pass is a
+    // `%cfg` of nothing.
+    config: Config,
 }
 
 // Every handle a node holds, lent for writing so one walk can both read the
@@ -304,8 +311,14 @@ fn describe(kind: &ASTNodeKind) -> &'static str {
 }
 
 impl<'a> Expander<'a> {
-    pub fn new(parser: &'a mut Parser) -> Expander<'a> {
-        Expander { parser, macros: HashMap::new(), errors: Diagnostics::new(), depth: 0 }
+    pub fn new(parser: &'a mut Parser, config: Config) -> Expander<'a> {
+        Expander {
+            parser,
+            macros: HashMap::new(),
+            errors: Diagnostics::new(),
+            depth: 0,
+            config,
+        }
     }
 
     // Everything expansion turned down, in order. Spans and not text, as every
@@ -331,7 +344,11 @@ impl<'a> Expander<'a> {
     pub fn expand(&mut self, root: &ASTNode) -> ASTNode {
         self.collect(root);
         let mut kind = root.kind.clone();
-        // The derives first, so that what they stand for is in the tree before
+        // What the configuration turned down goes first: a declaration that is
+        // not there has no derives to write and no macros to spend, and every
+        // pass below this one is told nothing about the choice.
+        self.configured(&mut kind);
+        // Then the derives, so that what they stand for is in the tree before
         // anything else walks it -- and so that a derived impl is copied along
         // with everything else below, rather than being a subtree nothing
         // visited.
@@ -393,6 +410,42 @@ impl<'a> Expander<'a> {
             }
         }
         out
+    }
+
+    // Everything the configuration turned down, taken out of the list that held
+    // it -- and out of every list under that, a namespace holding items like
+    // any other.
+    //
+    // Taking it out and not marking it: what is not compiled is what is not
+    // there, so nothing below has to carry a flag or know that a choice was
+    // made. A name that was turned down does not resolve, which is the whole
+    // of the design and is what a reader can check. That is the same shape
+    // `strip_decls` below draws for a macro, and it is drawn for the reason.
+    //
+    // Items and not statements. An `<attribute_list>` stands in front of an
+    // `<item>` and a statement takes none, so a `%cfg` inside a block does not
+    // parse -- which is the parser's answer and not this pass's, and is why
+    // there is no arm for one here.
+    fn configured(&mut self, kind: &mut ASTNodeKind) {
+        let held: Vec<ASTNodeId> = match kind {
+            ASTNodeKind::Program(items) | ASTNodeKind::Namespace { items, .. } => items.clone(),
+            _ => return,
+        };
+        let mut kept = Vec::with_capacity(held.len());
+        for at in held {
+            let attrs = attrs_of(self.parser, at);
+            if !cfg::holds(self.parser, &mut self.errors, &self.config, &attrs) {
+                continue;
+            }
+            let mut under = self.parser.get_node(at).kind.clone();
+            self.configured(&mut under);
+            let (line, col) = (self.parser.get_node(at).line, self.parser.get_node(at).col);
+            kept.push(self.parser.push_node(ASTNode::new(under, line, col)));
+        }
+        match kind {
+            ASTNodeKind::Program(items) | ASTNodeKind::Namespace { items, .. } => *items = kept,
+            _ => {}
+        }
     }
 
     // A declaration is dropped from the list that held it, there being nothing
@@ -548,3 +601,24 @@ fn list(words: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+// The attributes written on one declaration, whatever kind it is.
+//
+// Every item kind carries a list and each names it `attrs`, so this is the one
+// place that says so rather than the twelve places that would each have had to.
+fn attrs_of(parser: &Parser, at: ASTNodeId) -> Vec<ASTNodeId> {
+    match &parser.get_node(at).kind {
+        ASTNodeKind::Import { attrs, .. }
+        | ASTNodeKind::Fn { attrs, .. }
+        | ASTNodeKind::Struct { attrs, .. }
+        | ASTNodeKind::Enum { attrs, .. }
+        | ASTNodeKind::Trait { attrs, .. }
+        | ASTNodeKind::Impl { attrs, .. }
+        | ASTNodeKind::Namespace { attrs, .. }
+        | ASTNodeKind::TypeAlias { attrs, .. }
+        | ASTNodeKind::Const { attrs, .. }
+        | ASTNodeKind::Variable { attrs, .. }
+        | ASTNodeKind::MacroDecl { attrs, .. } => attrs.clone(),
+        _ => Vec::new(),
+    }
+}

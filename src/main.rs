@@ -86,7 +86,7 @@ fn dump_parse(path: &str, source: &str) {
     // Macros are spent before anything else looks at the tree. A parse that
     // failed does not reach here: what expansion would make of a tree the
     // parser recovered through says more about the recovery than the source.
-    let mut expander = Expander::new(&mut parser);
+    let mut expander = Expander::new(&mut parser, expand::Config::none());
     let root = expander.expand(&root);
     if !expander.errors().is_empty() {
         println!("{}\n", expander.errors().render(&Source::new(path, &written)));
@@ -135,8 +135,13 @@ fn compile(
     out: Option<PathBuf>,
     runtime: Option<PathBuf>,
     tests: bool,
+    // What `--cfg` was given, which is the open half of a build's
+    // configuration: the machine and whether this is a test build are two
+    // things the compiler already knew, and this is what a suite adds.
+    named: &[String],
 ) -> bool {
-    let mut resolver = ImportResolver::new(search_paths);
+    let config = expand::Config::of(target.name, tests, named);
+    let mut resolver = ImportResolver::new(search_paths, config);
     // The one failure with no source to quote: nothing imported the root file,
     // so there is no `import` to point a caret at.
     let root = match resolver.resolve(root) {
@@ -668,6 +673,7 @@ fn usage() -> String {
          [--emit mir|asm]\n\
          \x20              [--test] [--std <dir>] [--no-std] [--runtime <archive>] \
          [-I <dir>]...\n\
+         \x20              [--cfg <name>]...\n\
          \n\
          \x20 -o with no --emit assembles and links an executable; with one \
          it writes\n\
@@ -685,6 +691,13 @@ fn usage() -> String {
          that a\n\
          \x20 module the suite writes wins over one of the same name here.\n\
          \n\
+         \x20 --cfg gives a name a `%cfg` may ask about. The machine and, in a \
+         test\n\
+         \x20 build, `test` are there already; this is what a suite adds. A \
+         declaration\n\
+         \x20 whose `%cfg` does not hold is not compiled and its name does not \
+         resolve.\n\
+         \n\
          \x20 targets: {}",
         sir::target::NAMES.join(", ")
     )
@@ -701,6 +714,7 @@ fn usage() -> String {
 fn run(args: &[String]) -> bool {
     let mut root: Option<PathBuf> = None;
     let mut search_paths = Vec::new();
+    let mut named: Vec<String> = Vec::new();
     // What is built when nothing says otherwise: everything that only removes,
     // and everything that moves code, but not the widening.
     let mut level = sir::opt::Level::default();
@@ -743,6 +757,16 @@ fn run(args: &[String]) -> bool {
                 Some(dir) => search_paths.push(PathBuf::from(dir)),
                 None => {
                     eprintln!("-I wants a directory after it");
+                    return false;
+                }
+            },
+            // A name a `%cfg` may ask about, however many times it is given.
+            // The machine and `test` are already there; this is what a suite
+            // adds that nothing here could have anticipated.
+            "--cfg" => match rest.next() {
+                Some(name) => named.push(name.to_string()),
+                None => {
+                    eprintln!("--cfg wants a name after it");
                     return false;
                 }
             },
@@ -855,7 +879,7 @@ fn run(args: &[String]) -> bool {
     }
     match root {
         Some(root) => {
-            compile(&root, search_paths, level, target, emit, out, runtime, tests)
+            compile(&root, search_paths, level, target, emit, out, runtime, tests, &named)
         }
         None => {
             eprintln!("{}", usage());

@@ -6,12 +6,17 @@ use crate::prep::preprocess;
 // Parses, expands, and gives back the arena and the expanded root. The parse
 // must succeed: what expansion does with a broken tree is not what is tested.
 fn expanded(source: &str) -> (Parser, ASTNode, Diagnostics) {
+    with_config(source, Config::none())
+}
+
+// The same, with a build to ask `%cfg` about.
+fn with_config(source: &str, config: Config) -> (Parser, ASTNode, Diagnostics) {
     let prepped = preprocess(source);
     let mut p = Parser::new(Lexer::new(&prepped));
     let root = p.parse();
     assert!(p.errors().is_empty(), "{}\n{:#?}", source, p.errors());
     let (root, errors) = {
-        let mut e = Expander::new(&mut p);
+        let mut e = Expander::new(&mut p, config);
         let out = e.expand(&root);
         (out, e.errors().clone())
     };
@@ -308,4 +313,98 @@ fn a_derive_inside_a_namespace_is_written_too() {
     // At the file's top level, where every impl in a suite lives: an impl is
     // found by the type it is written for and not by where it stands.
     assert_eq!(impls_in(&p, &root).len(), 1);
+}
+
+// ---- What the configuration keeps -----------------------------------------------
+
+// The names a declaration is left in the tree by, and the ones it is taken out
+// by. What is not compiled is what is *not there*: nothing below this pass is
+// told a choice was made, so a name that was turned down does not resolve, and
+// that is what a reader can check.
+fn kept(source: &str, config: Config) -> Vec<String> {
+    let (p, root, errors) = with_config(source, config);
+    assert!(errors.is_empty(), "{}\n{:#?}", source, errors);
+    items(&root)
+        .iter()
+        .filter_map(|&i| match &p.get_node(i).kind {
+            ASTNodeKind::Fn { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+const THREE: &str = "%cfg(here)\nfn a() {}\n%cfg(there)\nfn b() {}\nfn c() {}\n";
+
+#[test]
+fn a_declaration_stands_where_its_name_is_set() {
+    assert_eq!(kept(THREE, Config::none()), vec!["c"]);
+    assert_eq!(kept(THREE, Config::of("here", false, &[])), vec!["a", "c"]);
+    assert_eq!(
+        kept(THREE, Config::of("x", false, &["here".into(), "there".into()])),
+        vec!["a", "b", "c"]
+    );
+}
+
+// The machine is spelled as `--target` spells it with a `_` where that has a
+// `-`, a `-` not being a name.
+#[test]
+fn the_machine_is_a_name_a_cfg_may_ask_about() {
+    let held = "%cfg(x86_64)\nfn a() {}\n%cfg(riscv64)\nfn b() {}\n";
+    assert_eq!(kept(held, Config::of("x86-64", false, &[])), vec!["a"]);
+    assert_eq!(kept(held, Config::of("riscv64", false, &[])), vec!["b"]);
+}
+
+// And `test` in a test build, which is what lets a helper live beside what it
+// helps rather than in a file of its own.
+#[test]
+fn a_test_build_is_a_name_a_cfg_may_ask_about() {
+    let held = "%cfg(test)\nfn a() {}\n%cfg(not(test))\nfn b() {}\n";
+    assert_eq!(kept(held, Config::of("x", true, &[])), vec!["a"]);
+    assert_eq!(kept(held, Config::of("x", false, &[])), vec!["b"]);
+}
+
+// `not`, `any` and `all`, which nest. A bare name alone is half a feature:
+// what a reader wants nine times in ten is "everywhere except".
+#[test]
+fn the_three_that_join_conditions_nest() {
+    let held = "%cfg(all(one, not(two)))\nfn a() {}\n\
+                %cfg(any(two, three))\nfn b() {}\n\
+                %cfg(not(any(one, two)))\nfn c() {}\n";
+    let one = Config::of("x", false, &["one".into()]);
+    assert_eq!(kept(held, one), vec!["a"]);
+    let both = Config::of("x", false, &["one".into(), "two".into()]);
+    assert_eq!(kept(held, both), vec!["b"]);
+    let neither = Config::of("x", false, &[]);
+    assert_eq!(kept(held, neither), vec!["c"]);
+}
+
+// Two written on one declaration are two conditions, the way two inside one
+// `all` would be. A reader who wanted either wrote `any`.
+#[test]
+fn two_on_one_declaration_are_both_asked() {
+    let held = "%cfg(one)\n%cfg(two)\nfn a() {}\n";
+    assert!(kept(held, Config::of("x", false, &["one".into()])).is_empty());
+    assert_eq!(
+        kept(held, Config::of("x", false, &["one".into(), "two".into()])),
+        vec!["a"]
+    );
+}
+
+// A shape that is not a condition is refused, and read as false: a mistake
+// takes the declaration out rather than leaving it in under a rule nobody
+// meant.
+#[test]
+fn something_that_is_not_a_condition_is_refused() {
+    let said = errors_in("%cfg(\"here\")\nfn a() {}\n");
+    assert_eq!(said.len(), 1, "{:#?}", said);
+    assert!(said[0].contains("`%cfg` takes a name"), "{}", said[0]);
+
+    let said = errors_in("%cfg(one, two)\nfn a() {}\n");
+    assert!(said[0].contains("`%cfg` takes one condition"), "{}", said[0]);
+
+    let said = errors_in("%cfg(not(one, two))\nfn a() {}\n");
+    assert!(said[0].contains("`not` takes one condition"), "{}", said[0]);
+
+    let said = errors_in("%cfg(here(there))\nfn a() {}\n");
+    assert!(said[0].contains("`here` takes no conditions"), "{}", said[0]);
 }

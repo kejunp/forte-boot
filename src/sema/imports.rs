@@ -169,6 +169,10 @@ pub struct ParsedSuite {
 // ---- The resolver ---------------------------------------------------------
 
 pub struct ImportResolver {
+    // What the build is, for the `%cfg`s in every file this reads. A file
+    // imported into a test build is compiled for a test build, so the
+    // configuration is the suite's and not each file's.
+    config:       crate::expand::Config,
     parsed:       HashMap<PathBuf, ParsedSuite>,
     // The order they were read in, so a report reads the way the compiler ran.
     order:        Vec<PathBuf>,
@@ -190,8 +194,9 @@ enum Load {
 }
 
 impl ImportResolver {
-    pub fn new(search_paths: Vec<PathBuf>) -> ImportResolver {
+    pub fn new(search_paths: Vec<PathBuf>, config: crate::expand::Config) -> ImportResolver {
         ImportResolver {
+            config,
             parsed: HashMap::new(),
             order: Vec::new(),
             search_paths,
@@ -425,7 +430,7 @@ impl ImportResolver {
             Ok(text) => text,
             Err(e) => return Load::Unreadable(e.to_string()),
         };
-        let suite = parse_one(file.to_path_buf(), &text);
+        let suite = parse_one(file.to_path_buf(), &text, &self.config);
         self.order.push(file.to_path_buf());
         self.parsed.insert(file.to_path_buf(), suite);
 
@@ -790,7 +795,11 @@ impl ImportResolver {
 // let go of before the next runs, in the order `main` runs them: what expansion
 // makes of a tree the parser recovered through says more about the recovery
 // than the source, and the same is true of what lowering makes of it.
-fn parse_one(path: PathBuf, source: &str) -> ParsedSuite {
+fn parse_one(
+    path: PathBuf,
+    source: &str,
+    config: &crate::expand::Config,
+) -> ParsedSuite {
     let text: Vec<char> = source.chars().collect();
     let prepped = preprocess(source);
     debug_assert_eq!(
@@ -816,7 +825,7 @@ fn parse_one(path: PathBuf, source: &str) -> ParsedSuite {
     }
 
     let root = {
-        let mut expander = Expander::new(&mut parser);
+        let mut expander = Expander::new(&mut parser, config.clone());
         let out = expander.expand(&root);
         if !expander.errors().is_empty() {
             errors.absorb(&mut expander.errors().clone());

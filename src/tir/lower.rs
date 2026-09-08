@@ -24,7 +24,8 @@ use super::tir_nodes::*;
 // The six the compiler knows. A name outside this set is an error where it was
 // written -- see `docs/prose.txt` section 1, which is where the set is closed.
 const ATTRS: &[&str] =
-    &["symbol", "must_use", "inline", "noinline", "deprecated", "test", "derive", "repr"];
+    &["symbol", "must_use", "inline", "noinline", "deprecated", "test", "derive", "repr",
+      "cfg"];
 
 // What a `gc` binding was found to hold. Three answers and not two because
 // this pass has no types: only what the syntax settles on its own is decided
@@ -184,7 +185,12 @@ impl<'a> Lowerer<'a> {
             // declared it. `%derive` goes on a type, being about what one looks
             // like. The rest say something only a function can be.
             let (goes, wants) = match name.as_str() {
-                "deprecated" => (true, ""),
+                // `%cfg` goes on any declaration for the reason `%deprecated`
+                // does: whether a thing is compiled at all is a question about
+                // whatever declared it. It is spent in `expand`, which takes
+                // the declaration out, so one that reaches here is one the
+                // configuration kept.
+                "deprecated" | "cfg" => (true, ""),
                 "derive" | "repr" => {
                     (matches!(target, Target::Struct | Target::Enum), "a type")
                 }
@@ -214,6 +220,9 @@ impl<'a> Lowerer<'a> {
                 // Nothing below that pass reads one, and its arguments are
                 // names rather than the string or nothing every other
                 // attribute here takes.
+                // Spent in `expand` too, which takes the declaration away
+                // where the condition does not hold. One reaching here held.
+                "cfg" => {}
                 "derive" => {}
                 "repr" => {
                     if let Some(held) = self.one_repr(&args, id, target) {

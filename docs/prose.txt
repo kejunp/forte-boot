@@ -208,17 +208,43 @@ the six:
                         collected and run on its own rather than compiled
                         into an ordinary build.
   %derive(Show)         Writes an impl the reader would have written, on the
-                        struct or enum it stands in front of. What may be derived is
-                        a closed list of one for now: deriving is the
-                        compiler's knowledge and not a library's — the *body*
-                        is the thing that has to exist, and only what is
+                        struct or enum it stands in front of. What may be
+                        derived is a closed list of one for now: deriving is
+                        the compiler's knowledge and not a library's — the
+                        *body* is the thing that has to exist, and only what is
                         listed has one — so "%derive(Clone)" is an error
                         naming what may be written rather than a trait
                         somebody supplies later. Takes IDENTIFIERs.
+  %repr(C)              Fixes how a type is laid out, where without one the
+  %repr(4)              compiler chooses. "C" is the platform's: a struct's
+                        fields in declaration order, each at the next offset
+                        its own alignment allows, and an enum's tag as wide as
+                        a C "int". A number — 1, 2, 4 or 8 — fixes an enum's
+                        tag at that many bytes and says nothing else.
 
-"%repr" and "%cfg" are the names to expect next, and neither is reserved:
-each needs something the language has not got — a layout story, and a
-configuration to ask about. "%derive" was the third and is written now, above. Traits with code behind them was the third
+                        A width and not a type name for two reasons: the tag
+                        is a *signed* integer by rule (section 8), so how wide
+                        it is, is all there is left to say; and an <attr_arg>
+                        is an IDENTIFIER or a <literal>, which "i32" is
+                        neither. Takes one of those.
+  %cfg(test)            Compiles the declaration it stands in front of only
+  %cfg(not(x86_64))     where the condition holds, and takes it away where it
+                        does not — takes it away, so its name does not resolve
+                        and nothing below is told a choice was made.
+
+                        A condition is a name, or "not", "any" or "all" of
+                        them, nested however deep. The names are the machine,
+                        spelled as "--target" spells it with a "_" where that
+                        has a "-"; "test" in a "--test" build; and whatever
+                        "--cfg" gave on the command line. Two written on one
+                        declaration are two conditions, the way two inside one
+                        "all" would be.
+
+The three names this section used to say were coming — "%repr", "%derive" and
+"%cfg" — are written now, above. What each waited on was the same kind of
+thing and none of them turned out to be far off: a layout story, traits with
+code behind them, and a configuration to ask about. Traits with code behind
+them was the second
 and is no longer missing, which is what let "std/fmt.ft" become four routines
 where it was twenty and what took the tag out of "std/test.ft" as well: a value
 is asked what it looks like rather than told at the call, whether it is being
@@ -1994,15 +2020,16 @@ answer is not obvious from the rules alone.
     which is before anything reads a name: a macro is spent on the AST, and
     what "sema" is given has none left in it.
   - <attribute> is "%name" with its arguments, one per "%", the set of them
-    is closed, and an unknown one is an error (section 1). Settled. The eight
-    are %symbol, %must_use, %inline, %noinline, %deprecated, %test, %derive
-    and %repr; "%cfg" waits on a feature that does not exist.
+    is closed, and an unknown one is an error (section 1). Settled. The nine
+    are %symbol, %must_use, %inline, %noinline, %deprecated, %test, %derive,
+    %repr and %cfg, and there is nothing waiting.
 
     Which declarations each may sit on is answered now, and was not.
-    "%deprecated" goes on any declaration -- a name that should not be used is
-    a name whatever declared it. "%derive" and "%repr" go on a type, being
-    about what one looks like and how one is laid out. The other five say
-    something only a function can be.
+    "%deprecated" and "%cfg" go on any declaration -- a name that should not
+    be used is a name whatever declared it, and whether a thing is compiled at
+    all is a question about whatever declared it. "%derive" and "%repr" go on
+    a type, being about what one looks like and how one is laid out. The other
+    five say something only a function can be.
 
     And an attribute written on a type reaches the tree now, which it did not:
     the pass that declares one put an empty set of attributes there and nothing
@@ -2418,6 +2445,39 @@ answer is not obvious from the rules alone.
     spelled and one of them was spelled for a type no body was ever made for,
     which is a question only something reading the whole program at once can
     ask.
+  - "%cfg" is written, and the configuration it was waiting on was already
+    there. The compiler knows two things about a build that a program might
+    reasonably differ on and knew them before the attribute existed: which
+    machine it is compiling for, and whether it is a "--test" build. What is
+    new is a third, "--cfg <name>" on the command line, which is the open half
+    -- a suite that wants a choice nobody here anticipated has nowhere else to
+    put one.
+
+    What it does is *take the declaration away*. Not mark it, not compile it
+    and drop it later: a declaration the configuration turned down is not
+    there, its name does not resolve, and no pass below the one that spends
+    the attribute is told a choice was made. That is the same shape "%derive"
+    draws from the other end -- one writes a declaration and this takes one
+    away -- and it is why both are spent in the same pass, before anything
+    reads a name.
+
+    "not", "any" and "all" are there because a bare name alone is half a
+    feature: what a reader wants nine times in ten is "everywhere except", and
+    "%cfg(not(test))" is that. The three nest, an <attr_item> being a name with
+    arguments and the arguments being more of the same, so the grammar already
+    admitted them and this is only the reading. A shape that is not a
+    condition is refused and read as false, so a mistake takes the declaration
+    out rather than leaving it in under a rule nobody meant.
+
+    It goes on an item and not on a statement, an <attribute_list> standing in
+    front of an <item> and a statement taking none. So a "%cfg" inside a block
+    does not parse, which is the parser's answer rather than this pass's.
+
+    What is not done. Nothing asks whether the names a suite uses are ones
+    anybody set: "%cfg(tets)" is a declaration that quietly is not there,
+    which is the failure this shape has in every language that has it. A list
+    of the names a suite expects, declared somewhere and checked against, is
+    the answer and is not written.
   - "%repr" is written, and the layout story it was waiting on is this: without
     one the compiler chooses, and with one it owes.
 

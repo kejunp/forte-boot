@@ -303,7 +303,7 @@ pub fn compiled(source: &str) -> (crate::tir::ttir_nodes::TTIRProgram, crate::si
     let root = p.parse();
     assert!(p.errors().is_empty(), "{:#?}", p.errors());
     let root = {
-        let mut e = Expander::new(&mut p);
+        let mut e = Expander::new(&mut p, crate::expand::Config::none());
         let out = e.expand(&root);
         assert!(e.errors().is_empty(), "{:#?}", e.errors());
         out

@@ -27,7 +27,7 @@ fn suite(files: &[(&str, &str)]) -> PathBuf {
 fn resolved(files: &[(&str, &str)]) -> (ImportResolver, PathBuf) {
     let dir = suite(files);
     let root = dir.join("main.ft");
-    let mut r = ImportResolver::new(Vec::new());
+    let mut r = ImportResolver::new(Vec::new(), crate::expand::Config::none());
     r.resolve(&root).expect("the root file");
     fs::remove_dir_all(&dir).expect("the directory to go");
     (r, root)
@@ -357,7 +357,7 @@ fn a_file_found_through_a_search_path_is_named_from_there() {
     let dir = suite(&[("main.ft", "import range::Range;\n")]);
     let root = dir.join("main.ft");
 
-    let mut r = ImportResolver::new(vec![lib.clone()]);
+    let mut r = ImportResolver::new(vec![lib.clone()], crate::expand::Config::none());
     r.resolve(&root).expect("the root file");
     assert_eq!(r.render(), "");
 
@@ -381,7 +381,7 @@ fn a_file_found_through_a_search_path_is_named_from_there() {
 // out of its constructor is already in the state a bare root leaves it in.
 #[test]
 fn an_empty_root_does_not_answer_for_the_search_paths() {
-    let r = ImportResolver::new(vec![PathBuf::from("/opt/forte/std")]);
+    let r = ImportResolver::new(vec![PathBuf::from("/opt/forte/std")], crate::expand::Config::none());
     assert_eq!(r.module_of(Path::new("/opt/forte/std/range.ft")), vec!["range"]);
     // And a file of the suite's own is still named the way it was written,
     // which is what the fallback is for.
