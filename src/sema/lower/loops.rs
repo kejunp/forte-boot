@@ -104,9 +104,14 @@ impl<'a> Lowerer<'a> {
                     }
                     _ => return None,
                 };
-                // A map is not here: it hands out a pair, and a `for` takes a
-                // `<binding_name>` and not a pattern (§8), so there is nowhere
-                // to put one.
+                // A map is not here, and it is no longer the `for` that is in
+                // the way: one takes a `<tuple_pattern>` now, so `(k, v)` has
+                // somewhere to go, and `runtime/src/map.rs` has yielded the
+                // address of a `(K, V)` pair all along. What is in the way is
+                // that `#{..}` builds `hashmap::HashMap`, which is a struct
+                // written in Forte, and the walk on the other side of
+                // `__rt_iter_elem` is over the runtime's own table. Section 8
+                // has the rest.
                 match held {
                     "Range" | "Set" | "HashSet" => args.first().copied(),
                     _ => None,

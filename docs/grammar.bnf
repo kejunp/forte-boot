@@ -759,7 +759,11 @@
 
 <while_expr>            ::= "while" <header_expr> <block>
 
+# The second alternative binds one name per member of what the loop hands out,
+# which is how a map is run through: it yields a `(K, V)` and there is no one
+# name for a pair.
 <for_expr>              ::= "for" <binding_name> "in" <header_expr> <block>
+                          | "for" <tuple_pattern> "in" <header_expr> <block>
 
 <match_expr>            ::= "match" <header_expr>
                             "{" <match_arm_list_opt> "}"

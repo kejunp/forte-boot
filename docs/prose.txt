@@ -602,6 +602,12 @@ others is turned down where it is written: a literal, a range, a variant, and
 a name of more than one segment, which names a constant rather than binding
 one. "match" is where those are written.
 
+A "for" takes the same pattern where its own name goes, and binds it afresh
+each turn: "for (a, b) in pairs" is the loop's binding taken apart at the top
+of the body, so the names stand for exactly as long as the body does. It is
+the same holder and the same reads; what differs is only that a loop makes
+them once per turn.
+
 There is no "gc" on this form: a "gc" binding holds one handle, and there is
 nothing for one pattern to take several of. Nor is there one at file scope. A
 global's value is written into the image before the program runs, and taking
@@ -2188,8 +2194,35 @@ answer is not obvious from the rules alone.
     four and "Range" are bound in every file without an import, each from the
     module named after it (section 1). What is still true is that no library
     here declares "Map" or "Set" — the ordered pair — so those two literals
-    have a spelling and nothing to build, which is the same gap as before and
-    is now the only one left of it.
+    have a spelling and nothing to build.
+
+    And the two that do have something to build, build the wrong thing. The
+    lowering makes a literal a call to the runtime's own table
+    ("__rt_hashmap_new", "__rt_hashmap_insert"), which was written when no
+    library declared one and "src/mir/runtime.rs" says so in as many words: a
+    map and a set "standing in for the library section 8 says should one day
+    declare them". The library arrived and the lowering did not move. So
+    "#{1: 2}" makes a handle to a runtime table, types it as the 80-byte
+    "hashmap::HashMap" a Forte file declares, hands the *slot's address* to
+    the runtime as if it were the handle, and reads its fields out of
+    uninitialised bytes — "m.len" on a map of three came back 136. It
+    compiles, it links, it runs, and every answer is garbage.
+
+    Which way it goes is a real fork and neither half is small. The literal
+    could build the library's type, which is what "a literal is syntax for a
+    type a library declares" says — and then it has to hand "hashmap::empty"
+    a hash and an equality for K, which is the thing "std/order.ft" holds for
+    "i64" and for nothing else, and which wants the "Hash" and "Eq" traits
+    that only became writable when "dyn" landed. Or the literal could keep
+    building the runtime's table, and then the prelude has to find a type the
+    compiler declares rather than one a library does, which is the opposite
+    of what is settled above. Running through a map ("for (k, v) in m", which
+    the "for" can now bind) waits on the same fork: the runtime's table walks
+    through "__rt_iter_elem" and yields the address of a "(K, V)" pair it
+    owns, and a library's struct has no protocol to walk at all.
+
+    Until it is settled, a "#{" literal is the one thing here that is known
+    to be wrong and is not turned down.
   - Whether "{}" and "{ x }" are literals or blocks is decided by the position
     they stand in (section 7), which is a choice about which reading is
     common. The other reading always has a spelling: "(f())" for the block,

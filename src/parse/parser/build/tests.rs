@@ -481,6 +481,26 @@ fn a_let_takes_a_tuple_pattern_where_a_name_goes() {
     }
 }
 
+// And a `for`, which binds a name per turn the way a `let` binds one per
+// value.
+#[test]
+fn a_for_takes_a_tuple_pattern_where_a_name_goes() {
+    let (p, stmts) = statements("    for (k, v) in m { f(k); }\n    g();");
+    let held = match &p.get_node(stmts[0]).kind {
+        ASTNodeKind::ExprStmt(id) => *id,
+        other => panic!("{:?}", other),
+    };
+    let name = match &p.get_node(held).kind {
+        ASTNodeKind::For { name, .. } => name.clone(),
+        other => panic!("{:?}", other),
+    };
+    let ASTBinding::Pattern(pat) = name else { panic!("{:?}", name) };
+    match &p.get_node(pat).kind {
+        ASTNodeKind::TuplePat(elems) => assert_eq!(elems.len(), 2),
+        other => panic!("{:?}", other),
+    }
+}
+
 #[test]
 fn a_tuple_pattern_is_a_variant_pattern_with_no_name() {
     let (p, stmts) = statements("    match p {\n        (0, y) => y,\n        _ => 0,\n    };");
@@ -587,7 +607,7 @@ fn check_tree() {
                       while y { continue }\n\
                       for i in 0..=9 { break }\n\
                       match x {\n\
-                          1..=2 => a,\n\
+                          1 | 2 => a,\n\
                           -3 => b,\n\
                           P::Q(m) => m,\n\
                           (m, _) => m,\n\

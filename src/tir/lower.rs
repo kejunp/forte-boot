@@ -1049,6 +1049,24 @@ impl<'a> Lowerer<'a> {
             ASTNodeKind::While { cond, body } => {
                 TIRExprKind::While { cond: self.expr(cond), body: self.expr(body) }
             }
+            // A `for` binds one name per turn, and a tuple pattern binds one
+            // per member of it. The same holder a `let` takes: the loop's own
+            // binding is the pattern's value, and the names come off it at the
+            // top of the body, where they stand for exactly as long as the
+            // body does.
+            ASTNodeKind::For { name: ASTBinding::Pattern(pat), iter, body } => {
+                let holder = self.holder();
+                let iter = self.expr(iter);
+                let body = self.expr(body);
+                let mut out = Vec::new();
+                self.members(false, TIRIntro::Let, pat, holder.clone(), &mut out);
+                let TIRExprKind::Block { stmts, .. } = &mut self.tir.exprs[body].kind else {
+                    panic!("a `for` body lowered from something else")
+                };
+                out.append(stmts);
+                *stmts = out;
+                TIRExprKind::For { name: TIRBinding::Name(holder), iter, body }
+            }
             ASTNodeKind::For { name, iter, body } => TIRExprKind::For {
                 name: binding(&name),
                 iter: self.expr(iter),

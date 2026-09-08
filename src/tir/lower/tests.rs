@@ -853,3 +853,43 @@ fn a_global_binds_one_name() {
     assert_eq!(held.len(), 1);
     assert!(held[0].contains("a global binds one name"), "{}", held[0]);
 }
+
+// A `for` takes the same pattern, and the names come off the loop's own
+// binding at the top of the body -- where they stand for exactly as long as
+// the body does.
+#[test]
+fn a_for_takes_a_tuple_pattern_and_binds_it_in_the_body() {
+    let tir = clean("fn main() {\n    for (a, b) in xs {\n        f(a)\n    }\n}\n");
+    let f = match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::Fn(f) => f,
+        other => panic!("{:?}", other),
+    };
+    let TIRExprKind::Block { tail: Some(held), .. } = body_of(&tir, f) else {
+        panic!("not a block")
+    };
+    let TIRExprKind::For { name, body, .. } = &tir.exprs[*held].kind else {
+        panic!("{:?}", tir.exprs[*held].kind)
+    };
+    // The loop binds the holder, not either name.
+    assert_eq!(*name, TIRBinding::Name("(tuple 0)".to_string()));
+
+    let TIRExprKind::Block { stmts, tail, .. } = &tir.exprs[*body].kind else {
+        panic!("not a block")
+    };
+    let names: Vec<TIRBinding> = stmts
+        .iter()
+        .take(2)
+        .map(|s| match s {
+            TIRStmt::Let { name, .. } => name.clone(),
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![TIRBinding::Name("a".to_string()), TIRBinding::Name("b".to_string())]
+    );
+    // And what the body wrote is still there, after them: the two `let`s go
+    // in front of the statements and the block's value is untouched.
+    assert_eq!(stmts.len(), 2);
+    assert!(tail.is_some(), "the body's value was taken away");
+}

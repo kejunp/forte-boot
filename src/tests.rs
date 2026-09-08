@@ -3379,6 +3379,21 @@ fn a_let_takes_a_tuple_apart() {
          }\n\
          \n\
          %test\n\
+         fn a_for_takes_one_apart_each_turn() {\n\
+         \x20   let pairs: (i64, i64)[3] = [(1, 2), (3, 4), (5, 6)]\n\
+         \x20   var t = 0\n\
+         \x20   for (a, b) in pairs { t = t + a * b }\n\
+         \x20   assert_eq(&t, &44, \"each turn bound both names\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_for_binds_a_nested_pattern_too() {\n\
+         \x20   var t = 0\n\
+         \x20   for (a, (b, c)) in [(1, (2, 3))] { t = a + b + c }\n\
+         \x20   assert_eq(&t, &6, \"the pattern nests in a `for` as in a `let`\")\n\
+         }\n\
+         \n\
+         %test\n\
          fn a_member_that_is_not_a_number_comes_out_whole() {\n\
          \x20   let (x, y): (Held, Held) = (Held { n: 6 }, Held { n: 7 })\n\
          \x20   assert_eq(&x.n, &6, \"the first struct\")\n\
@@ -3393,5 +3408,5 @@ fn a_let_takes_a_tuple_apart() {
 
     assert!(ok, "a `let` was meant to take a tuple apart:\n{}", said);
     assert!(said.contains("0 failed"), "{}", said);
-    assert!(said.contains("running 5 tests"), "{}", said);
+    assert!(said.contains("running 7 tests"), "{}", said);
 }
