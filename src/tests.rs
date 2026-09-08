@@ -3488,3 +3488,73 @@ fn self_is_the_type_that_answers_a_trait() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- A string compares by what it says -----------------------------------------
+
+// A `str` is fat -- an address and a length -- and the register holds the
+// address of the pair, so a comparison written over one was a comparison of the
+// two *places*. Two strings holding the same characters in two places are two
+// different addresses, and `a == b` over them was false.
+//
+// What made it hard to see is that it was sometimes right: literals are pooled,
+// so two equal literals share a symbol and compare equal by accident. Anything
+// copied into a frame did not, and the folder reaches the first case and not
+// the second -- so the answer moved with the optimisation level, which is why
+// this is a test that runs at each of them rather than one that reads the tree.
+#[test]
+fn two_strings_compare_by_what_they_say() {
+    let dir = std::env::temp_dir().join(format!("fortec-text-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("text.ft");
+    std::fs::write(
+        &root,
+        "import test::assert;\n\
+         import test::assert_eq;\n\
+         \n\
+         // Through a fn, so the two are two places and not one pooled symbol.\n\
+         fn same(a: &str, b: &str): bool { a == b }\n\
+         fn under(a: &str, b: &str): bool { a < b }\n\
+         \n\
+         %test\n\
+         fn equal_strings_in_two_places_are_equal() {\n\
+         \x20   let a: str = \"hello\"\n\
+         \x20   let b: str = \"hello\"\n\
+         \x20   let c: str = \"hell\"\n\
+         \x20   assert(same(&a, &b), \"the same characters\")\n\
+         \x20   assert(!same(&a, &c), \"and two that differ\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_order_is_by_byte_and_then_by_length() {\n\
+         \x20   assert(under(&\"hell\", &\"hello\"), \"a prefix comes first\")\n\
+         \x20   assert(under(&\"aa\", &\"b\"), \"and the byte beats the length\")\n\
+         \x20   assert(!under(&\"b\", &\"aa\"), \"the other way round\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn all_six_operators_read_the_characters() {\n\
+         \x20   let a: str = \"abc\"\n\
+         \x20   let b: str = \"abd\"\n\
+         \x20   let c: str = \"abc\"\n\
+         \x20   var n = 0\n\
+         \x20   if a == c { n = n + 1 }\n\
+         \x20   if a != b { n = n + 2 }\n\
+         \x20   if a < b { n = n + 4 }\n\
+         \x20   if b > a { n = n + 8 }\n\
+         \x20   if a <= c { n = n + 16 }\n\
+         \x20   if a >= c { n = n + 32 }\n\
+         \x20   if a > b { n = n + 64 }\n\
+         \x20   assert_eq(&n, &63, \"the six, and the one that does not hold\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "text");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a string was meant to compare by what it says:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}

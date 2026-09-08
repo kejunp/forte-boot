@@ -3066,6 +3066,20 @@ answer is not obvious from the rules alone.
     the same evaluator answers both, so anything it cannot read leaves the
     global starting at nought rather than refusing the program.
 
+    A "str" compares by what it says, which it did not. It is fat — an
+    address and a length — and the register holds the address of the pair, so
+    the instruction a comparison lowered to compared the two *places*: two
+    strings holding the same characters in two places are two addresses, and
+    "a == b" over them was false. What hid it is that it was sometimes right.
+    Literals are pooled, so two equal literals share a symbol and compare
+    equal by accident; anything copied into a frame does not, and the folder
+    reaches the first case and not the second — so the answer moved with the
+    optimisation level, right at "-O2" and wrong at "-O0". All six operators
+    go through one runtime call answering the way "strcmp" does, and what was
+    written becomes the same comparison against nought. The order is by byte
+    and then by length, which is the one a string key was already compared by
+    inside the runtime's own table.
+
     A "str" writes its bytes now, which it did not. An address is not known
     until the linker has run, so the image is written with a hole in it and a
     name for what goes there: the bytes go in the pool, the length goes in the

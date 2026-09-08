@@ -276,12 +276,46 @@ impl<'a> Lowerer<'a> {
         let signed = self.signed_ty(ty);
         let (a, b) = (self.of(lhs), self.of(rhs));
 
+        // A `str` compares by what it says. It is fat -- an address and a
+        // length -- and the register holds the address of the pair, so the
+        // instruction below would compare the two *places* and call two equal
+        // strings unequal. Which it did: `a == b` over two `str` was right for
+        // pooled literals, because equal literals share a symbol, and wrong for
+        // anything else -- so the answer moved with the optimisation level.
+        //
+        // All six operators go through one call answering the way `strcmp`
+        // does, and what was written becomes the same comparison against
+        // nought. The ordering is the one a string key is already compared by
+        // in `runtime/src/map/keys.rs`.
+        if self.is_str(ty) {
+            if let Some(op) = compare(op, false, true) {
+                let held = self.push(
+                    MIRInstKind::Call {
+                        to:   MIRCallee::Symbol(crate::mir::runtime::STR_CMP.to_string()),
+                        args: vec![a, b],
+                    },
+                    line,
+                    col,
+                );
+                let zero = self.push(MIRInstKind::Const(MIRConst::Int(0)), line, col);
+                self.making(def, MIRInstKind::Cmp { op, lhs: held, rhs: zero }, line, col);
+                return;
+            }
+        }
+
         if let Some(op) = compare(op, float, signed) {
             self.making(def, MIRInstKind::Cmp { op, lhs: a, rhs: b }, line, col);
             return;
         }
         let op = arithmetic(op, float, signed);
         self.making(def, MIRInstKind::Bin { op, lhs: a, rhs: b }, line, col);
+    }
+
+    fn is_str(&mut self, ty: crate::tir::ttir_nodes::TyId) -> bool {
+        matches!(
+            crate::sir::target::prim(&self.made.ttir, ty),
+            Some(crate::tir::tir_nodes::TIRPrim::Str)
+        )
     }
 
     fn is_bool(&mut self, ty: crate::tir::ttir_nodes::TyId) -> bool {

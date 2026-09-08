@@ -97,6 +97,7 @@ pub mod set;
 pub mod shape;
 pub mod stop;
 pub mod test;
+pub mod text;
 
 use heap::cache::{Cache, Central};
 use heap::large::Large;

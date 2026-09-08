@@ -151,6 +151,16 @@ pub fn set_insert(hashed: bool) -> &'static str {
     if hashed { HASHSET_INSERT } else { SET_INSERT }
 }
 
+// ---- Comparing a string ----------------------------------------------------
+
+// `__rt_str_cmp(a, b): i64`, negative, nought or positive the way `strcmp` is.
+//
+// A `str` is fat and every comparison written over one is a comparison of what
+// it says, which is not a thing an instruction does: two strings holding the
+// same characters in two places are two different addresses. The six operators
+// all go through this one symbol and hold its answer against nought.
+pub const STR_CMP: &str = "__rt_str_cmp";
+
 // ---- Walking one -----------------------------------------------------------
 
 // The cursor protocol, for the things a cursor cannot just count through. An
