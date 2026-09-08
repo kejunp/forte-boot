@@ -2529,6 +2529,34 @@ answer is not obvious from the rules alone.
     parameter this language has no spelling for, and inventing one in the one
     place it is needed would be inventing it badly. So the grammar is wider
     than the language here, and the language says so.
+  - A collected value stands where a reference is wanted, which it did not.
+    "It is one word -- the address the collector handed back -- and it is
+    reached through exactly as a reference is" (section 2), so a "gc T" is a
+    "&T": the same word, and the same thing at the far end of it. Without that
+    a collected value could only be handed to something written to take one --
+    an "fn sum(l: &List)" could not be called on a list the collector held,
+    which is the reason there is a collector.
+
+    A reference to one counts, and is where it is really wanted: matching
+    through a reference binds references, so the "rest" of a
+    "List::Cons(n, rest)" is a "&gc List" and what it is handed to takes a
+    "&List". That one is a read and not a retype, the handle having to be
+    fetched out of the place holding it.
+
+    Only a "&", never a "*". A "gc" copies, so two names may hold one handle,
+    and handing out something that may be written through would be handing out
+    one of two exclusive references to one value.
+  - The right of an assignment is a place an expectation reaches (section 5),
+    and was the one that did not: every conversion a "let" makes was refused
+    where the value was reached by an "=" instead. So a list built a turn at a
+    time -- "held = List::Cons(i, held)", where "held" is a "gc List" -- was
+    "`List` cannot be assigned to `gc List`", the conversion a "let gc" makes
+    turned down for being written with the other sign.
+  - A type nobody worked out says *where*, and said only how many. A hole
+    carries no span and every expression carries one, and a hole still
+    standing is an "Error" by the time this is asked -- so what is pointed at
+    is the first expression with an "Error" anywhere inside its type, which is
+    the value nothing said the type of.
   - The tests that move the collector's phase all take one lock, which two
     modules of them were still not doing. It is one flag for the whole process
     -- the barrier reads it on every write and cannot afford a runtime to ask

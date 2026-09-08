@@ -162,13 +162,18 @@ fn every_expression_form_is_typed() {
 // down and takes the compiler out where it stands -- "a type that was never
 // worked out reached the mangler". So `let a = M::Nothing`, where nothing
 // anywhere says what the `T` is, got a warning and then a panic.
+//
+// And it says *where*, which it did not: a hole carries no span and every
+// expression does, so what is pointed at is the first expression with an
+// `Error` anywhere in its type.
 #[test]
 fn a_type_nobody_worked_out_is_refused() {
     let out = refused(
         "enum M<T> {\n    Nothing,\n    Just(T),\n}\n\
          fn f(): i32 {\n    let a = M::Nothing\n    0\n}\n",
     );
-    assert!(out.contains("types were never worked out"), "{}", out);
+    assert!(out.contains("never worked out"), "{}", out);
+    assert!(out.contains("let a = M::Nothing"), "the caret is on the line\n{}", out);
     // And with the type written it is a program like any other, which is what
     // the message says to do.
     clean(

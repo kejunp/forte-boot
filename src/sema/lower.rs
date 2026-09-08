@@ -506,33 +506,44 @@ impl<'a> Lowerer<'a> {
 
         self.out.modules = modules;
         let (arena, open) = self.types.finish();
-        if !open.is_empty() {
-            // An error and not a warning, which it was.
-            //
-            // A type nobody worked out is a program that cannot be compiled,
-            // and this is the only place that knows. `finish` turns each into
-            // an `Error`; the mangler meets one further down and stops the
-            // compiler where it stands -- "a type that was never worked out
-            // reached the mangler" -- so what a reader got for `let a =
-            // M::Nothing`, where nothing anywhere says what the `T` is, was a
-            // warning and then a panic.
-            //
-            // What it does not yet do is say *where*. The holes are the
-            // checker's own numbers and nothing keeps the expression each
-            // stood over, so the count is what there is to report.
+        // A type nobody worked out is a program that cannot be compiled, and
+        // this is the only place that knows. `finish` turns each into an
+        // `Error`; the mangler meets one further down and stops the compiler
+        // where it stands -- "a type that was never worked out reached the
+        // mangler" -- so what a reader got for `let a = M::Nothing`, where
+        // nothing anywhere says what the `T` is, was a warning and then a
+        // panic.
+        //
+        // Where, and not only how many. The holes are the checker's own
+        // numbers and none of them carries a span, but every *expression*
+        // carries one and a standing hole is an `Error` by the time this runs
+        // -- so the first expression whose type is one is where to point. Only
+        // where nothing else was said: a tree with a reported mistake in it
+        // has `Error` types from that mistake, and one message about a program
+        // is worth more than two.
+        self.out.types = arena;
+        if !open.is_empty() && !self.errors.has_errors() {
+            // Somewhere *inside* the type and not only at the top of it: a
+            // `M::Nothing` is an `M<?>`, and what was never worked out is the
+            // argument rather than the `M`.
+            let at = self.out.exprs.iter().find(|e| errored(&self.out, e.ty, 0));
+            let where_ = match at {
+                Some(held) => Span::at(held.line, held.col),
+                None => Span::at(1, 1),
+            };
+            let held = match open.len() {
+                1 => "a type was never worked out".to_string(),
+                n => format!("{} types were never worked out, and this is one", n),
+            };
             self.errors.push(
-                Diagnostic::error(
-                    format!("{} types were never worked out", open.len()),
-                    Span::at(1, 1),
-                )
-                .with_label("the checker did not settle everything")
-                .with_note("an expression whose type is `?` is one of these")
-                .with_help(
-                    "a value whose type nothing says is one to write the type of:                      `let a: M<i64> = M::Nothing`",
-                ),
+                Diagnostic::error(held, where_)
+                    .with_label("nothing says what this is")
+                    .with_help(
+                        "a value whose type nothing says is one to write the type of: \
+                         `let a: M<i64> = M::Nothing`",
+                    ),
             );
         }
-        self.out.types = arena;
         literals_in_range(&self.out, &mut self.errors);
         objects_answered(&self.out, &mut self.errors);
         impls_complete(&self.out, &mut self.errors);
@@ -832,6 +843,29 @@ impl<'a> Lowerer<'a> {
 // After the types are settled and not while they are being worked out. A
 // number with no suffix is a hole until something fills it, so asking any
 // earlier would be asking what a hole can hold -- which is anything.
+// Whether an `Error` stands anywhere in this type.
+//
+// `depth` because a type may hold itself by way of a declaration's arguments
+// and this walks the arena rather than a tree -- a bound is what stands in for
+// the proof that it stops, the same one `consts` uses for an expression.
+fn errored(out: &TTIRProgram, ty: TyId, depth: usize) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    let held = |ty: TyId| errored(out, ty, depth + 1);
+    match out.types.get(ty) {
+        Some(Ty::Error) => true,
+        Some(Ty::Ref { inner, .. }) | Some(Ty::Ptr(inner)) | Some(Ty::GC(inner))
+        | Some(Ty::Run(inner)) | Some(Ty::Array { elem: inner, .. }) => held(*inner),
+        Some(Ty::Tuple(members)) => members.iter().any(|&m| held(m)),
+        Some(Ty::Named { args, .. }) => args.iter().any(|&a| held(a)),
+        Some(Ty::Fn { params, ret, .. }) => {
+            params.iter().any(|&p| held(p)) || held(*ret)
+        }
+        _ => false,
+    }
+}
+
 // Every impl of a trait writes every member the trait declares.
 //
 // Nothing asked. An impl of a trait with two members that wrote one *was* an

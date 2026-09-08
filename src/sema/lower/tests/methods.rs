@@ -691,3 +691,48 @@ fn a_trait_member_is_a_signature_and_not_a_body() {
     // And one written the other way is what a trait is made of.
     clean("trait T {\n    fn f(&self): i32\n}\n");
 }
+
+// ---- A collected value where a reference is wanted ---------------------------------
+
+// "It is one word -- the address the collector handed back -- and it is reached
+// through exactly as a reference is" (§2), so a `gc T` stands where a `&T`
+// does. It did not: a collected value could only be handed to something written
+// to take one, so an `fn sum(l: &List)` could not be called on a list the
+// collector held -- and a recursive structure is the reason there is a
+// collector at all.
+#[test]
+fn a_collected_value_stands_where_a_reference_does() {
+    let with = "struct P {\n    pub n: i32,\n}\nfn read(p: &P): i32 { p.n }\n";
+    clean(&format!("{}fn f(): i32 {{\n    let gc g = P {{ n: 5 }}\n    read(g)\n}}\n", with));
+    // And a reference to one, which is what matching through a reference
+    // binds: the `r` of an `L::Cons(n, r)` is a `&gc L`.
+    clean(&format!(
+        "{}fn f(g: &gc P): i32 {{ read(g) }}\n", with));
+}
+
+// Only a `&`, never a `*`. A `gc` copies, so two names may hold one handle, and
+// handing out something that may be written through would be handing out one of
+// two exclusive references to one value.
+#[test]
+fn a_collected_value_does_not_stand_where_a_write_is_wanted() {
+    let out = refused(
+        "struct P {\n    pub n: i32,\n}\n\
+         fn write(p: *P) { p.n = 1 }\n\
+         fn f() {\n    let gc g = P { n: 5 }\n    write(g)\n}\n",
+    );
+    assert!(out.contains("`gc P` and it takes `*P`"), "{}", out);
+}
+
+// The right of an assignment is a place an expectation reaches (§5), and was
+// the one that did not: the conversions a `let` makes were refused where the
+// value was reached by an `=`.
+#[test]
+fn the_right_of_an_assignment_converts_as_a_let_does() {
+    // A value becoming one the collector holds, which is the case that found
+    // it: a list built a turn at a time is `held = Cons(.., held)`.
+    clean("struct P {\n    pub n: i32,\n}\n\
+           fn f() {\n    var g: gc P = P { n: 1 }\n    g = P { n: 2 }\n}\n");
+    // And an array becoming a view, which is the same rule said of the other
+    // conversion.
+    clean("fn f() {\n    let a: i32[3] = [1, 2, 3]\n    var v: &i32[] = &a\n    v = &a\n}\n");
+}

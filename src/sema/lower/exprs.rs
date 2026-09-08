@@ -157,6 +157,15 @@ impl<'a> Lowerer<'a> {
                 let vt = self.out.exprs[v].ty;
                 let p = self.written_to(p, vt);
                 let pt = self.out.exprs[p].ty;
+                // The place is what is expected of the value, exactly as a
+                // name's written type is: "the right of an assignment" is one
+                // of the places an expectation reaches (§5), and it was the
+                // one that did not. So `held = List::Cons(..)` where `held` is
+                // a `gc List` was "`List` cannot be assigned to `gc List`" --
+                // the conversion a `let gc` makes, refused because the value
+                // was reached by an `=` rather than by a `let`.
+                let v = self.viewed(v, pt);
+                let vt = self.out.exprs[v].ty;
                 if self.types.unify(vt, pt).is_err() {
                     let (vt, pt) = (self.spell(vt), self.spell(pt));
                     self.errors.push(
@@ -635,6 +644,7 @@ impl<'a> Lowerer<'a> {
                                 && !self.views(found, want)
                                 && !self.objects(found, want)
                                 && !self.collects(found, want)
+                                && !self.borrows(found, want)
                                 && !self.reads(found, want)
                             {
                                 let (found, want) = (self.spell(found), self.spell(want));
@@ -755,6 +765,7 @@ impl<'a> Lowerer<'a> {
                 && !self.views(found, want)
                 && !self.objects(found, want)
                 && !self.collects(found, want)
+                && !self.borrows(found, want)
                 && !self.reads(found, want)
             {
                 let (found, want) = (self.spell(found), self.spell(want));
@@ -1067,6 +1078,47 @@ impl<'a> Lowerer<'a> {
         self.types.unify(found, inner).is_ok()
     }
 
+    // A collected value where a reference is wanted.
+    //
+    // "It is one word -- the address the collector handed back -- and it is
+    // reached through exactly as a reference is" (§2), so a `gc T` stands
+    // where a `&T` does: the two are the same word and the same thing at the
+    // far end of it. Without this a collected value could only be handed to
+    // something written to take one, so an `fn sum(l: &List)` could not be
+    // called on a list the collector held -- and a recursive structure is the
+    // reason there is a collector.
+    //
+    // A reference to one counts, and is where this is really wanted: matching
+    // through a reference binds references (§8), so the `r` of an
+    // `L::Cons(n, r)` is a `&gc L` and what it is handed to takes a `&L`. That
+    // one is a read and not a retype -- the handle has to be fetched out of
+    // the place holding it -- which is what `viewed` writes the `Deref` for.
+    //
+    // Only a `&`, never a `*`. A `gc` copies, so two names may hold one
+    // handle; handing out something that may be written through would be
+    // handing out one of two exclusive references to one value.
+    pub(super) fn borrows(&mut self, found: TyId, want: TyId) -> bool {
+        let (found, want) = (self.types.shallow(found), self.types.shallow(want));
+        let Ty::Ref { op: TIRRefOp::Imm, inner: to, .. } = self.types.get(want).clone() else {
+            return false;
+        };
+        let held = match self.types.get(found).clone() {
+            Ty::GC(inner) => inner,
+            Ty::Ref { inner, .. } => match self.types.get(self.types.shallow(inner)).clone() {
+                Ty::GC(inner) => inner,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        self.types.unify(held, to).is_ok()
+    }
+
+    // Whether that conversion is the one that reads a handle out of a place
+    // first: a `&gc T` becoming a `&T` rather than a `gc T` becoming one.
+    fn borrows_through(&mut self, found: TyId) -> bool {
+        matches!(self.types.get(self.types.shallow(found)), Ty::Ref { .. })
+    }
+
     // The expression as a view, where a view is what was wanted and what it is
     // is a reference to an array. Anything else comes back as it was.
     //
@@ -1088,6 +1140,22 @@ impl<'a> Lowerer<'a> {
         if self.reads(found, want) {
             self.out.exprs.push(TTIRExpr {
                 kind: TTIRExprKind::Unary { op: TIRUnaryOp::Deref, operand: got },
+                ty: want,
+                line,
+                col,
+            });
+            return self.out.exprs.len() - 1;
+        }
+        // A collected value handed where a reference is wanted. Where the
+        // handle is in a place rather than in hand, it is read out of that
+        // place first and the retype is over what came back.
+        if self.borrows(found, want) {
+            let got = match self.borrows_through(found) {
+                true => self.read_through(got),
+                false => got,
+            };
+            self.out.exprs.push(TTIRExpr {
+                kind: TTIRExprKind::Cast(got),
                 ty: want,
                 line,
                 col,

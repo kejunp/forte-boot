@@ -1971,6 +1971,76 @@ fn one_println_prints_whatever_it_was_handed() {
     assert!(said.contains("Point { x: 3, y: 4 } and 5\n"), "{}", said);
 }
 
+// ---- A list the collector holds ------------------------------------------------------
+
+// A recursive structure walked by an ordinary fn, which is the reason there is
+// a collector and which did not work.
+//
+// "It is one word -- the address the collector handed back -- and it is reached
+// through exactly as a reference is" (§2), so a `gc T` stands where a `&T`
+// does. It did not, so a collected value could only be handed to something
+// written to take one: `fn sum(l: &List)` could not be called on a list the
+// collector held, and the `r` of an `L::Cons(n, r)` -- a `&gc L`, matching
+// through a reference binding references -- could not be handed on at all.
+#[test]
+fn a_collected_list_is_walked_by_an_ordinary_fn() {
+    let dir = std::env::temp_dir().join(format!("fortec-gclist-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("gclist.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import heap::collect;\n\
+         \n\
+         enum List {\n\
+         \x20   Nil,\n\
+         \x20   Cons(i64, gc List),\n\
+         }\n\
+         \n\
+         // Takes a reference and is handed a handle, and takes a reference\n\
+         // again for the rest of the list, which is a `&gc List`.\n\
+         fn sum(l: &List): i64 {\n\
+         \x20   match l {\n\
+         \x20       List::Nil => 0,\n\
+         \x20       List::Cons(n, rest) => n + sum(rest),\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn built(n: i64): gc List {\n\
+         \x20   var held: gc List = List::Nil\n\
+         \x20   var i = 0\n\
+         \x20   while i < n {\n\
+         \x20       held = List::Cons(i + 1, held)\n\
+         \x20       i = i + 1\n\
+         \x20   }\n\
+         \x20   held\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_list_the_collector_holds_is_walked() {\n\
+         \x20   let held = built(4)\n\
+         \x20   assert_eq(&sum(held), &10, \"one, two, three and four\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn it_is_still_there_after_a_collection() {\n\
+         \x20   let held = built(4)\n\
+         \x20   collect()\n\
+         \x20   assert_eq(&sum(held), &10, \"and the collector kept it\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "gclist");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a collected list was meant to be walked:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
+
 // ---- What a loop is worth ------------------------------------------------------------
 
 // "Every loop takes a `break x` and yields `null` where none is given" (§8),
