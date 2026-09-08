@@ -876,7 +876,18 @@ impl<'a> Lowerer<'a> {
     // Both the `for` cursor and an index want this, which is why it is here
     // rather than beside either of them.
     pub(super) fn elements(&mut self, value: SIRValueId, line: usize, col: usize) -> MIRRegId {
-        let ty = self.bare(self.ty_of(value));
+        // Through the references and *not* through a pointer. A `ptr T` is the
+        // elements: "`p[i]` is a place... stepping by the same stride an
+        // indexed run steps by" (§2), so the address in hand is where element
+        // nought is and there is nothing to load.
+        //
+        // `bare` follows a pointer too, and following one here read a
+        // `ptr str` as the `str` at the end of it -- so `p[0]` on one loaded
+        // the data word out of the pointer as if the pointer were the pair.
+        // For a `ptr str` holding nought, which is what `mem::stride` measures
+        // with, that is a read of address nought. A container of strings
+        // segmentation faulted before it had asked for any room.
+        let ty = self.referred(self.ty_of(value));
         let base = self.of(value);
         match self.made.ttir.types.get(ty) {
             Some(Ty::Run(_)) | Some(Ty::Prim(TIRPrim::Str)) => {
@@ -884,6 +895,16 @@ impl<'a> Lowerer<'a> {
                 self.push(MIRInstKind::Load { from: base, bytes: word }, line, col)
             }
             _ => base,
+        }
+    }
+
+    // Through however many references to what is at the end of them, stopping
+    // at a pointer. `bare` is the same walk with the pointer followed, which is
+    // what reaching into a `ptr Held` wants and what indexing one does not.
+    pub(super) fn referred(&self, ty: TyId) -> TyId {
+        match self.made.ttir.types.get(ty) {
+            Some(Ty::Ref { inner, .. }) | Some(Ty::GC(inner)) => self.referred(*inner),
+            _ => ty,
         }
     }
 

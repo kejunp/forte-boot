@@ -3619,3 +3619,56 @@ fn an_operator_over_a_reference_reads_through_it() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 3 tests"), "{}", said);
 }
+
+// ---- Indexing a pointer to something fat ----------------------------------------
+
+// "`p[i]` is a place, under the same `unsafe` and stepping by the same stride
+// an indexed run steps by" (§2) -- so the address in hand is where element
+// nought is, and there is nothing to load first.
+//
+// The lowering followed the pointer before asking what it pointed at, so a
+// `ptr str` looked like the `str` at the end of it: fat, two words, reached by
+// loading the first out of the pair. `p[0]` on one loaded from the address the
+// pointer *held*, and `mem::stride` measures with a `0 as ptr T` -- so working
+// out how wide a `str` is read address nought, and a container of strings
+// faulted before it had asked for any room.
+#[test]
+fn a_pointer_to_something_fat_is_indexed_as_the_run_it_is() {
+    let dir = std::env::temp_dir().join(format!("fortec-fat-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("fat.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         import mem::{room, stride};\n\
+         \n\
+         %test\n\
+         fn a_width_is_measured_through_a_pointer_to_nothing() {\n\
+         \x20   unsafe let none = 0 as ptr str\n\
+         \x20   assert_eq(&stride(none), &16, \"a `str` is two words\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_run_of_strings_reads_back_what_was_written() {\n\
+         \x20   unsafe let none = 0 as ptr str\n\
+         \x20   let w = stride(none)\n\
+         \x20   unsafe let p = room(4 * w) as ptr str\n\
+         \x20   unsafe p[0] = \"one\"\n\
+         \x20   unsafe p[1] = \"two\"\n\
+         \x20   unsafe p[2] = \"three\"\n\
+         \x20   unsafe assert_eq(&p[0], &\"one\", \"the first\")\n\
+         \x20   unsafe assert_eq(&p[1], &\"two\", \"the second\")\n\
+         \x20   unsafe assert_eq(&p[2], &\"three\", \"the third\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "fat");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a pointer to something fat was meant to index as a run:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 2 tests"), "{}", said);
+}
