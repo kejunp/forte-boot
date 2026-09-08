@@ -273,3 +273,47 @@ fn a_trait_that_writes_self_only_as_its_receiver_is_still_an_object() {
          }\n",
     );
 }
+
+// ---- What a member is, and is not ----------------------------------------------
+
+// "An impl holds methods, and a method is reached through a value with a `.`
+// like any other member" (§5), and "an enum variant is what `::` reaches in a
+// type, and the only thing" -- so a member with no receiver is one nothing can
+// name.
+//
+// It was reachable, and by the wrong spelling: a member went into the *file's*
+// scope under its bare name, so `impl P { fn zero() }` made a free `zero()`
+// callable anywhere in the file. Two impls with a method of one name were one
+// name that answered for the first of them.
+#[test]
+fn a_member_takes_a_receiver() {
+    let out = refused(
+        "struct P { pub x: i64 }\n\
+         impl P {\n    fn zero(): i64 { 0 }\n}\n",
+    );
+    assert!(out.contains("`zero` takes no receiver"), "{}", out);
+
+    let out = refused("trait Show {\n    fn make(): i64;\n}\n");
+    assert!(out.contains("`make` takes no receiver"), "{}", out);
+}
+
+// And a member's name is not the file's. It is reached through a value, or
+// through the declaration it belongs to, and neither of those is a bare name.
+#[test]
+fn a_members_name_is_not_the_files() {
+    let out = refused(
+        "struct P { pub x: i64 }\n\
+         impl P {\n    fn twice(&self): i64 { self.x * 2 }\n}\n\
+         fn f(): i64 { twice() }\n",
+    );
+    assert!(out.contains("nothing is called `twice`"), "{}", out);
+
+    // Both spellings that do reach one still do.
+    clean(
+        "struct P { pub x: i64 }\n\
+         trait Show {\n    fn show(&self): i64;\n}\n\
+         impl Show for P {\n    fn show(&self): i64 { self.x }\n}\n\
+         impl P {\n    fn twice(&self): i64 { self.x * 2 }\n}\n\
+         fn f(p: P): i64 { p.twice() + Show::show(&p) }\n",
+    );
+}

@@ -322,6 +322,7 @@ impl<'a> Lowerer<'a> {
                     // parameter it is. `instance_of` makes a hole for it at
                     // each use, and `mir::mono` substitutes the concrete type
                     // in, which is what a table for one type is.
+                    self.receivers(&members, "a trait");
                     self.params = type_names_of(&generics);
                     self.open_regions(&generics);
                     let mut made_generics =
@@ -353,6 +354,7 @@ impl<'a> Lowerer<'a> {
                         Some(for_ty) => (self.ty(for_ty), self.item_of(ty)),
                         None => (self.ty(ty), None),
                     };
+                    self.receivers(&members, "an impl");
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[self.at][i]).collect();
                     let held = self.subject.replace(subject);
@@ -378,6 +380,39 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Import { .. } => {}
             }
+        }
+    }
+
+    // Every member takes a receiver, because nothing can reach one that does
+    // not.
+    //
+    // "An impl holds methods, and a method is reached through a value with a
+    // `.` like any other member" (§5), and "an enum variant is what `::`
+    // reaches in a type, and the only thing" -- so `P::zero()` names nothing
+    // and there is no other spelling. One written without a receiver used to
+    // be declared under its bare name in the file's scope, which made it a
+    // free `zero()` callable anywhere in the file; with that gone it is a
+    // declaration nothing at all can name, and a body nobody can call is
+    // better turned down than compiled.
+    fn receivers(&mut self, members: &[TIRItemId], what: &str) {
+        for &at in members {
+            let TIRItemKind::Fn(f) = &self.tir.items[at].kind else { continue };
+            if matches!(f.params.first().map(|p| &p.name), Some(TIRBinding::SelfRecv(..))) {
+                continue;
+            }
+            let name = f.name.clone();
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` takes no receiver", name),
+                    self.span(at),
+                )
+                .with_label(format!("this is a member of {}", what))
+                .with_help(
+                    "a method is reached through a value with a `.`, so one that \
+                     takes no `self` is one nothing can name -- a fn beside the \
+                     declaration, or one in a `namespace`, is what to write instead",
+                ),
+            );
         }
     }
 

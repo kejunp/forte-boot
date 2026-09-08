@@ -3115,6 +3115,19 @@ answer is not obvious from the rules alone.
     the same evaluator answers both, so anything it cannot read leaves the
     global starting at nought rather than refusing the program.
 
+    A member's name is not the file's, and every member takes a receiver. "An
+    impl holds methods, and a method is reached through a value with a `.`
+    like any other member" (section 5), and "an enum variant is what `::`
+    reaches in a type, and the only thing" — so there are exactly two
+    spellings that reach a member, and a bare name is neither. It was one: a
+    member went into the file's own scope under its name, so
+    "impl P { fn zero() }" made a free "zero()" callable anywhere in the file,
+    and two impls with a method of one name were one name that answered for
+    whichever was declared first. With that gone, a member written without a
+    "self" is a declaration nothing can name at all, and a body nobody can
+    call is turned down rather than compiled — a fn beside the declaration, or
+    one in a "namespace", is what to write instead.
+
     A declaration written in a block is declared, which it was not. "A
     <const_decl> is the compile-time constant, and stands there and in a block
     alike" (section 2) and a <statement> is a <declaration>, so a struct, a

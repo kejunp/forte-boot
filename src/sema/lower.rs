@@ -839,9 +839,18 @@ impl<'a> Lowerer<'a> {
                     let items = items.clone();
                     self.declare(&items, &inner);
                 }
+                // A member is not the file's. "An impl holds methods, and a
+                // method is reached through a value with a `.` like any other
+                // member" (§5), so nothing names one without a receiver in
+                // hand -- and putting its bare name in the file's scope made
+                // `impl P { fn zero() }` a free `zero()` callable anywhere in
+                // the file, and made two impls with a method of one name into
+                // one name that answered for the first.
                 TIRItemKind::Trait { members, .. } | TIRItemKind::Impl { members, .. } => {
                     let members = members.clone();
+                    let outer = std::mem::replace(&mut self.nesting, true);
                     self.declare(&members, within);
+                    self.nesting = outer;
                 }
                 // "A `<const_decl>` is the compile-time constant, and stands
                 // there and in a block alike" (§2), and a `<statement>` is a
