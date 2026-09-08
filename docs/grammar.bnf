@@ -249,7 +249,12 @@
 
 <var_decl>              ::= <var_head> ";"
 
+# The second alternative binds one name per member of a tuple. It takes no
+# <gc_opt>: a `gc` binding holds one handle, and there is nothing for one
+# pattern to take several of. The <type_annotation_opt> is the whole tuple's.
 <var_head>              ::= <var_intro> <gc_opt> <binding_name>
+                            <type_annotation_opt> <initializer_opt>
+                          | <var_intro> <tuple_pattern>
                             <type_annotation_opt> <initializer_opt>
 
 <var_intro>             ::= "let"

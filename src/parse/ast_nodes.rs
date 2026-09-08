@@ -570,6 +570,11 @@ pub enum ASTBinding {
     Discard,
     // How it was taken, and the region it named where it named one.
     SelfRecv(ASTSelf, Option<String>),
+    // `let (a, b) = p`: the names are under a `<tuple_pattern>`, which is kept
+    // as a node rather than pulled apart here. A pattern admits shapes a `let`
+    // cannot bind -- a literal, a range, a variant -- and refusing those wants
+    // the span each was written at, which only the node still has.
+    Pattern(ASTNodeId),
 }
 
 // What calling a closure does to what it captured, which is the same

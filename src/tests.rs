@@ -3320,3 +3320,78 @@ fn a_reference_is_cast_as_the_place_it_refers_to() {
     assert!(said.contains("0 failed"), "{}", said);
     assert!(said.contains("running 2 tests"), "{}", said);
 }
+
+// ---- Taking a tuple apart in a `let` -------------------------------------------
+
+// `let (a, b) = p` binds both names off one value. What it lowers to is a
+// holder and a `let` per member, and the holder is what makes it worth a test
+// running: the initialiser is read once, so a `let` whose value is a call makes
+// the call once however many names it binds.
+#[test]
+fn a_let_takes_a_tuple_apart() {
+    let dir = std::env::temp_dir().join(format!("fortec-tuple-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("tuple.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         var calls: i64 = 0\n\
+         \n\
+         struct Held { pub n: i64 }\n\
+         \n\
+         fn counted(): (i64, i64) {\n\
+         \x20   calls = calls + 1\n\
+         \x20   (3, 4)\n\
+         }\n\
+         \n\
+         %test\n\
+         fn both_names_come_off_one_value() {\n\
+         \x20   let (a, b) = counted()\n\
+         \x20   assert_eq(&a, &3, \"the first member\")\n\
+         \x20   assert_eq(&b, &4, \"the second\")\n\
+         \x20   assert_eq(&calls, &1, \"the value is read once, not once per name\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_pattern_inside_one_binds_through_it() {\n\
+         \x20   let (a, (b, c), _) = (1, (2, 5), 9)\n\
+         \x20   assert_eq(&a, &1, \"the outer member\")\n\
+         \x20   assert_eq(&b, &2, \"the first inner one\")\n\
+         \x20   assert_eq(&c, &5, \"the second inner one\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_var_says_reaches_the_members() {\n\
+         \x20   var (m, n) = (10, 20)\n\
+         \x20   m = m + n\n\
+         \x20   assert_eq(&m, &30, \"a member a `var` bound is written to\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn the_value_is_read_before_the_names_are_bound() {\n\
+         \x20   let a = 1\n\
+         \x20   let b = 2\n\
+         \x20   let (a, b) = (b, a)\n\
+         \x20   assert_eq(&a, &2, \"the swap read the old `b`\")\n\
+         \x20   assert_eq(&b, &1, \"and the old `a`\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_member_that_is_not_a_number_comes_out_whole() {\n\
+         \x20   let (x, y): (Held, Held) = (Held { n: 6 }, Held { n: 7 })\n\
+         \x20   assert_eq(&x.n, &6, \"the first struct\")\n\
+         \x20   assert_eq(&y.n, &7, \"the second struct\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "tuple");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a `let` was meant to take a tuple apart:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 5 tests"), "{}", said);
+}

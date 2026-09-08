@@ -454,6 +454,33 @@ fn a_tuple_keeps_its_members_in_order() {
     }
 }
 
+// The other place a `<tuple_pattern>` stands: a `let` takes one where a name
+// goes, and what it binds is kept as the pattern node -- a pattern admits
+// shapes a `let` cannot bind, and refusing those wants the span each was
+// written at.
+#[test]
+fn a_let_takes_a_tuple_pattern_where_a_name_goes() {
+    let (p, stmts) = statements("    let (a, _): (i64, i64) = pair();");
+    let (name, ty, init) = match &p.get_node(stmts[0]).kind {
+        ASTNodeKind::Variable { name, ty, init, gc, intro, .. } => {
+            assert!(!gc, "the rule has no `<gc_opt>`");
+            assert_eq!(*intro, ASTVariableIntro::Let);
+            (name.clone(), *ty, *init)
+        }
+        other => panic!("{:?}", other),
+    };
+    assert!(ty.is_some(), "the annotation is the whole tuple's");
+    assert!(init.is_some());
+    let ASTBinding::Pattern(pat) = name else { panic!("{:?}", name) };
+    match &p.get_node(pat).kind {
+        ASTNodeKind::TuplePat(elems) => {
+            assert_eq!(elems.len(), 2);
+            assert_eq!(p.get_node(elems[1]).kind, ASTNodeKind::Wildcard);
+        }
+        other => panic!("{:?}", other),
+    }
+}
+
 #[test]
 fn a_tuple_pattern_is_a_variant_pattern_with_no_name() {
     let (p, stmts) = statements("    match p {\n        (0, y) => y,\n        _ => 0,\n    };");

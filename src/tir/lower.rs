@@ -71,11 +71,22 @@ pub struct Lowerer<'a> {
     // count and not a flag: `unsafe { unsafe f() }` nests, and the inner word
     // must not put the outer one out when it is done with.
     guarded: usize,
+    // How many holders `let (a, b) = p` has made. A tuple pattern binds its
+    // names off one value, and the value wants a name of its own to be read
+    // several times through -- `(tuple 0)`, which is spelled so that nothing
+    // written can reach it.
+    holders: usize,
 }
 
 impl<'a> Lowerer<'a> {
     pub fn new(parser: &'a Parser) -> Lowerer<'a> {
-        Lowerer { parser, tir: TIRProgram::default(), errors: Diagnostics::new(), guarded: 0 }
+        Lowerer {
+            parser,
+            tir: TIRProgram::default(),
+            errors: Diagnostics::new(),
+            guarded: 0,
+            holders: 0,
+        }
     }
 
     pub fn errors(&self) -> &Diagnostics {
@@ -380,6 +391,25 @@ impl<'a> Lowerer<'a> {
                 let attrs = self.attrs(&attrs, Target::Other("a variable")).common;
                 if gc {
                     self.gc_check(ty, init);
+                }
+                // A global's value is written into the image at compile time,
+                // and taking a tuple apart is something a body does. There is
+                // no statement here to put the reads in.
+                if let ASTBinding::Pattern(pat) = &name {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "a global binds one name".to_string(),
+                            self.span(*pat),
+                        )
+                        .with_label("this binds several".to_string())
+                        .with_help(
+                            "a global's value is written out before the program \
+                             runs, and taking a tuple apart is something a body \
+                             does -- name the tuple here and index it where it \
+                             is read",
+                        ),
+                    );
+                    return None;
                 }
                 let ty = ty.map(|t| self.ty(t));
                 let init = init.map(|i| self.expr(i));
@@ -702,17 +732,17 @@ impl<'a> Lowerer<'a> {
 
     // `None` where the node was a macro declaration the expander should already
     // have dropped; everything else is one of the three shapes a statement has.
-    fn stmt(&mut self, id: ASTNodeId, is_unsafe: bool) -> Option<TIRStmt> {
-        match self.kind(id) {
+    fn stmt(&mut self, id: ASTNodeId, is_unsafe: bool, out: &mut Vec<TIRStmt>) {
+        let held = match self.kind(id) {
             // The word becomes a flag: there are exactly two statements it can
             // stand in front of, and a node wrapped round one said no more.
             // What it guards is lowered with the count up, so an `addr`
             // anywhere under it is answered for.
             ASTNodeKind::Unsafe(inner) => {
                 self.guarded += 1;
-                let out = self.stmt(inner, true);
+                self.stmt(inner, true, out);
                 self.guarded -= 1;
-                out
+                return;
             }
             ASTNodeKind::ExprStmt(e) => {
                 Some(TIRStmt::Expr { is_unsafe, expr: self.expr(e) })
@@ -723,6 +753,10 @@ impl<'a> Lowerer<'a> {
                 self.attrs(&attrs, Target::Other("a variable"));
                 if gc {
                     self.gc_check(ty, init);
+                }
+                if let ASTBinding::Pattern(pat) = name {
+                    self.destructured(is_unsafe, intro_of(intro), pat, ty, init, id, out);
+                    return;
                 }
                 let ty = ty.map(|t| self.ty(t));
                 let init = init.map(|i| self.expr(i));
@@ -741,9 +775,136 @@ impl<'a> Lowerer<'a> {
             // body of an `unsafe fn`.
             _ => {
                 let outer = std::mem::replace(&mut self.guarded, 0);
-                let out = self.item(id).map(TIRStmt::Item);
+                let held = self.item(id).map(TIRStmt::Item);
                 self.guarded = outer;
-                out
+                held
+            }
+        };
+        out.extend(held);
+    }
+
+    // `let (a, b) = p` is `let (tuple 0) = p` and then a `let` per member off
+    // it, in the order they were written. One value read several times is why
+    // the holder is there at all: `p` may be a call, and a pattern that indexed
+    // the initialiser directly would make the call once per name.
+    //
+    // A pattern nests, so this does too -- `let ((a, b), c) = p` takes another
+    // holder for the inner one. The holder is always a `let` whatever the
+    // binding said: `var (a, b) = p` is about `a` and `b`, and nothing can
+    // reach the thing between them to write to it.
+    //
+    // What a `let` binds must be a shape every value of the type has, and a
+    // pattern can be written that is not: `let (1, b) = p` holds only for some
+    // `p`. Those are turned down here, where the span each was written at is
+    // still to hand.
+    fn destructured(
+        &mut self,
+        is_unsafe: bool,
+        intro: TIRIntro,
+        pat: ASTNodeId,
+        ty: Option<ASTNodeId>,
+        init: Option<ASTNodeId>,
+        at: ASTNodeId,
+        out: &mut Vec<TIRStmt>,
+    ) {
+        let Some(init) = init else {
+            self.errors.push(
+                Diagnostic::error(
+                    "a tuple pattern needs a value to take apart".to_string(),
+                    self.span(at),
+                )
+                .with_label("this binds several names and is given none".to_string())
+                .with_help("write `let (a, b) = p`, or bind one name and index it"),
+            );
+            return;
+        };
+        let ty = ty.map(|t| self.ty(t));
+        let init = self.expr(init);
+        let holder = self.holder();
+        out.push(TIRStmt::Let {
+            is_unsafe,
+            is_gc: false,
+            intro: TIRIntro::Let,
+            name: TIRBinding::Name(holder.clone()),
+            ty,
+            init: Some(init),
+        });
+        self.members(is_unsafe, intro, pat, holder, out);
+    }
+
+    // The name of the next holder. Spelled with a space and brackets, which no
+    // identifier has, so it stands in the same scope as what the body wrote
+    // and collides with none of it.
+    fn holder(&mut self) -> String {
+        let held = format!("(tuple {})", self.holders);
+        self.holders += 1;
+        held
+    }
+
+    fn members(
+        &mut self,
+        is_unsafe: bool,
+        intro: TIRIntro,
+        pat: ASTNodeId,
+        holder: String,
+        out: &mut Vec<TIRStmt>,
+    ) {
+        let ASTNodeKind::TuplePat(elems) = self.kind(pat) else {
+            panic!("a tuple pattern lowered from something else")
+        };
+        for (index, elem) in elems.into_iter().enumerate() {
+            let base = self.push_expr(TIRExprKind::Name(vec![holder.clone()]), elem);
+            let read = self
+                .push_expr(TIRExprKind::TupleIndex { base, index: index as u64 }, elem);
+            match self.kind(elem) {
+                // A bare name in a pattern is a `<const_pattern>`, which is
+                // how `match red { .. }` reaches a constant -- one segment of
+                // it is a name and a `let` binds that. Several segments name
+                // something already, and nothing can be bound to.
+                ASTNodeKind::Name(path) if path.len() == 1 => out.push(TIRStmt::Let {
+                    is_unsafe,
+                    is_gc: false,
+                    intro,
+                    name: TIRBinding::Name(path[0].clone()),
+                    ty: None,
+                    init: Some(read),
+                }),
+                // `_` still reads the member: what a `let` binds it drops, and
+                // dropping it is the point of writing one.
+                ASTNodeKind::Wildcard => out.push(TIRStmt::Let {
+                    is_unsafe,
+                    is_gc: false,
+                    intro,
+                    name: TIRBinding::Discard,
+                    ty: None,
+                    init: Some(read),
+                }),
+                ASTNodeKind::TuplePat(_) => {
+                    let inner = self.holder();
+                    out.push(TIRStmt::Let {
+                        is_unsafe,
+                        is_gc: false,
+                        intro: TIRIntro::Let,
+                        name: TIRBinding::Name(inner.clone()),
+                        ty: None,
+                        init: Some(read),
+                    });
+                    self.members(is_unsafe, intro, elem, inner, out);
+                }
+                other => {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "a `let` binds a shape every value has".to_string(),
+                            self.span(elem),
+                        )
+                        .with_label(format!("this is {}", refutable(&other)))
+                        .with_help(
+                            "a name, `_`, or another tuple is what a `let` takes \
+                             here -- `match` is where a pattern that holds for \
+                             some values and not others is written",
+                        ),
+                    );
+                }
             }
         }
     }
@@ -927,9 +1088,7 @@ impl<'a> Lowerer<'a> {
         };
         let mut out: Vec<TIRStmt> = Vec::new();
         for s in stmts {
-            if let Some(stmt) = self.stmt(s, false) {
-                out.push(stmt);
-            }
+            self.stmt(s, false, &mut out);
         }
         // The slot the grammar leaves for a last thing with no separator holds
         // an expression *or* a declaration -- `<unterminated_stmt>` takes a
@@ -964,9 +1123,7 @@ impl<'a> Lowerer<'a> {
         let tail = match tail {
             None => None,
             Some(t) if !self.is_value(t) => {
-                if let Some(stmt) = self.stmt(t, is_unsafe) {
-                    out.push(stmt);
-                }
+                self.stmt(t, is_unsafe, &mut out);
                 None
             }
             Some(t) => Some(self.expr(t)),
@@ -1037,6 +1194,24 @@ fn binding(b: &ASTBinding) -> TIRBinding {
         ASTBinding::SelfRecv(held, life) => {
             TIRBinding::SelfRecv(self_of(*held), life.clone())
         }
+        // `stmt` spends one into a name apiece and a global turns one down, so
+        // there is no third place a pattern binding reaches.
+        ASTBinding::Pattern(_) => {
+            panic!("a tuple pattern reached `binding`; `stmt` is meant to spend it")
+        }
+    }
+}
+
+// What a pattern in a `let` was written as, where it was written as something
+// only some values are. Read into "this is ...".
+fn refutable(k: &ASTNodeKind) -> &'static str {
+    match k {
+        ASTNodeKind::LitPat { .. } => "a literal, which only some values equal",
+        ASTNodeKind::RangePat { .. } => "a range, which only some values fall in",
+        ASTNodeKind::VariantPat { .. } => "a variant, which an enum has others of",
+        ASTNodeKind::StructPat { .. } => "a struct pattern",
+        ASTNodeKind::Name(_) => "a constant, which only some values equal",
+        _ => "not a name",
     }
 }
 

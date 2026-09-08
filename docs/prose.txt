@@ -586,6 +586,29 @@ through it is the reference's own business — "&" says no and "*" says yes.
 So "let p: *i32" never re-aims and still writes into what it refers to, which
 is the pair section 5 lays out beside its "var" counterpart.
 
+<tuple_pattern> in a <var_head>. Where a name goes, a tuple pattern goes
+instead, and binds one name per member: "let (a, b) = p". The value is read
+once and each name comes off it by index, so a "let" whose initialiser is a
+call makes the call once however many names it binds. The type annotation is
+the whole tuple's, "let (a, b): (i64, i64) = p", and the intro reaches the
+members — "var (a, b)" binds two names that may be assigned again, and the
+value between them is one nothing can reach.
+
+A pattern nests, so "let ((a, b), c) = p" binds three names, and "_" stands
+in it where a name may — "let (a, _) = p" reads the second member and drops
+it, which is what writing one is for. What a "let" binds must be a shape
+every value of the type has, so a pattern that holds for some values and not
+others is turned down where it is written: a literal, a range, a variant, and
+a name of more than one segment, which names a constant rather than binding
+one. "match" is where those are written.
+
+There is no "gc" on this form: a "gc" binding holds one handle, and there is
+nothing for one pattern to take several of. Nor is there one at file scope. A
+global's value is written into the image before the program runs, and taking
+a tuple apart is something a body does — so "let (a, b) = (1, 2)" beside a
+declaration is refused, and the tuple is named there and indexed where it is
+read.
+
 <gc_opt>. "gc" stands between the intro and the name — "let gc x", "var gc
 x" — and says who releases the value: the collector rather than the scope the
 binding was written in. It annotates the binding and not the value, which is
@@ -2323,13 +2346,15 @@ answer is not obvious from the rules alone.
     <tuple_pattern> (sections 3, 5 and 5.2). Settled — including that there
     is no "()" and no one-member tuple, that "null" is what an empty one
     would have been, and that the trailing comma is a value's and not a
-    type's. Two things it does not say. A tuple has no place to be
-    destructured but a match arm, since a <var_head> takes a <binding_name>
-    and not a pattern, so "let (a, b) = p" is not written. And a tuple on
-    the left of an "=" is a <tuple_expr> like any other, so "(a, b) = (b, a)"
-    parses; whether the swap it looks like is what it means, or whether the
-    parser refuses it as it refuses any other left side that is not a place,
-    is not decided here.
+    type's. Both of the things it used to leave open are settled too. A
+    <var_head> takes a <tuple_pattern> where a name goes, so "let (a, b) = p"
+    binds both names off one value, the value being read once (section 2).
+    And a tuple on the left of an "=" is a <tuple_expr> like any other, which
+    is a value and not a place, so "(a, b) = (b, a)" is refused where it is
+    written — it used to lower to a store into a tuple built on the spot,
+    accepted and doing nothing at all. The swap it looks like is
+    "let (a, b) = (b, a)", where the value is read before either name is
+    bound.
   - A constant is evaluable when a "const fn" is what it calls, and a const
     fn may use anything workable out at compile time — locals, mutation,
     loops, references to its own values, other const fns — the one rule

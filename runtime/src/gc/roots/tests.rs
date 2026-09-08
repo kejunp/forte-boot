@@ -44,6 +44,10 @@ fn noting_the_stack_records_something_above_where_we_are() {
 // the words between here and the base.
 #[test]
 fn a_pointer_on_the_stack_is_found() {
+    // The one test here that starts a cycle, and `start` raises a flag that is
+    // the whole process's -- `abi`'s tests assert it is down. See `crate::alone`.
+    // Held across the join, so the thread's cycle is over before it goes.
+    let _held = crate::alone();
     std::thread::spawn(|| {
         note();
         let mut rt = Runtime::new();

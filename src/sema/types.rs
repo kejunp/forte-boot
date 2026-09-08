@@ -179,6 +179,19 @@ impl Types {
         guess(self.fills[var])
     }
 
+    // Whether `id` is worked out enough to say it is not a tuple. A hole a
+    // number goes in is: `5` is not an `i32` yet and is not a tuple either,
+    // and `7.0` on one wants turning down where it was written rather than
+    // after every hole is filled. A hole that takes anything is not, and that
+    // is the one case this stays quiet about.
+    pub fn not_a_tuple(&self, id: TyId) -> bool {
+        match self.arena[self.shallow(id)] {
+            Ty::Tuple(_) | Ty::Error => false,
+            Ty::Var(var) => guess(self.fills[var]).is_some(),
+            _ => true,
+        }
+    }
+
     // `id` with any filled hole at the top followed. Shallow on purpose: what
     // `unify` needs is the outermost shape, and following further would build
     // types nobody asked for.
@@ -663,7 +676,7 @@ impl Default for Types {
     }
 }
 
-fn prim_name(prim: TIRPrim) -> &'static str {
+pub fn prim_name(prim: TIRPrim) -> &'static str {
     match prim {
         TIRPrim::I8 => "i8",
         TIRPrim::I16 => "i16",

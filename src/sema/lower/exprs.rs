@@ -149,6 +149,34 @@ impl<'a> Lowerer<'a> {
 
             TIRExprKind::Assign { op, place, value } => {
                 let (p, v) = (self.expr(place), self.expr(value));
+                // The left of an `=` is somewhere a value already is. Anything
+                // else is a value that was worked out, and there is nowhere to
+                // put one -- `(a, b) = (b, a)` parses, being two expressions
+                // with an `=` between them, and used to lower to a store to a
+                // tuple built on the spot: accepted, and doing nothing at all.
+                //
+                // The borrow checker asks the same question of the same place
+                // and is the one that says a `let` may not be written to. It
+                // answers `None` for a `ptr` on purpose, and for a global,
+                // so it is not the pass that can tell a place from a value.
+                let pt = self.out.exprs[p].ty;
+                if !addressable(&self.out.exprs[p].kind)
+                    && !matches!(self.types.get(pt), Ty::Error)
+                {
+                    self.errors.push(
+                        Diagnostic::error(
+                            "this cannot be assigned to".to_string(),
+                            self.at(place),
+                        )
+                        .with_label("this is a value, not a place")
+                        .with_help(
+                            "a name, a field, an element, or what a reference \
+                             refers to is what an `=` writes into -- \
+                             `let (a, b) = (b, a)` is how two names are bound \
+                             at once",
+                        ),
+                    );
+                }
                 // "assigning to one takes a `*`" -- the least the body asks of
                 // it turns out to be more than a read.
                 if let TTIRExprKind::Local(slot) = self.out.exprs[p].kind {
@@ -397,7 +425,28 @@ impl<'a> Lowerer<'a> {
                         );
                         self.types.error()
                     }),
-                    _ => self.types.error(),
+                    // Not a tuple at all. Quiet where the base is an error
+                    // already or a hole nothing has filled -- reporting the
+                    // second would be guessing -- and said plainly otherwise,
+                    // this being the one way `.0` was ever wrong before.
+                    _ => {
+                        if self.types.not_a_tuple(bt) {
+                            // A hole a number goes in spells as `_`, which
+                            // says nothing here; what it will come to does.
+                            let held = match self.types.standing(bt) {
+                                Some(prim) => crate::sema::types::prim_name(prim).to_string(),
+                                None => self.spell(bt),
+                            };
+                            self.errors.push(
+                                Diagnostic::error(
+                                    format!("`.{}` reads a member out of a tuple", index),
+                                    self.at(id),
+                                )
+                                .with_label(format!("this is {}", held)),
+                            );
+                        }
+                        self.types.error()
+                    }
                 };
                 self.make(TTIRExprKind::TupleIndex { base: b, index }, ty, id)
             }
@@ -1302,5 +1351,23 @@ fn answers_bool(op: TIRBinOp) -> bool {
         op,
         TIRBinOp::Eq | TIRBinOp::Ne | TIRBinOp::Lt | TIRBinOp::Gt | TIRBinOp::Le
             | TIRBinOp::Ge | TIRBinOp::And | TIRBinOp::Or | TIRBinOp::Xor
+    )
+}
+
+
+// Somewhere the source can name, which is somewhere a value already is -- the
+// same predicate `gir::lower` holds a place to, with the one crossing it does
+// not need: `deref p = 1` puts a `Deref` where the store goes, and that is a
+// place as much as a field of one is.
+fn addressable(kind: &TTIRExprKind) -> bool {
+    matches!(
+        kind,
+        TTIRExprKind::Local(_)
+            | TTIRExprKind::Item(_)
+            | TTIRExprKind::SelfExpr
+            | TTIRExprKind::Field { .. }
+            | TTIRExprKind::TupleIndex { .. }
+            | TTIRExprKind::Index { .. }
+            | TTIRExprKind::Unary { op: TIRUnaryOp::Deref, .. }
     )
 }

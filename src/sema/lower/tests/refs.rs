@@ -517,3 +517,72 @@ fn a_type_is_spelled_the_way_it_was_written() {
     let out = refused("fn f(a: &i32[][3]): i32 { a }\n");
     assert!(out.contains("`&i32[][3]`"), "{}", out);
 }
+
+// ---- What an `=` may write into ------------------------------------------------
+
+// "A tuple on the left of an `=` is a <tuple_expr> like any other" (§8), and
+// what that is is a value: two expressions with an `=` between them parse, and
+// there is nowhere to put a value that was worked out on the spot.
+//
+// It used to lower to a store into a tuple built there and thrown away --
+// `(a, b) = (b, a)` compiled clean, ran, and did nothing at all. The borrow
+// checker asks the same question of the same place and is not the pass that can
+// answer it: it says `None` for a `ptr` and for a global on purpose.
+#[test]
+fn a_value_is_not_somewhere_to_assign_to() {
+    let said = refused(
+        "fn f() {\n    var a: i64 = 1\n    var b: i64 = 2\n    (a, b) = (b, a)\n}\n",
+    );
+    assert!(said.contains("this cannot be assigned to"), "{}", said);
+    assert!(said.contains("let (a, b) = (b, a)"), "{}", said);
+}
+
+// And every shape that *is* a place still is: a name, a global, a field, an
+// element, a member of a tuple, and what a reference refers to.
+#[test]
+fn every_place_is_still_somewhere_to_assign_to() {
+    let p = assigned(
+        "var g: i64 = 0\n\
+         struct P { pub x: i64 }\n\
+         fn f() {\n\
+         \x20   var p = P { x: 1 }\n\
+         \x20   var a: i64[3] = [0, 0, 0]\n\
+         \x20   var t = (1, 2)\n\
+         \x20   var n: i64 = 6\n\
+         \x20   let r: *i64 = *n\n\
+         \x20   p.x = 2\n\
+         \x20   a[0] = 3\n\
+         \x20   g = 4\n\
+         \x20   t.0 = 5\n\
+         \x20   r = 7\n\
+         }\n",
+    );
+    let held = p
+        .exprs
+        .iter()
+        .filter(|e| matches!(e.kind, TTIRExprKind::Assign { .. }))
+        .count();
+    assert_eq!(held, 5, "{:#?}", p.exprs);
+}
+
+// ---- `.0` on something that is not a tuple -------------------------------------
+
+// A tuple is "reached into with `.0`" (§8) and nothing else is. Reaching into
+// something else used to make an error type with no message against it, so
+// `let (d, e) = 7` -- which is `7.0` and `7.1` -- compiled clean and gave both
+// names nothing.
+//
+// A hole a number goes in is worked out enough to say so: `7` is not an `i32`
+// yet and is not a tuple either. A hole that takes anything is not, and that is
+// the one thing this stays quiet about.
+#[test]
+fn reaching_into_something_that_is_not_a_tuple_says_so() {
+    let said = refused("fn f() {\n    let x: i64 = 7\n    let y = x.0\n}\n");
+    assert!(said.contains("`.0` reads a member out of a tuple"), "{}", said);
+    assert!(said.contains("this is i64"), "{}", said);
+
+    // The same through a `let` that takes one apart, where the number's type is
+    // still a hole at the point the member is read.
+    let said = refused("fn f() {\n    let (d, e) = 7\n}\n");
+    assert!(said.contains("`.0` reads a member out of a tuple"), "{}", said);
+}

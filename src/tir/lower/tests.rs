@@ -727,3 +727,129 @@ fn a_repr_takes_c_or_a_width() {
     let said = errors_in("%repr(C, 4)\nenum E {\n    A,\n}\n");
     assert!(said[0].contains("`%repr` takes one word"), "{}", said[0]);
 }
+
+// ---- Taking a tuple apart in a `let` ------------------------------------------
+
+// `let (a, b) = p` is a holder and a member apiece. The holder is why: `p` may
+// be a call, and reading the initialiser once per name would make the call
+// once per name.
+#[test]
+fn a_tuple_pattern_becomes_a_holder_and_a_let_per_member() {
+    let tir = clean("fn main() {\n    let (a, b) = p()\n}\n");
+    let f = match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::Fn(f) => f,
+        other => panic!("{:?}", other),
+    };
+    let TIRExprKind::Block { stmts, .. } = body_of(&tir, f) else { panic!("not a block") };
+    assert_eq!(stmts.len(), 3);
+
+    // The holder takes the initialiser, and is a `let` whatever was written.
+    let TIRStmt::Let { intro, name, init: Some(init), .. } = &stmts[0] else {
+        panic!("{:?}", stmts[0])
+    };
+    assert_eq!(*intro, TIRIntro::Let);
+    let TIRBinding::Name(holder) = name else { panic!("{:?}", name) };
+    assert_eq!(holder, "(tuple 0)");
+    assert!(matches!(tir.exprs[*init].kind, TIRExprKind::Call { .. }));
+
+    // And each member reads its own index off it, in the order written.
+    for (at, want) in [(1usize, ("a", 0u64)), (2, ("b", 1))] {
+        let TIRStmt::Let { name, init: Some(init), .. } = &stmts[at] else {
+            panic!("{:?}", stmts[at])
+        };
+        assert_eq!(*name, TIRBinding::Name(want.0.to_string()));
+        let TIRExprKind::TupleIndex { base, index } = &tir.exprs[*init].kind else {
+            panic!("{:?}", tir.exprs[*init].kind)
+        };
+        assert_eq!(*index, want.1);
+        assert_eq!(tir.exprs[*base].kind, TIRExprKind::Name(vec![holder.clone()]));
+    }
+}
+
+// `var (a, b) = p` is about `a` and `b`: they are what was written, and the
+// thing between them is one nothing can reach to write to.
+#[test]
+fn what_var_says_reaches_the_members_and_not_the_holder() {
+    let tir = clean("fn main() {\n    var (a, b) = p()\n}\n");
+    let f = match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::Fn(f) => f,
+        other => panic!("{:?}", other),
+    };
+    let TIRExprKind::Block { stmts, .. } = body_of(&tir, f) else { panic!("not a block") };
+    let intros: Vec<TIRIntro> = stmts
+        .iter()
+        .map(|s| match s {
+            TIRStmt::Let { intro, .. } => *intro,
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(intros, vec![TIRIntro::Let, TIRIntro::Var, TIRIntro::Var]);
+}
+
+// A pattern nests, so this does. Each tuple inside takes a holder of its own,
+// and the names come out in the order they were written.
+#[test]
+fn a_tuple_pattern_inside_one_takes_a_holder_of_its_own() {
+    let tir = clean("fn main() {\n    let (a, (b, c), _) = p()\n}\n");
+    let f = match &tir.items[tir.roots[0]].kind {
+        TIRItemKind::Fn(f) => f,
+        other => panic!("{:?}", other),
+    };
+    let TIRExprKind::Block { stmts, .. } = body_of(&tir, f) else { panic!("not a block") };
+    let names: Vec<TIRBinding> = stmts
+        .iter()
+        .map(|s| match s {
+            TIRStmt::Let { name, .. } => name.clone(),
+            other => panic!("{:?}", other),
+        })
+        .collect();
+    let held = |n: &str| TIRBinding::Name(n.to_string());
+    assert_eq!(
+        names,
+        vec![
+            held("(tuple 0)"),
+            held("a"),
+            held("(tuple 1)"),
+            held("b"),
+            held("c"),
+            TIRBinding::Discard,
+        ]
+    );
+}
+
+// What a `let` binds must be a shape every value of the type has, and three of
+// the six patterns are not.
+#[test]
+fn a_pattern_only_some_values_match_is_not_a_let() {
+    let held = errors_in("fn main() {\n    let (a, 1) = p()\n}\n");
+    assert_eq!(held.len(), 1);
+    assert!(held[0].contains("a `let` binds a shape every value has"), "{}", held[0]);
+    assert!(held[0].contains("this is a literal"), "{}", held[0]);
+
+    let held = errors_in("fn main() {\n    let (a, Some(b)) = p()\n}\n");
+    assert!(held[0].contains("this is a variant"), "{}", held[0]);
+
+    // A bare name is a `<const_pattern>` too, and one segment of it is what a
+    // `let` binds -- `let (a, b)` would not work otherwise. Several segments
+    // name something already.
+    let held = errors_in("fn main() {\n    let (a, Colour::Red) = p()\n}\n");
+    assert!(held[0].contains("this is a constant"), "{}", held[0]);
+}
+
+// And a pattern with nothing to take apart is turned down where it stands,
+// rather than binding several names to nothing.
+#[test]
+fn a_tuple_pattern_with_no_initialiser_is_turned_down() {
+    let held = errors_in("fn main() {\n    let (a, b)\n}\n");
+    assert_eq!(held.len(), 1);
+    assert!(held[0].contains("needs a value to take apart"), "{}", held[0]);
+}
+
+// A global's value is written into the image before the program runs, and
+// there is no statement there to put the reads in.
+#[test]
+fn a_global_binds_one_name() {
+    let held = errors_in("let (a, b) = (1, 2)\n");
+    assert_eq!(held.len(), 1);
+    assert!(held[0].contains("a global binds one name"), "{}", held[0]);
+}
