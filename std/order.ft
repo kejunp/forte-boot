@@ -139,14 +139,3 @@ pub fn mix(k: &i64): i64 {
     h = (h ^ (h >> 27)) * -7723592293110705685
     h ^ (h >> 31)
 }
-
-// The pair of free functions the containers took before the traits existed.
-// Kept because a caller may still want to hand one over, and because `mix` is
-// what `impl Hash for i64` calls.
-pub fn less_i64(a: &i64, b: &i64): bool {
-    a < b
-}
-
-pub fn eq_i64(a: &i64, b: &i64): bool {
-    a == b
-}

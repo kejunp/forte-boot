@@ -11,26 +11,26 @@
 // elements and for the same reasons. `room` and `stride` are `mem.ft`'s, which
 // is where what the collector does and does not walk into is set out.
 //
-// ---- What a key has to come with -------------------------------------------
+// ---- What a key has to answer ----------------------------------------------
 //
 // A map has to hash a key and it has to say whether two are the same, and
-// neither is something the language can do for an arbitrary `K`. There are no
-// traits reaching this far -- an `impl<T>` does not yet scope its own
-// parameter -- and the built-in `==` over a struct compares where the two
-// *are* rather than what they hold, which is a wrong answer that looks like an
-// answer. So the two are handed in, once, when the map is made:
+// neither is something the language does for an arbitrary `K`: the built-in
+// `==` over a struct compares where the two *are* rather than what they hold,
+// which is a wrong answer that looks like an answer, and there is no built-in
+// hash at all.
 //
-//     fn hash_i64(k: &i64): i64 { mix(k) }
-//     fn eq_i64(a: &i64, b: &i64): bool { a == b }
-//     var m: HashMap<i64, str> = empty(hash_i64, eq_i64)
+// So `K` answers `Hash` and `Eq`, and the bound says it once:
 //
-// That is a requirement written down rather than a bound the checker enforces,
-// and it is the honest shape today: a map that quietly used `==` would be
-// right for the scalars and wrong for everything else, and wrong without
-// saying so. `order.ft` holds the pair for the type most keys are.
+//     var m: HashMap<i64, str> = empty()
+//
+// They were handed in as function values before -- `empty(mix, eq_i64)` --
+// because there were no traits reaching this far. What that cost was every
+// caller knowing which pair went with which key, and this file having no way
+// to say the pair was wrong. `order.ft` writes the impls for the primitives
+// most keys are, and a suite writes its own for a type of its own.
 
 import mem::{room, stride};
-import order::{eq_i64, mix};
+import order::{Eq, Hash};
 
 // What a place in the runs is doing. Three states and not two, because a
 // removal cannot simply mark a place free: a key that probed *past* it on the
@@ -44,8 +44,6 @@ pub struct HashMap<K, V> {
     pub keys:  ptr K,
     pub vals:  ptr V,
     pub state: ptr u8,
-    pub hash:  fn(&K): i64,
-    pub eq:    fn(&K, &K): bool,
     pub len:   i64,
     // Always a power of two, or zero for a map that has asked for nothing yet.
     // That is what lets the wrap be an `&` rather than a `%`, and a `%` is a
@@ -65,7 +63,7 @@ pub struct HashMap<K, V> {
 // One with no room, which asks for nothing until something is put in it. The
 // `K` and `V` come from what the caller is assigning to, there being no way to
 // write them at the call.
-pub fn empty<K, V>(hash: fn(&K): i64, eq: fn(&K, &K): bool): HashMap<K, V> {
+pub fn empty<K: Hash + Eq, V>(): HashMap<K, V> {
     unsafe let no_k = 0 as ptr K
     unsafe let no_v = 0 as ptr V
     unsafe let no_s = 0 as ptr u8
@@ -73,8 +71,6 @@ pub fn empty<K, V>(hash: fn(&K): i64, eq: fn(&K, &K): bool): HashMap<K, V> {
         keys:  no_k,
         vals:  no_v,
         state: no_s,
-        hash:  hash,
-        eq:    eq,
         len:   0,
         cap:   0,
         used:  0,
@@ -97,13 +93,12 @@ pub fn is_empty<K, V>(m: &HashMap<K, V>): bool {
 // The walk stops at a `FREE` place because that is where this key would have
 // been put, so anything past it was put there by somebody else. It walks
 // through `GONE` for the reason `GONE` exists at all.
-pub fn find<K, V>(m: &HashMap<K, V>, k: &K): i64 {
+pub fn find<K: Hash + Eq, V>(m: &HashMap<K, V>, k: &K): i64 {
     if m.cap == 0 {
         return -1
     }
     let mask = m.cap - 1
-    let f = m.hash
-    var at = f(k) & mask
+    var at = k.hash() & mask
     var steps = 0
     while steps < m.cap {
         unsafe let what = m.state[at]
@@ -111,8 +106,7 @@ pub fn find<K, V>(m: &HashMap<K, V>, k: &K): i64 {
             return -1
         }
         if what == TAKEN {
-            let same = m.eq
-            unsafe let is = same(&m.keys[at], k)
+            unsafe let is = m.keys[at].same(k)
             if is {
                 return at
             }
@@ -123,14 +117,14 @@ pub fn find<K, V>(m: &HashMap<K, V>, k: &K): i64 {
     -1
 }
 
-pub fn has<K, V>(m: &HashMap<K, V>, k: &K): bool {
+pub fn has<K: Hash + Eq, V>(m: &HashMap<K, V>, k: &K): bool {
     find(m, k) >= 0
 }
 
 // What is under a key, or the fallback. There is no `Option` to hand back:
 // this file cannot reach `option.ft`, imports not yet carrying names across
 // files, and an `Option` declared here would be a second type of that name.
-pub fn get_or<K, V>(m: &HashMap<K, V>, k: &K, other: V): V {
+pub fn get_or<K: Hash + Eq, V>(m: &HashMap<K, V>, k: &K, other: V): V {
     let at = find(m, k)
     if at < 0 {
         return other
@@ -170,7 +164,7 @@ pub fn places<K, V>(m: &HashMap<K, V>): i64 {
 // The load factor is three quarters, which is where linear probing is still
 // walking a couple of places on a miss rather than a couple of dozen. It is
 // measured against `used` and not `len` -- see the field.
-pub fn grow<K, V>(m: *HashMap<K, V>, want: i64) {
+pub fn grow<K: Hash + Eq, V>(m: *HashMap<K, V>, want: i64) {
     if want * 4 <= m.cap * 3 {
         return
     }
@@ -221,10 +215,9 @@ pub fn grow<K, V>(m: *HashMap<K, V>, want: i64) {
 // The first `GONE` place on the way is remembered and used if the key turns
 // out not to be there: that is what keeps a map that is churned rather than
 // filled from walking further every time.
-pub fn place<K, V>(m: *HashMap<K, V>, k: K, v: V) {
+pub fn place<K: Hash + Eq, V>(m: *HashMap<K, V>, k: K, v: V) {
     let mask = m.cap - 1
-    let f = m.hash
-    var at = f(&k) & mask
+    var at = k.hash() & mask
     var free = -1
     var steps = 0
     while steps < m.cap {
@@ -241,8 +234,7 @@ pub fn place<K, V>(m: *HashMap<K, V>, k: K, v: V) {
             }
         }
         if what == TAKEN {
-            let same = m.eq
-            unsafe let is = same(&m.keys[at], &k)
+            unsafe let is = m.keys[at].same(&k)
             if is {
                 unsafe m.vals[at] = v
                 return
@@ -268,14 +260,14 @@ pub fn place<K, V>(m: *HashMap<K, V>, k: K, v: V) {
 }
 
 // Put one in, making room first. This is the one to call.
-pub fn insert<K, V>(m: *HashMap<K, V>, k: K, v: V) {
+pub fn insert<K: Hash + Eq, V>(m: *HashMap<K, V>, k: K, v: V) {
     grow(m, m.used + 1)
     place(m, k, v)
 }
 
 // Take one out. What is left behind is a `GONE` place and not a `FREE` one,
 // so that a key which probed past it is still found.
-pub fn remove<K, V>(m: *HashMap<K, V>, k: &K): bool {
+pub fn remove<K: Hash + Eq, V>(m: *HashMap<K, V>, k: &K): bool {
     let at = find(m, k)
     if at < 0 {
         return false

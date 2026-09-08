@@ -18,12 +18,15 @@
 // `HashMap<T, ()>` whose second run costs nothing, and a run that costs
 // nothing is not a thing this language has yet.
 //
-// ---- What an element has to come with ---------------------------------------
+// ---- What an element has to answer -------------------------------------------
 //
-//     var s: HashSet<i64> = empty(mix, eq_i64)
+// `Hash` and `Eq`, which is what `hashmap.ft` asks of a key and for the same
+// reasons:
+//
+//     var s: HashSet<i64> = empty()
 
 import mem::{room, stride};
-import order::{eq_i64, mix};
+import order::{Eq, Hash};
 
 const FREE: u8 = 0
 const TAKEN: u8 = 1
@@ -32,8 +35,6 @@ const GONE: u8 = 2
 pub struct HashSet<T> {
     pub elems: ptr T,
     pub state: ptr u8,
-    pub hash:  fn(&T): i64,
-    pub eq:    fn(&T, &T): bool,
     pub len:   i64,
     pub cap:   i64,
     // `TAKEN` plus `GONE`, which is what the growth is measured against -- see
@@ -43,10 +44,12 @@ pub struct HashSet<T> {
 
 // ---- Making one -------------------------------------------------------------
 
-pub fn empty<T>(hash: fn(&T): i64, eq: fn(&T, &T): bool): HashSet<T> {
+// `T` answers `Hash` and `Eq`, which is what a set asks of what goes in it --
+// see `hashmap.ft`, where the same bound is the same argument.
+pub fn empty<T: Hash + Eq>(): HashSet<T> {
     unsafe let no_t = 0 as ptr T
     unsafe let no_s = 0 as ptr u8
-    HashSet { elems: no_t, state: no_s, hash: hash, eq: eq, len: 0, cap: 0, used: 0 }
+    HashSet { elems: no_t, state: no_s, len: 0, cap: 0, used: 0 }
 }
 
 pub fn len<T>(s: &HashSet<T>): i64 {
@@ -62,13 +65,12 @@ pub fn is_empty<T>(s: &HashSet<T>): bool {
 // Where it is, or -1. The walk stops at a `FREE` place because that is where
 // this element would have gone, so anything past it was put there by
 // something else.
-pub fn find<T>(s: &HashSet<T>, x: &T): i64 {
+pub fn find<T: Hash + Eq>(s: &HashSet<T>, x: &T): i64 {
     if s.cap == 0 {
         return -1
     }
     let mask = s.cap - 1
-    let f = s.hash
-    var at = f(x) & mask
+    var at = x.hash() & mask
     var steps = 0
     while steps < s.cap {
         unsafe let what = s.state[at]
@@ -76,8 +78,7 @@ pub fn find<T>(s: &HashSet<T>, x: &T): i64 {
             return -1
         }
         if what == TAKEN {
-            let same = s.eq
-            unsafe let is = same(&s.elems[at], x)
+            unsafe let is = s.elems[at].same(x)
             if is {
                 return at
             }
@@ -88,7 +89,7 @@ pub fn find<T>(s: &HashSet<T>, x: &T): i64 {
     -1
 }
 
-pub fn has<T>(s: &HashSet<T>, x: &T): bool {
+pub fn has<T: Hash + Eq>(s: &HashSet<T>, x: &T): bool {
     find(s, x) >= 0
 }
 
@@ -118,7 +119,7 @@ pub fn elem_at<T>(s: &HashSet<T>, at: i64): T {
 
 // ---- Putting things in -------------------------------------------------------
 
-pub fn grow<T>(s: *HashSet<T>, want: i64) {
+pub fn grow<T: Hash + Eq>(s: *HashSet<T>, want: i64) {
     if want * 4 <= s.cap * 3 {
         return
     }
@@ -160,10 +161,9 @@ pub fn grow<T>(s: *HashSet<T>, want: i64) {
 // there. The first `GONE` place on the way is remembered and used if the
 // element turns out to be missing, which is what keeps a set that is churned
 // rather than filled from walking further every time.
-pub fn place<T>(s: *HashSet<T>, x: T): bool {
+pub fn place<T: Hash + Eq>(s: *HashSet<T>, x: T): bool {
     let mask = s.cap - 1
-    let f = s.hash
-    var at = f(&x) & mask
+    var at = x.hash() & mask
     var free = -1
     var steps = 0
     while steps < s.cap {
@@ -180,8 +180,7 @@ pub fn place<T>(s: *HashSet<T>, x: T): bool {
             }
         }
         if what == TAKEN {
-            let same = s.eq
-            unsafe let is = same(&s.elems[at], &x)
+            unsafe let is = s.elems[at].same(&x)
             if is {
                 return false
             }
@@ -207,14 +206,14 @@ pub fn place<T>(s: *HashSet<T>, x: T): bool {
 // Put one in, making room first. Answers whether the set changed, which is
 // what a set is usually asked -- "was this new" is the question, and counting
 // the length before and after is the long way round to it.
-pub fn add<T>(s: *HashSet<T>, x: T): bool {
+pub fn add<T: Hash + Eq>(s: *HashSet<T>, x: T): bool {
     grow(s, s.used + 1)
     place(s, x)
 }
 
 // Take one out, and say whether there was one. What is left behind is a `GONE`
 // place and not a `FREE` one.
-pub fn remove<T>(s: *HashSet<T>, x: &T): bool {
+pub fn remove<T: Hash + Eq>(s: *HashSet<T>, x: &T): bool {
     let at = find(s, x)
     if at < 0 {
         return false
@@ -227,11 +226,12 @@ pub fn remove<T>(s: *HashSet<T>, x: &T): bool {
 // ---- Two of them ------------------------------------------------------------
 
 // Everything in either, everything in both, and everything in the first that
-// is not in the second. The new set hashes and compares the way the first one
-// does: an element that two sets disagreed about would not survive being put
-// in a third.
-pub fn union<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
-    var out: HashSet<T> = empty(a.hash, a.eq)
+// is not in the second. All three sets hash and compare the one way, the bound
+// on `T` being the whole of what says how -- which it did not use to be: the
+// pair came off the first set's fields, and two sets that disagreed about an
+// element were two sets a third could be built wrongly out of.
+pub fn union<T: Hash + Eq>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty()
     var i = 0
     while i < a.cap {
         if taken_at(a, i) {
@@ -249,8 +249,8 @@ pub fn union<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
     out
 }
 
-pub fn intersection<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
-    var out: HashSet<T> = empty(a.hash, a.eq)
+pub fn intersection<T: Hash + Eq>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty()
     var i = 0
     while i < a.cap {
         if taken_at(a, i) {
@@ -264,8 +264,8 @@ pub fn intersection<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
     out
 }
 
-pub fn difference<T>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
-    var out: HashSet<T> = empty(a.hash, a.eq)
+pub fn difference<T: Hash + Eq>(a: &HashSet<T>, b: &HashSet<T>): HashSet<T> {
+    var out: HashSet<T> = empty()
     var i = 0
     while i < a.cap {
         if taken_at(a, i) {

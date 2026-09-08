@@ -24,7 +24,6 @@ import option::Option;
 import panic::panic;
 import result::Result;
 import range::Range;
-import order::less_i64;
 import hashmap::HashMap;
 import hashset::HashSet;
 import treemap::TreeMap;
@@ -209,21 +208,6 @@ fn a_range_holds_its_start_and_not_its_end() {
 
 // ---- order ----------------------------------------------------------------------
 
-// The comparisons are over what the references refer to and not over the two
-// addresses, which is the one thing about them worth asserting.
-%test
-fn the_comparisons_are_of_the_numbers_and_not_the_addresses() {
-    let a = 1
-    let b = 2
-    assert(order::less_i64(&a, &b), "1 is less than 2")
-    assert(!order::less_i64(&b, &a), "and 2 is not less than 1")
-    assert(!order::less_i64(&a, &a), "and nothing is less than itself")
-
-    let also_one = 1
-    assert(order::eq_i64(&a, &also_one), "two ones are equal")
-    assert(!order::eq_i64(&a, &b), "and one and two are not")
-}
-
 // The hash sends neighbouring keys somewhere unrelated, which is the whole
 // reason it is there: the tables probe forward, so an identity hash turns one
 // into a linear scan.
@@ -290,7 +274,7 @@ fn a_bool_answers_them_too() {
 // ---- HashMap ----------------------------------------------------------------------
 
 fn map_of(): HashMap<i64, i64> {
-    hashmap::empty(order::mix, order::eq_i64)
+    hashmap::empty()
 }
 
 %test
@@ -368,7 +352,7 @@ fn everything_survives_a_table_growing_many_times() {
 // ---- HashSet ------------------------------------------------------------------------
 
 fn set_of(): HashSet<i64> {
-    hashset::empty(order::mix, order::eq_i64)
+    hashset::empty()
 }
 
 %test
@@ -409,7 +393,7 @@ fn the_three_ways_of_putting_two_sets_together() {
 // ---- TreeMap --------------------------------------------------------------------------
 
 fn tree_of(): TreeMap<i64, i64> {
-    treemap::empty(less_i64)
+    treemap::empty()
 }
 
 %test
@@ -480,7 +464,7 @@ fn a_tree_map_key_taken_out_is_gone_and_the_rest_are_not() {
 // ---- TreeSet ----------------------------------------------------------------------------
 
 fn tree_set_of(): TreeSet<i64> {
-    treeset::empty(less_i64)
+    treeset::empty()
 }
 
 %test
@@ -507,6 +491,57 @@ fn a_tree_set_element_taken_out_is_gone() {
     assert(!treeset::remove(*s, &5), "and again says it was not")
     assert_eq(&treeset::len(&s), &9, "nine are left")
     assert(!treeset::has(&s, &5), "and the one taken out is not among them")
+}
+
+// ---- A string as a key ---------------------------------------------------------------
+
+// What the traits bought. A `str` answers `Eq`, `Ord` and `Hash`, so it is a
+// key like a number is -- and it could not be one while the operations were
+// function values, there being no pair written for it and no way to write one
+// that the checker would hold a caller to.
+//
+// It is also the key that exercises a run of something two words wide, which
+// is what `ptr str` is a run of. Indexing one used to read the pointer as if
+// it were the pair, so a container of strings faulted before it had asked for
+// any room.
+
+%test
+fn a_hashed_map_takes_a_string_key() {
+    var m: HashMap<str, i64> = hashmap::empty()
+    hashmap::insert(*m, "one", 1)
+    hashmap::insert(*m, "two", 2)
+    assert_eq(&hashmap::len(&m), &2, "two keys went in")
+    assert_eq(&hashmap::get_or(&m, &"one", 0), &1, "under the first")
+    assert_eq(&hashmap::get_or(&m, &"two", 0), &2, "under the second")
+    assert(!hashmap::has(&m, &"three"), "and not one that was never put in")
+}
+
+%test
+fn a_hashed_set_of_strings_holds_each_once() {
+    var s: HashSet<str> = hashset::empty()
+    assert(hashset::add(*s, "a"), "the first")
+    assert(!hashset::add(*s, "a"), "and not the same one twice")
+    assert_eq(&hashset::len(&s), &1, "one element")
+}
+
+%test
+fn a_tree_map_takes_a_string_key() {
+    var m: TreeMap<str, i64> = treemap::empty()
+    treemap::insert(*m, "b", 2)
+    treemap::insert(*m, "a", 1)
+    assert_eq(&treemap::get_or(&m, &"a", 0), &1, "under the first")
+    assert_eq(&treemap::get_or(&m, &"b", 0), &2, "under the second")
+}
+
+%test
+fn a_tree_set_of_strings_is_in_order() {
+    var s: TreeSet<str> = treeset::empty()
+    treeset::add(*s, "pear")
+    treeset::add(*s, "apple")
+    treeset::add(*s, "fig")
+    assert_eq(&treeset::len(&s), &3, "three went in")
+    let at = treeset::first(&s)
+    assert_eq(&treeset::elem_at(&s, at), &"apple", "the smallest comes first")
 }
 
 // ---- fmt ---------------------------------------------------------------------------------
