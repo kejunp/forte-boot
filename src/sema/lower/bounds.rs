@@ -57,6 +57,18 @@ impl<'a> Lowerer<'a> {
     // answered by the caller and not here.
     pub(super) fn answers_to(&mut self, arg: TyId, want: TTIRItemId) -> bool {
         let arg = self.types.shallow(arg);
+        // An object answers the trait it is an object of, and nothing else: a
+        // `dyn Show` is a value that has already been asked the question and
+        // carries the answer beside it, and it has forgotten which type it was
+        // and so can be asked no other. No impl is written for one -- there is
+        // nothing to write it for -- so the lookup below would find none.
+        //
+        // It is asked now that `Self` carries a bound. A member of `Show`
+        // reached through a `&dyn Show` fills that member's `Self` with the
+        // object, and the bound on it is the trait it came from.
+        if let Ty::Dyn(of) = self.types.get(arg).clone() {
+            return of == want;
+        }
         if let Ty::Param { index, .. } = self.types.get(arg).clone() {
             return self.param_bounds(index).iter().any(|bound| {
                 matches!(bound, TTIRBound::Trait(held)

@@ -385,6 +385,43 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        // And what the trait wrote, where the impl wrote nothing. A second
+        // sweep and not a wider first one, because the order is the rule: a
+        // member the impl wrote wins over the trait's body every time, and one
+        // loop asking both questions at once would answer with whichever impl
+        // came first in the file.
+        //
+        // Which traits are asked is which ones the type answers, so a default
+        // is reached exactly where the type said it wanted one. What comes
+        // back is the trait's own member -- `instance_of` makes a hole for its
+        // `Self` and the receiver fills it, which is the same thing a call
+        // through a bound does.
+        self.default_of(of, name)
+    }
+
+    // The member of that name that a trait this type answers wrote a body for.
+    fn default_of(&self, of: Head, name: &str) -> Option<TTIRItemId> {
+        for item in &self.out.items {
+            let TTIRItemKind::Impl { ty: subject, of: Some(held), .. } = &item.kind else {
+                continue;
+            };
+            if head_of(self.types.get(*subject)) != of {
+                continue;
+            }
+            let TTIRItemKind::Trait { members, .. } = &self.out.items[*held].kind else {
+                continue;
+            };
+            for &member in members {
+                if !self.defaults.contains(&member) {
+                    continue;
+                }
+                if let TTIRItemKind::Fn(f) = &self.out.items[member].kind {
+                    if f.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+        }
         None
     }
 

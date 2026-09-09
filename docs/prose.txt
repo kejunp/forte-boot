@@ -512,6 +512,30 @@ works: it is the word beside the table, so it is the one "Self" an object
 still holds. A bound keeps them all, which is where a signature like the one
 above belongs.
 
+A trait member is a signature or a body, and a body there is the one every
+impl that wrote none falls back to:
+
+    trait Show {
+        fn show(&self): str
+        fn shout(&self): str { self.show() }
+    }
+
+    impl Show for Sq {
+        fn show(&self): str { "square" }
+    }
+
+"Self" is held to the trait it is the "Self" of, which is what lets the body
+above call "show" on itself: inside "trait Show" the parameter stands for
+whatever answers "Show", and that is the whole of what it stands for. What an
+impl writes wins over what the trait wrote, every time and whichever file
+either is in; an impl that leaves a defaulted member out is complete, and one
+that leaves out a member with no body is not.
+
+Nothing is copied into the impl. The body is the trait's, its first parameter
+is "Self" like any other, and what is compiled is one instance per type that
+falls back to it — so a default reached through a bound, through a "." and
+through a "dyn"'s table is one body written once and made three times.
+
 Two trait names mean something to the compiler, and neither needs a rule of
 its own to be written. "Copy" says the type is copied rather than moved
 (above, <var_decl>) and holds nothing:
@@ -531,6 +555,11 @@ that is the ordinary spelling for it — nothing about the declaration is
 special, which is the point of putting it in a trait rather than in a form of
 its own. What is special is the name, and that is a rule for the checker, as
 the closed set of attributes is.
+
+It is also the one trait whose members may not be written with a body. A
+release is placed by the compiler and named by the impl that wrote it, so a
+default here would be a body nothing places — an "impl Drop for Buf { }" that
+said Buf has a release and got none.
 
 When it runs is the whole of what it is for. A value that moves has one owner
 at a time, so the end of that owner is the one place a release belongs: a
@@ -2645,8 +2674,8 @@ answer is not obvious from the rules alone.
     whole suite still passes. The guard stays -- a SIR type is still what
     every width below is read from, and an honest one is worth a move -- but
     it is no longer what stands between the compiler and a wrong program.
-  - An impl of a trait writes every member the trait declares, which nothing
-    asked. An impl of a trait with two members that wrote one *was* an impl: the
+  - An impl of a trait writes every member the trait declares that the trait
+    wrote no body for, which nothing asked. An impl of a trait with two members that wrote one *was* an impl: the
     type answered the trait, a "&dyn T" was made of it, and the table built for
     it had an entry for a member nobody had written a body for. What that came
     to was a call through a word nobody wrote -- a program that compiled,
@@ -2657,18 +2686,74 @@ answer is not obvious from the rules alone.
     run: a body is lowered in "bodies", and asking about one in "resolve" is
     asking before the answer exists.
 
-    And a trait declares a *signature*. The grammar admits a body -- a
-    <trait_member> is a <fn_decl> or a <fn_sig> -- and one written there was
-    accepted and then ignored, which left the same hole by the other road. It
-    is refused now. What such a body would be is the one every impl that wrote
-    none falls back to, and writing it wants a "Self" to write it about.
+    And a trait declares a signature or a *body*. The grammar admits either --
+    a <trait_member> is a <fn_decl> or a <fn_sig> -- and a body written there
+    was accepted and then ignored, which left the same hole by the other road,
+    and was then refused for as long as there was no "Self" to write one
+    about. There is a "Self" now (section 2): it is the trait's first parameter
+    and the impl's own subject, and it was wanted for its own sake -- an "Eq"
+    whose method takes a second value of the type is a signature nothing could
+    write, and a map wants one of its keys. So the grammar is no longer wider
+    than the language, and this entry is closed.
 
-    There is a "Self" now (section 2). It is the trait's first parameter and
-    the impl's own subject, and it was wanted for its own sake: an "Eq" whose
-    method takes a second value of the type is a signature nothing could
-    write, and a map wants one of its keys. What is left of this entry is the
-    default body itself -- the grammar is still wider than the language, and
-    what "Self" removed is the reason it had to be.
+    A body a trait wrote is the one every impl that wrote none falls back to,
+    and an impl that leaves such a member out is complete. That is the entry
+    above read the other way: what made a missing member a mistake was that
+    there was no body anywhere for the table entry to name, and a default is a
+    body somewhere for it to name.
+
+    Nothing is copied into an impl. A member's first parameter is "Self"
+    already, so a default is an ordinary generic body: one instance per type
+    that falls back to it, named the way every instance is, substituted by
+    "mir::mono" out of the receiver. Writing the body into each impl instead
+    would be the same source compiled once per impl rather than once per type
+    that reaches it, and would put a second thing in the tree that "an impl"
+    means -- the derive's answer, and the derive has a reason for it that this
+    has not: what a derive writes differs per type, and what a default writes
+    is the same body every time.
+
+    Three ways in and one body. A concrete receiver finds the trait's member
+    where no impl wrote one -- a second sweep after the impls, so what an impl
+    wrote wins; a bound already named the trait's member and always did, the
+    impl being chosen later out of the receiver; and a table entry names the
+    default's instance where the impl left the member out. The order is the
+    rule in all three: the impl first, the trait's body second.
+
+    "Self" is held to the trait it is the "Self" of, which is what makes a
+    default worth writing. A parameter's methods are the ones its bounds name,
+    and "Self" carried none -- so "self.show()" inside a body of "Show" reached
+    nothing at all, and a default could call only what was written outside the
+    trait. It is not a rule this adds: inside "trait Show", "Self" answers
+    "Show" is the whole of what the parameter stands for. What it wanted in
+    return is one sentence somewhere else: a "dyn Show" answers "Show", and
+    nothing else, since an object is a value that has already been asked the
+    question and carries the answer beside it -- and no impl is written for
+    one, so the lookup that finds impls would find none.
+
+    Whether a body was written is asked in "resolve" and kept, not read off the
+    member where it is wanted. A body reaches the tree in "bodies", which runs
+    a file at a time, so a call in the first file to a default declared in the
+    last would ask before the answer was there and be told there is no such
+    method. Every pass after the checker asks the member itself, all of them
+    running after every body is in.
+
+    "Drop" is the one trait a default may not be written for. A release is
+    placed by the compiler and named by the impl that wrote it
+    ("mir::lower::glue"), so a body there would be one nothing places: an
+    "impl Drop for Buf { }" would say Buf has a release and get none, which is
+    the silence a "Drop" may not have. It costs nothing real -- a default
+    reaches only what its own trait declares, and what "Drop" declares is the
+    member being written, so the one such body that could be written calls
+    itself.
+
+    What this leaves is the standard library, which has no default in it. Its
+    traits declare one member each -- "same", "less", "hash", "show", "drop" --
+    so there is nothing in any of them for an impl to fall back to, and a
+    default is worth nothing until a trait declares more than the one thing an
+    impl has to write. "Ord" is where that would start: "greater" is
+    "other.less(self)" and could be written once here rather than by every
+    type that wants it. Adding a member to a trait is a change to every impl of
+    it, which is why it is a line in this file and not a line in that one yet.
   - A collected value stands where a reference is wanted, which it did not.
     "It is one word -- the address the collector handed back -- and it is
     reached through exactly as a reference is" (section 2), so a "gc T" is a

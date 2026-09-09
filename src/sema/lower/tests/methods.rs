@@ -677,19 +677,93 @@ fn an_impl_writes_every_member_the_trait_declares() {
     assert!(out.contains("missing f, g"), "{}", out);
 }
 
-// And a trait declares a *signature*: a member written with a body is refused
-// rather than accepted and ignored, which is what it was.
+// ---- The body a trait writes ------------------------------------------------------
+
+// A member may be written with a body, and that body is the one every impl
+// that wrote none falls back to.
 //
-// What a body there would be is the one every impl that wrote none falls back
-// to, and writing it wants a `Self` to write it about -- a parameter this
-// language has no spelling for.
+// It was refused for as long as there was no `Self` to write it about. There is
+// one now -- the trait's first parameter -- so a default is an ordinary generic
+// body whose first argument is the type that answered, and an impl that leaves
+// it out is complete.
 #[test]
-fn a_trait_member_is_a_signature_and_not_a_body() {
-    let out = refused("trait T {\n    fn f(&self): i32 { 0 }\n}\n");
-    assert!(out.contains("`f` is declared with a body"), "{}", out);
-    assert!(out.contains("a trait declares a signature"), "{}", out);
-    // And one written the other way is what a trait is made of.
-    clean("trait T {\n    fn f(&self): i32\n}\n");
+fn a_trait_may_write_the_body_an_impl_falls_back_to() {
+    clean("trait T {\n    fn f(&self): i32 { 0 }\n}\n           struct Q {\n    pub n: i32,\n}\n           impl T for Q {}\n");
+}
+
+// And what has no body still has to be written. A default is what excuses a
+// member from an impl, so a trait of two where one has a body excuses that one
+// and nothing else.
+#[test]
+fn a_member_with_no_body_is_still_missing_from_an_impl_that_wrote_none() {
+    let with = "trait T {\n    fn f(&self): i32\n    fn g(&self): i32 { 0 }\n}\n                struct Q {\n    pub n: i32,\n}\n";
+    let out = refused(&format!("{}impl T for Q {{}}\n", with));
+    assert!(out.contains("this impl of `T` is missing f"), "{}", out);
+    assert!(!out.contains("missing f, g"), "a member with a body is not missing:\n{}", out);
+    clean(&format!("{}impl T for Q {{\n    fn f(&self): i32 {{ self.n }}\n}}\n", with));
+}
+
+// A default body reaches the trait's other members on `self`, which is what
+// makes one worth writing: `Self` is held to the trait it is the `Self` of, so
+// the lookup a bound already does finds them.
+//
+// Nothing here is written by the reader. Without the bound `self.f()` inside a
+// body of `T` reached nothing at all -- a parameter's methods are the ones its
+// bounds name, and `Self` carried none.
+#[test]
+fn a_default_body_calls_the_traits_own_members_on_self() {
+    clean("trait T {\n    fn f(&self): i32\n    fn g(&self): i32 { self.f() + 1 }\n}\n           struct Q {\n    pub n: i32,\n}\n           impl T for Q {\n    fn f(&self): i32 { self.n }\n}\n");
+}
+
+// And an object answers the trait it is an object of. A `&dyn T` filling a
+// member's `Self` is the one type that answers a trait without an impl written
+// for it -- there is nothing to write one for -- so the bound is held against
+// what the object is of rather than against a lookup that would find none.
+#[test]
+fn a_trait_object_answers_the_trait_it_is_an_object_of() {
+    clean("trait T {\n    fn f(&self): i32\n    fn g(&self): i32 { self.f() }\n}\n           struct Q {\n    pub n: i32,\n}\n           impl T for Q {\n    fn f(&self): i32 { self.n }\n}\n           fn h(x: &dyn T): i32 { x.g() }\n");
+}
+
+// And a default declared in a file walked *after* the one that falls back to
+// it is still found.
+//
+// Whether a body was written is asked while a body is being walked, and bodies
+// are walked a file at a time -- so asking the member would ask before the
+// answer was on it, and `q.area()` in the first file was "`Sq` has no field
+// `area`" for a trait in the second. It is asked of what `resolve` wrote down
+// instead, that pass having run over every file already.
+#[test]
+fn a_default_declared_in_a_later_file_is_still_what_an_impl_falls_back_to() {
+    let (_, said) = suite(
+        &[
+            (
+                "user",
+                "struct Q {\n    pub n: i32,\n}\n                 impl Area for Q {\n    fn side(&self): i32 { self.n }\n}\n                 fn go(q: &Q): i32 { q.area() }\n",
+            ),
+            (
+                "shape",
+                "pub trait Area {\n    fn side(&self): i32\n                 \x20   fn area(&self): i32 { self.side() * self.side() }\n}\n",
+            ),
+        ],
+        &[vec![bound("Area", 1, &["Area"])], Vec::new()],
+    );
+    assert!(said.is_empty(), "{:#?}", said);
+}
+
+// `Drop` is the one trait a default may not be written for.
+//
+// A release is placed by the compiler and named by the impl that wrote it
+// (`mir::lower::glue`), so a body here would be one nothing places: an
+// `impl Drop for Buf { }` would say Buf has a release and get none. It costs
+// nothing real -- a default reaches only what its own trait declares, and what
+// `Drop` declares is the member being written.
+#[test]
+fn a_release_is_not_something_a_trait_writes_a_default_for() {
+    let out = refused("trait Drop {\n    fn drop(*self) {}\n}\n");
+    assert!(out.contains("`drop` is declared with a body"), "{}", out);
+    assert!(out.contains("a member of `Drop` is a signature"), "{}", out);
+    // And one written the other way is what every other `Drop` in this crate is.
+    clean("trait Drop {\n    fn drop(*self)\n}\n");
 }
 
 // ---- A collected value where a reference is wanted ---------------------------------

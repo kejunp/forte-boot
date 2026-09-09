@@ -599,9 +599,16 @@ impl<'a> Mono<'a> {
         }
     }
 
-    // The member of that name in the impl of that trait for that type. This is
+    // The member of that name in the impl of that trait for that type, or the
+    // trait's own where the impl wrote none and the trait wrote a body. This is
     // `sema`'s `method_of` asked the other way round -- there the type is known
     // and the name is looked for, here both are and the *body* is wanted.
+    //
+    // A default reaches a table like anything else, and it has to: an object is
+    // a value that has forgotten which type it was, so every entry beside it
+    // has to name a body, and one the impl left to the trait is still a body.
+    // What `Said::Receiver` recovers from it is the member's `Self`, the entry
+    // being built for one type and the receiver saying which.
     fn answering_impl(
         &self,
         of: TTIRItemId,
@@ -627,7 +634,16 @@ impl<'a> Mono<'a> {
                 }
             }
         }
-        None
+        // The trait's own, where it wrote a body. After the impls and not
+        // among them, so that what an impl wrote wins -- the same order
+        // `sema::method_of` reads them in and for the same reason.
+        let TTIRItemKind::Trait { members, .. } = &self.p.items.get(of)?.kind else {
+            return None;
+        };
+        members.iter().copied().find(|&member| {
+            matches!(self.p.items.get(member).map(|i| &i.kind),
+                     Some(TTIRItemKind::Fn(f)) if f.name == name && f.body.is_some())
+        })
     }
 
     fn names(&mut self, inst: &SIRInst, body: &SIRBody, job: &Job) -> Option<String> {

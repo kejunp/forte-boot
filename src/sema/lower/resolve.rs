@@ -279,35 +279,33 @@ impl<'a> Lowerer<'a> {
                     *items = inner;
                 }
 
-                TIRItemKind::Trait { generics, members, .. } => {
-                    // A member with a body is refused. The grammar admits one
-                    // -- a `<trait_member>` is a `<fn_decl>` or a `<fn_sig>` --
-                    // and nothing below reads it: what a trait declares is a
-                    // *signature*, and the body it wrote was accepted, ignored,
-                    // and then left the table with an entry nobody had filled,
-                    // which is a call through a word nobody wrote.
+                TIRItemKind::Trait { name: trait_name, generics, members, .. } => {
+                    // A member may be written with a body, and that body is
+                    // the one every impl that wrote none falls back to. What
+                    // it is written about is `Self`, and there was no `Self`
+                    // to write it about until there was one -- which is why
+                    // this was a refusal for as long as it was.
                     //
-                    // What it would take is a body written about `Self`, so
-                    // that one body serves every impl that does not write its
-                    // own. `Self` is a type now -- see below -- and this is
-                    // what is left to do with it.
+                    // Nothing is copied into an impl. One body is compiled per
+                    // type that falls back to it, which is what a generic
+                    // already is: the member's first parameter is `Self`,
+                    // `mir::mono` substitutes the receiver's type in, and the
+                    // instance is named the way every other instance is.
+                    //
+                    // `Drop` is the one trait that may not write one, for the
+                    // reason below.
+                    self.no_default_release(&trait_name, &members);
+                    // Which of them wrote a body, kept for `default_of` -- see
+                    // `Lowerer::defaults` for why it is kept rather than read
+                    // off the member when the question is asked.
                     for &at in &members {
                         let TIRItemKind::Fn(f) = &self.tir.items[at].kind else { continue };
                         if f.body.is_none() {
                             continue;
                         }
-                        let name = f.name.clone();
-                        self.errors.push(
-                            Diagnostic::error(
-                                format!("`{}` is declared with a body", name),
-                                self.span(at),
-                            )
-                            .with_label("a trait declares a signature")
-                            .with_note(
-                                "a body here would be the one every impl that wrote none \
-                                 fell back to, which wants a `Self` to write it about",
-                            ),
-                        );
+                        if let Some(held) = self.made[self.at][at] {
+                            self.defaults.insert(held);
+                        }
                     }
                     // `Self` is the trait's first parameter, standing for the
                     // type that answers it -- so `fn same(&self, other: &Self)`
@@ -325,8 +323,18 @@ impl<'a> Lowerer<'a> {
                     self.receivers(&members, "a trait");
                     self.params = type_names_of(&generics);
                     self.open_regions(&generics);
-                    let mut made_generics =
-                        vec![TTIRGeneric::Type { name: SELF.to_string(), bounds: Vec::new() }];
+                    // And it is held to the trait it is the `Self` of. Inside
+                    // `trait Show`, `Self` answers `Show`: that is not a rule
+                    // this adds but the whole of what the parameter stands
+                    // for, and it is what lets a default body call the trait's
+                    // other members on `self` -- `bound_method` looks a method
+                    // up among the bounds a parameter carries, and with none
+                    // there `self.show()` in a body of `Show` reached nothing.
+                    let of = self.trait_ty(made, &generics);
+                    let mut made_generics = vec![TTIRGeneric::Type {
+                        name:   SELF.to_string(),
+                        bounds: vec![TTIRBound::Trait(of)],
+                    }];
                     made_generics.extend(self.generics(&generics, &[]));
                     let inner: Vec<TTIRItemId> =
                         members.iter().filter_map(|&i| self.made[self.at][i]).collect();
@@ -380,6 +388,69 @@ impl<'a> Lowerer<'a> {
 
                 TIRItemKind::Import { .. } => {}
             }
+        }
+    }
+
+    // The trait as a type, for the bound its own `Self` carries.
+    //
+    // Its own parameters are its arguments, each by the place it stands in --
+    // `Self` is at 0, so the first of the trait's own is at 1 -- which is what
+    // makes `trait Held<T>` bound its `Self` to `Held<T>` and not to a `Held`
+    // of something else. Its lifetimes are the regions `open_regions` has just
+    // handed out, named rather than made fresh so that a `'a` written in the
+    // header and a `'a` in this bound are the one region.
+    fn trait_ty(&mut self, made: TTIRItemId, generics: &[TIRGeneric]) -> TyId {
+        let args: Vec<TyId> = type_names_of(generics)
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| self.types.intern(Ty::Param { name, index: i + 1 }))
+            .collect();
+        let written: Vec<String> = generics
+            .iter()
+            .filter_map(|g| match g {
+                TIRGeneric::Life { name, .. } => Some(name.clone()),
+                TIRGeneric::Type { .. } => None,
+            })
+            .collect();
+        let regions = self.named_regions(made, &written, self.here);
+        self.types.intern(Ty::Named { item: made, args, regions })
+    }
+
+    // `Drop` is the one trait whose member is not called by anything written
+    // in the language: `mir::lower::glue` places the release and names the
+    // *impl's* member to do it. So a default here is a body nothing would
+    // place -- an `impl Drop for Buf { }` would say Buf has a release and get
+    // none, which is the silence §8 says a `Drop` may not have.
+    //
+    // Refused rather than worked around, and it costs nothing real. A default
+    // body can only reach what its own trait declares, and what `Drop`
+    // declares is the member being written -- so the one such body that could
+    // be written calls itself.
+    //
+    // By name, which is how `Copy` and `Drop` are known everywhere in this
+    // compiler and how `borrows::copies` and `mir::lower::glue` both find
+    // them: what it knows is the two names and not the two declarations.
+    fn no_default_release(&mut self, trait_name: &str, members: &[TIRItemId]) {
+        if trait_name != "Drop" {
+            return;
+        }
+        for &at in members {
+            let TIRItemKind::Fn(f) = &self.tir.items[at].kind else { continue };
+            if f.body.is_none() {
+                continue;
+            }
+            let name = f.name.clone();
+            self.errors.push(
+                Diagnostic::error(
+                    format!("`{}` is declared with a body", name),
+                    self.span(at),
+                )
+                .with_label("a member of `Drop` is a signature")
+                .with_note(
+                    "a release is placed by the compiler and named by the impl that \
+                     wrote it, so a body here would be one nothing places",
+                ),
+            );
         }
     }
 

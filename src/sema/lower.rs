@@ -67,7 +67,7 @@
 // The allow covers the parts of the surface no caller has reached yet.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Diagnostic, Diagnostics, Span};
 use crate::sema::types::Types;
@@ -350,6 +350,20 @@ pub struct Lowerer<'a> {
     // written for. `None` outside one, and outside one there is no `self`.
     // A trait's is not this -- see `receiver_ty`.
     subject: Option<TyId>,
+    // The trait members a body was written for, which is what an impl that
+    // wrote none falls back to.
+    //
+    // Written down here rather than read off the member, because *when* it is
+    // asked is not when the answer is on the member. A body reaches the tree in
+    // `bodies`, which runs a file at a time, so a call in the first file to a
+    // default declared in the last would ask before it was there and be told
+    // there is no such method. Whether one was *written* is settled a pass
+    // earlier, in `resolve`, which is the pass that settles the outside of a
+    // declaration -- and this is that answer kept.
+    //
+    // Nothing after the checker needs it: `impls_complete` and `mir::mono` ask
+    // the member itself, both running after every body is in.
+    defaults: HashSet<TTIRItemId>,
 }
 
 // One body under construction.
@@ -432,6 +446,7 @@ impl<'a> Lowerer<'a> {
             pending: Vec::new(),
             breaks: Vec::new(),
             subject: None,
+            defaults: HashSet::new(),
         }
     }
 
@@ -1066,13 +1081,19 @@ fn errored(out: &TTIRProgram, ty: TyId, depth: usize) -> bool {
     }
 }
 
-// Every impl of a trait writes every member the trait declares.
+// Every impl of a trait writes every member the trait declares, unless the
+// trait wrote a body for it.
 //
 // Nothing asked. An impl of a trait with two members that wrote one *was* an
 // impl: the type answered the trait, a `&dyn T` was made of it, and the table
 // built for it had an entry for a member nobody had written a body for. What
 // that came to was a call through a word nobody wrote -- a program that
 // compiled, linked, and took the process down.
+//
+// A member the trait gave a body is the one case where nobody has to write
+// one, and it is the same fact read the other way: what made a missing member
+// a mistake was that there was no body anywhere for the entry to name, and a
+// default is a body somewhere for it to name.
 //
 // Here and not where the impl is resolved, because what a member *is* is not
 // settled until the pass below that one has run: a body is lowered in
@@ -1097,7 +1118,9 @@ fn impls_complete(out: &TTIRProgram, errors: &mut Diagnostics) {
         let missing: Vec<&str> = wants
             .iter()
             .filter_map(|&at| match &out.items[at].kind {
-                TTIRItemKind::Fn(f) if !written.contains(&f.name.as_str()) => {
+                TTIRItemKind::Fn(f)
+                    if f.body.is_none() && !written.contains(&f.name.as_str()) =>
+                {
                     Some(f.name.as_str())
                 }
                 _ => None,

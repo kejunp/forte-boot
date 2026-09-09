@@ -477,6 +477,90 @@ fn a_method_reached_through_a_bound_runs_the_impl_of_the_type_it_was_given() {
     assert!(said.contains("running 2 tests"), "{}", said);
 }
 
+// ---- The body a trait writes -------------------------------------------------
+
+// A member a trait wrote a body for, reached the three ways a member is reached:
+// statically off a concrete receiver, through a bound, and through a table.
+//
+// Two types and one of them overriding is the whole of it. A test where nothing
+// overrides passes on a compiler that ignores an impl's own member entirely, and
+// one where nothing falls back passes on a compiler with no defaults at all --
+// so both are here, and the object half is what asks whether a table entry can
+// name a body the impl did not write.
+//
+// `deep` is the part that has to be one body per *type* rather than one body:
+// it is a default calling another member on `self`, so what it runs is settled
+// by which `Self` the instance was made with, and a compiler that made one copy
+// of it would run one of the two answers twice.
+#[test]
+fn a_member_a_trait_wrote_a_body_for_is_reached_every_way_a_member_is() {
+    let dir = std::env::temp_dir().join(format!("fortec-default-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let root = dir.join("default.ft");
+    std::fs::write(
+        &root,
+        "import test::assert_eq;\n\
+         \n\
+         \n\
+         trait Show {\n\
+             fn show(&self): i64\n\
+             fn twice(&self): i64 { self.show() * 2 }\n\
+             fn deep(&self): i64 { self.twice() + 1 }\n\
+         }\n\
+         \n\
+         struct P { pub x: i64 }\n\
+         struct Q { pub y: i64 }\n\
+         \n\
+         // Falls back to both.\n\
+         impl Show for P {\n\
+             fn show(&self): i64 { self.x }\n\
+         }\n\
+         \n\
+         // And writes one of them, which wins over the trait's.\n\
+         impl Show for Q {\n\
+             fn show(&self): i64 { self.y }\n\
+             fn twice(&self): i64 { self.y + 100 }\n\
+         }\n\
+         \n\
+         fn bound<T: Show>(v: &T): i64 { v.deep() }\n\
+         fn object(v: &dyn Show): i64 { v.deep() }\n\
+         \n\
+         %test\n\
+         fn a_default_runs_where_an_impl_wrote_none() {\n\
+             let p = P { x: 21 }\n\
+             assert_eq(&p.twice(), &42, \"the trait\u{27}s body, for P\")\n\
+             assert_eq(&p.deep(), &43, \"and one default calling another\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn what_an_impl_wrote_wins_over_the_traits_own() {\n\
+             let q = Q { y: 5 }\n\
+             assert_eq(&q.twice(), &105, \"Q wrote its own\")\n\
+             assert_eq(&q.deep(), &106, \"and the default above it calls that one\")\n\
+         }\n\
+         \n\
+         %test\n\
+         fn a_default_is_reached_through_a_bound_and_through_a_table() {\n\
+             let p = P { x: 21 }\n\
+             let q = Q { y: 5 }\n\
+             assert_eq(&bound(&p), &43, \"through a bound, falling back\")\n\
+             assert_eq(&bound(&q), &106, \"through a bound, overridden\")\n\
+             assert_eq(&object(&p), &43, \"through a table, falling back\")\n\
+             assert_eq(&object(&q), &106, \"through a table, overridden\")\n\
+         }\n",
+    )
+    .expect("a file");
+
+    let held = ran(&root, "default");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((ok, said)) = held else { return };
+
+    assert!(ok, "a body a trait wrote was meant to run:\n{}", said);
+    assert!(said.contains("0 failed"), "{}", said);
+    assert!(said.contains("running 3 tests"), "{}", said);
+}
+
 // ---- The runner itself -------------------------------------------------------
 
 // And that it would have said so. A suite whose tests all pass says nothing
