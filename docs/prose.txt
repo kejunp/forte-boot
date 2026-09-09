@@ -2746,14 +2746,23 @@ answer is not obvious from the rules alone.
     member being written, so the one such body that could be written calls
     itself.
 
-    What this leaves is the standard library, which has no default in it. Its
-    traits declare one member each -- "same", "less", "hash", "show", "drop" --
-    so there is nothing in any of them for an impl to fall back to, and a
-    default is worth nothing until a trait declares more than the one thing an
-    impl has to write. "Ord" is where that would start: "greater" is
-    "other.less(self)" and could be written once here rather than by every
-    type that wants it. Adding a member to a trait is a change to every impl of
-    it, which is why it is a line in this file and not a line in that one yet.
+    "Ord" is the first of the library's to use one, and it is what a default is
+    for. It declared "less" and nothing else, so every type that wanted ">"
+    wrote the same line the other way round; it declares four now and an impl
+    still writes one. "greater" is "other.less(self)", and "at_most" and
+    "at_least" are the two negations -- so the three read "less" and nothing
+    else, and "Ord" asks for no "Eq": "a <= b" is "not b < a" rather than "a < b
+    or a == b", and the two say the same thing without the second trait.
+
+    What they lean on is that the order is *total*. Of two values one is before
+    the other or the two are the same, and no pair is unordered -- a "less" that
+    leaves a pair with neither answer is a partial order, and "not before" stops
+    meaning "at or after" for it. A "TreeSet" needed that of a key before any of
+    this, so what changed is that the trait says it.
+
+    Nothing else there has a default and nothing else there wants one yet: "Eq",
+    "Hash", "Show" and "Drop" each declare the one thing an impl has to write,
+    and a trait with one member has nothing for an impl to fall back to.
   - A collected value stands where a reference is wanted, which it did not.
     "It is one word -- the address the collector handed back -- and it is
     reached through exactly as a reference is" (section 2), so a "gc T" is a

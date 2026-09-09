@@ -28,10 +28,33 @@ pub trait Eq {
     fn same(&self, other: &Self): bool
 }
 
-// Strictly less, which is the one comparison the rest are built out of: `a > b`
-// is `b.less(a)`, and the two equal cases are `Eq`'s.
+// Strictly less, which is the one comparison the rest are built out of -- so it
+// is the one an impl writes, and the other three are here already.
+//
+// A body a trait writes is what an impl that wrote none falls back to (§2), and
+// this is what that is for: a type says once what "before" means for it and
+// gets the four comparisons, rather than every type that wants `>` writing the
+// same line the other way round. Writing one by hand still wins over the body
+// here, which is what to do where a type answers it more directly than by
+// turning `less` around.
+//
+// The three read `less` and nothing else, so `Ord` asks for no `Eq`: `a <= b`
+// is "not b < a" rather than "a < b or a == b", and the two say the same thing
+// without the second trait. What they lean on instead is that the order is
+// *total* -- of two values, one is before the other or the two are the same,
+// and no pair is unordered. A `less` that leaves a pair with neither answer is
+// a partial order, and "not before" stops meaning "at or after" for it. That is
+// already what a `TreeSet` needs to hold a key at all, so it is a promise the
+// trait was making before this file spelled it out.
 pub trait Ord {
     fn less(&self, other: &Self): bool
+
+    // After, which is before read from the other end.
+    fn greater(&self, other: &Self): bool { other.less(self) }
+
+    // Before or the same, and after or the same.
+    fn at_most(&self, other: &Self): bool { !other.less(self) }
+    fn at_least(&self, other: &Self): bool { !self.less(other) }
 }
 
 // A number that stands for the value, spread out. Two equal values must give
