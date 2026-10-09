@@ -237,6 +237,13 @@ fn same_of<T: order::Eq>(a: &T, b: &T): bool { a.same(b) }
 fn less_of<T: order::Ord>(a: &T, b: &T): bool { a.less(b) }
 fn hash_of<T: order::Hash>(a: &T): i64 { a.hash() }
 
+// And the three `Ord` writes for itself, reached the same way. A bound is where
+// a default has the furthest to travel: the call names the trait's member, and
+// which body runs is settled where the caller's type is known.
+fn greater_of<T: order::Ord>(a: &T, b: &T): bool { a.greater(b) }
+fn at_most_of<T: order::Ord>(a: &T, b: &T): bool { a.at_most(b) }
+fn at_least_of<T: order::Ord>(a: &T, b: &T): bool { a.at_least(b) }
+
 %test
 fn a_bound_reaches_the_impl_written_for_the_key() {
     let a: i64 = 1
@@ -269,6 +276,94 @@ fn a_bool_answers_them_too() {
     assert(!same_of(&true, &false), "and a true and a false")
     assert(less_of(&false, &true), "false comes first")
     assert(hash_of(&true) != hash_of(&false), "and they hash apart")
+}
+
+// ---- What `Ord` writes for itself -------------------------------------------------
+
+// `Ord` declares one comparison and writes the other three, so a type that says
+// what "before" means for it gets `>`, `<=` and `>=` without writing them.
+//
+// The pair that is the *same* is the one worth asserting. Two of the four are
+// false there and two are true, and a body built the wrong way round -- `>` as
+// "not <" rather than as "< from the other end" -- is right about every unequal
+// pair and wrong about that one.
+%test
+fn a_type_that_wrote_less_answers_the_other_three() {
+    let a: i64 = 1
+    let b: i64 = 2
+
+    assert(b.greater(&a), "2 is after 1")
+    assert(!a.greater(&b), "and 1 is not after 2")
+    assert(!a.greater(&a), "nor is 1 after itself")
+
+    assert(a.at_most(&b), "1 is at or before 2")
+    assert(a.at_most(&a), "and at or before itself")
+    assert(!b.at_most(&a), "2 is not at or before 1")
+
+    assert(b.at_least(&a), "2 is at or after 1")
+    assert(b.at_least(&b), "and at or after itself")
+    assert(!a.at_least(&b), "1 is not at or after 2")
+}
+
+// A `str` is the key these were wanted for as much as a number, and it wrote
+// the same one routine.
+%test
+fn a_string_answers_the_three_it_did_not_write() {
+    let a: str = "hell"
+    let b: str = "hello"
+
+    assert(b.greater(&a), "the longer one is after the prefix")
+    assert(a.at_most(&b), "and the prefix is at or before it")
+    assert(a.at_most(&a), "and at or before itself")
+    assert(!a.at_least(&b), "the prefix is not at or after it")
+}
+
+// Through a bound, which is how a container asks. Which body runs is settled at
+// the instance and not at the call, so a default reached this way is a body
+// made once per key type -- and a default that calls another member of its own
+// trait, as these do, is what makes that worth saying.
+%test
+fn the_three_are_reached_through_a_bound_as_the_written_one_is() {
+    let a: i64 = 1
+    let b: i64 = 2
+    assert(greater_of(&b, &a), "2 is after 1")
+    assert(at_most_of(&a, &b), "1 is at or before 2")
+    assert(at_least_of(&b, &b), "and 2 is at or after itself")
+
+    let s: str = "a"
+    let t: str = "b"
+    assert(greater_of(&t, &s), "and one instance per key type")
+    assert(at_most_of(&s, &t), "not one for all of them")
+}
+
+// A type of the reader's own, which is what the trait is for: it writes `less`
+// and nothing else, and the four comparisons are there.
+%test
+fn a_type_written_here_gets_them_by_writing_one() {
+    struct Version { pub major: i64, pub minor: i64 }
+
+    impl order::Ord for Version {
+        fn less(&self, other: &Version): bool {
+            if self.major != other.major {
+                self.major < other.major
+            } else {
+                self.minor < other.minor
+            }
+        }
+    }
+
+    let one_two = Version { major: 1, minor: 2 }
+    let one_ten = Version { major: 1, minor: 10 }
+    let two_nought = Version { major: 2, minor: 0 }
+
+    assert(one_two.less(&one_ten), "1.2 is before 1.10")
+    assert(one_ten.greater(&one_two), "and 1.10 is after 1.2")
+    assert(two_nought.greater(&one_ten), "2.0 is after both")
+    assert(one_two.at_most(&one_two), "and a version is at or before itself")
+    assert(one_two.at_least(&one_two), "and at or after it")
+    assert(!one_two.greater(&one_two), "and after itself is not one of them")
+
+    assert(greater_of(&two_nought, &one_two), "and the same through a bound")
 }
 
 // ---- HashMap ----------------------------------------------------------------------
